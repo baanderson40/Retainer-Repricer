@@ -1,102 +1,160 @@
 using System;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
-using Dalamud.Interface.Utility;
-using Dalamud.Interface.Utility.Raii;
+using Dalamud.Interface;
+using Dalamud.Interface.Components;
 using Dalamud.Interface.Windowing;
-using Lumina.Excel.Sheets;
+using FFXIVClientStructs.FFXIV.Component.GUI;
 
 namespace RetainerRepricer.Windows;
 
-public class MainWindow : Window, IDisposable
+public sealed unsafe class MainWindow : Window, IDisposable
 {
-    private readonly string goatImagePath;
-    private readonly Plugin plugin;
+    private readonly Plugin _plugin;
 
-    // We give this window a hidden ID using ##.
-    // The user will see "My Amazing Window" as window title,
-    // but for ImGui the ID is "My Amazing Window##With a hidden ID"
-    public MainWindow(Plugin plugin, string goatImagePath)
-        : base("My Amazing Window##With a hidden ID", ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse)
+    // User intent (mirrors config)
+    private bool _wantsOpen;
+
+    // Runtime state placeholder
+    private bool _running = false;
+
+    public MainWindow(Plugin plugin)
+        : base(
+            "Retainer Repricer##Overlay",
+            ImGuiWindowFlags.NoTitleBar |
+            ImGuiWindowFlags.NoResize |
+            ImGuiWindowFlags.NoScrollbar |
+            ImGuiWindowFlags.NoScrollWithMouse
+        )
     {
-        SizeConstraints = new WindowSizeConstraints
-        {
-            MinimumSize = new Vector2(375, 330),
-            MaximumSize = new Vector2(float.MaxValue, float.MaxValue)
-        };
+        _plugin = plugin;
 
-        this.goatImagePath = goatImagePath;
-        this.plugin = plugin;
+        RespectCloseHotkey = false;
+        DisableWindowSounds = true;
+
+        // Keep the window registered as open so WindowSystem will evaluate DrawConditions().
+        IsOpen = true;
+
+        _wantsOpen = _plugin.Configuration.OverlayWantsOpen;
     }
 
     public void Dispose() { }
 
+    // Toggle via /repricer
+    public void ToggleIntent()
+    {
+        _wantsOpen = !_wantsOpen;
+        _plugin.Configuration.OverlayWantsOpen = _wantsOpen;
+        _plugin.Configuration.Save();
+    }
+
+    // Used by UiBuilder.OpenMainUi to satisfy Dalamud validation
+    public void EnsureIntentOpen()
+    {
+        if (_wantsOpen) return;
+
+        _wantsOpen = true;
+        _plugin.Configuration.OverlayWantsOpen = true;
+        _plugin.Configuration.Save();
+    }
+
+    public override bool DrawConditions()
+    {
+        if (!_plugin.Configuration.OverlayEnabled)
+            return false;
+
+        // Config is authoritative
+        _wantsOpen = _plugin.Configuration.OverlayWantsOpen;
+        if (!_wantsOpen)
+            return false;
+
+        var retainerList = Plugin.GameGui.GetAddonByName("RetainerList", 1);
+        if (retainerList.IsNull)
+            return false;
+
+        const float OverlayW = 140f;
+        const float OverlayH = 38f;
+        ImGui.SetNextWindowSize(new Vector2(OverlayW, OverlayH), ImGuiCond.Always);
+
+        AnchorToRetainerList((AtkUnitBase*)retainerList.Address);
+        return true;
+    }
+
+    private void AnchorToRetainerList(AtkUnitBase* unit)
+    {
+        if (unit == null) return;
+
+        // RetainerList position + width
+        var x = unit->X;
+        var y = unit->Y;
+        var w = unit->GetScaledWidth(true);
+
+        // Change OverLay Left or Right. Increase to move left.
+        const float OverlayW = 145f;
+
+        // Default anchor behavior:
+        // - right edge aligned to RetainerList right edge
+        // - raised above the addon by RaiseY pixels
+        // - change OverLay Up or Down. Increase to raise.
+        const float RaiseY = 38f;
+
+        var overlayX = (x + w) - OverlayW + _plugin.Configuration.OverlayOffsetX;
+        var overlayY = (y - RaiseY) + _plugin.Configuration.OverlayOffsetY;
+
+        ImGui.SetNextWindowPos(new Vector2(overlayX, overlayY), ImGuiCond.Always);
+    }
+
     public override void Draw()
     {
-        ImGui.Text($"The random config bool is {plugin.Configuration.SomePropertyToBeSavedAndWithADefault}");
+        // Tight toolbar spacing
+        ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new Vector2(4, 3));
+        ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(6, 4));
 
-        if (ImGui.Button("Show Settings"))
+        // Start/Stop single toggle
+        var icon = _running ? FontAwesomeIcon.Stop : FontAwesomeIcon.Play;
+
+        ImGui.PushID("rr-startstop");
+        if (ImGuiComponents.IconButton(icon))
         {
-            plugin.ToggleConfigUi();
+            _running = !_running;
         }
+        ImGui.PopID();
 
-        ImGui.Spacing();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(_running ? "Stop" : "Start");
 
-        // Normally a BeginChild() would have to be followed by an unconditional EndChild(),
-        // ImRaii takes care of this after the scope ends.
-        // This works for all ImGui functions that require specific handling, examples are BeginTable() or Indent().
-        using (var child = ImRaii.Child("SomeChildWithAScrollbar", Vector2.Zero, true))
+        ImGui.SameLine();
+
+        // Config
+        ImGui.SameLine();
+
+        ImGui.PushID("rr-config");
+        if (ImGuiComponents.IconButton(FontAwesomeIcon.Cog))
         {
-            // Check if this child is drawing
-            if (child.Success)
-            {
-                ImGui.Text("Have a goat:");
-                var goatImage = Plugin.TextureProvider.GetFromFile(goatImagePath).GetWrapOrDefault();
-                if (goatImage != null)
-                {
-                    using (ImRaii.PushIndent(55f))
-                    {
-                        ImGui.Image(goatImage.Handle, goatImage.Size);
-                    }
-                }
-                else
-                {
-                    ImGui.Text("Image not found.");
-                }
-
-                ImGuiHelpers.ScaledDummy(20.0f);
-
-                // Example for other services that Dalamud provides.
-                // PlayerState provides a wrapper filled with information about the player character.
-
-                var playerState = Plugin.PlayerState;
-                if (!playerState.IsLoaded)
-                {
-                    ImGui.Text("Our local player is currently not logged in.");
-                    return;
-                }
-                
-                if (!playerState.ClassJob.IsValid)
-                {
-                    ImGui.Text("Our current job is currently not valid.");
-                    return;
-                }
-
-                // If you want to see the Macro representation of this SeString use `.ToMacroString()`
-                // More info about SeStrings: https://dalamud.dev/plugin-development/sestring/
-                ImGui.Text($"Our current job is ({playerState.ClassJob.RowId}) '{playerState.ClassJob.Value.Abbreviation}' with level {playerState.Level}");
-
-                // Example for querying Lumina, getting the name of our current area.
-                var territoryId = Plugin.ClientState.TerritoryType;
-                if (Plugin.DataManager.GetExcelSheet<TerritoryType>().TryGetRow(territoryId, out var territoryRow))
-                {
-                    ImGui.Text($"We are currently in ({territoryId}) '{territoryRow.PlaceName.Value.Name}'");
-                }
-                else
-                {
-                    ImGui.Text("Invalid territory.");
-                }
-            }
+            _plugin.ToggleConfigUi();
         }
+        ImGui.PopID();
+
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Config");
+
+        ImGui.SameLine();
+
+        // Minimal status text derived from state (no stored _status)
+        var status = _running ? "Running" : "Idle";
+
+        var avail = ImGui.GetContentRegionAvail().X;
+        var textW = ImGui.CalcTextSize(status).X;
+
+        // Push cursor to the right edge of the window
+        ImGui.SameLine(MathF.Max(0, ImGui.GetCursorPosX() + avail - textW));
+
+        ImGui.AlignTextToFramePadding();
+        ImGui.TextUnformatted(status);
+
+        // Optional: if you later need it for anchoring math
+        // var myHeight = ImGui.GetWindowSize().Y;
+
+        ImGui.PopStyleVar(2);
     }
 }

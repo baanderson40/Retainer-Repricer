@@ -1,12 +1,15 @@
 {
-  "Author": "your name here",
-  "Name": "Sample Plugin",
-  "Punchline": "A short one-liner that shows up in /xlplugins.",
-  "Description": "A description that shows up in /xlplugins. List any major slash-command(s).",
+  "Name": "Retainer Repricer",
+  "Author": "baanderson40",
+  "Punchline": "Retainer market repricing.",
+  "Description": "Provides a manual Start/Stop repricing overlay anchored to the Retainer List. Command: /repricer",
   "ApplicableVersion": "any",
+  "RepoUrl": "https://github.com/baanderson40/Retainer-Repricer",
   "Tags": [
-    "sample",
-    "plugin",
-    "goats"
-  ]
+    "market",
+    "retainer",
+    "economy"
+  ],
+  "AcceptsFeedback": true,
+  "FeedbackMessage": "Please report issues or suggestions via GitHub."
 }
