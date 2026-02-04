@@ -118,6 +118,32 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
+        if (a == "rldump")
+        {
+            var list = _ui.GetRetainerList();
+            if (list == null)
+            {
+                Log.Warning("[RL] RetainerList not found. Open the summoning bell RetainerList.");
+                return;
+            }
+
+            var count = list->GetItemCount();
+            Log.Information($"[RL] renderer count = {count}");
+
+            var max = Math.Min(count, 10);
+            for (int i = 0; i < max; i++)
+            {
+                var r = list->GetItemRenderer(i);
+                if (r == null) continue;
+
+                var name = _ui.ReadRendererText(r, Ui.NodePaths.RetainerNameNodeId);
+                Log.Information($"[RL] row {i}: name='{name}'");
+            }
+
+            return;
+        }
+
+
         // Default: toggle overlay intent
         MainWindow.ToggleIntent();
     }

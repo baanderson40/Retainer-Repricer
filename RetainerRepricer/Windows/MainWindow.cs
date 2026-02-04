@@ -21,6 +21,7 @@ public sealed unsafe class MainWindow : Window, IDisposable
 
     // Default anchor: raised above RetainerList
     private const float RaiseY = 38f;
+    private const float MoveX = 4f;
 
     public MainWindow(Plugin plugin)
         : base(
@@ -86,7 +87,7 @@ public sealed unsafe class MainWindow : Window, IDisposable
         var w = unit->GetScaledWidth(true);
 
         // Right-align overlay to RetainerList right edge, raise above by RaiseY
-        var overlayX = (x + w) - OverlayW + _plugin.Configuration.OverlayOffsetX;
+        var overlayX = (x + w) - MoveX - OverlayW + _plugin.Configuration.OverlayOffsetX;
         var overlayY = (y - RaiseY) + _plugin.Configuration.OverlayOffsetY;
 
         ImGui.SetNextWindowPos(new Vector2(overlayX, overlayY), ImGuiCond.Always);

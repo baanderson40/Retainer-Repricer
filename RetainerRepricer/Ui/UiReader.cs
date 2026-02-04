@@ -130,4 +130,32 @@ internal sealed unsafe class UiReader
             log($"[NodeList] i={i} id={n->NodeId} type={n->Type} x={n->X} y={n->Y}");
         }
     }
+    public AtkComponentList* GetRetainerList()
+    {
+        var addon = _gui.GetAddonByName("RetainerList", 1);
+        if (addon.IsNull) return null;
+
+        var unit = (AtkUnitBase*)addon.Address;
+        if (unit == null) return null;
+
+        var nl = unit->UldManager.NodeList;
+        var count = unit->UldManager.NodeListCount;
+        if (nl == null || count <= 0) return null;
+
+        for (int i = 0; i < count; i++)
+        {
+            var n = nl[i];
+            if (n == null) continue;
+            if (n->NodeId != NodePaths.RetainerListNodeId) continue;
+
+            var compNode = (AtkComponentNode*)n;
+            var comp = compNode->Component;
+            if (comp == null) return null;
+
+            return (AtkComponentList*)comp;
+        }
+
+        return null;
+    }
+
 }
