@@ -3,6 +3,9 @@ using Dalamud.Interface.Windowing;
 using Dalamud.IoC;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
+using ECommons;
+using ECommons.DalamudServices;
+using ECommons.UIHelpers.AddonMasterImplementations;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using RetainerRepricer.Windows;
 using System;
@@ -45,7 +48,8 @@ public sealed class Plugin : IDalamudPlugin
     {
         Idle,
         NeedOpen,               // ready to click next retainer row in RetainerList
-        WaitingSelectString,    // waiting for SelectString after clicking a retainer
+        WaitingTalk,            // waiting for Talk after clicking a retainer; click to advance
+        WaitingSelectString,    // waiting for SelectString after Talk closes
         WaitingRetainerSellList,// waiting for RetainerSellList after choosing Sell items
         WaitingReturn,          // waiting for user to return to RetainerList
     }
@@ -72,6 +76,10 @@ public sealed class Plugin : IDalamudPlugin
     // =========================================================
     public Plugin()
     {
+        // ECommons needs to be initialized early so Svc and AddonMaster work.
+        // If your ECommons version requires a different Init signature, adjust this line.
+        ECommonsMain.Init(PluginInterface, this);
+
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         Configuration.Initialize(PluginInterface);
 
@@ -85,7 +93,7 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "toggle | config | count | mbdump (debug) | mbnodelist (debug) | rldump (debug)"
+            HelpMessage = "toggle | config | count | talk (debug) | mbdump (debug) | mbnodelist (debug) | rldump (debug)"
         });
 
         PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
@@ -107,6 +115,8 @@ public sealed class Plugin : IDalamudPlugin
         MainWindow.Dispose();
 
         CommandManager.RemoveHandler(CommandName);
+
+        ECommonsMain.Dispose();
     }
 
     // =========================================================
@@ -125,17 +135,13 @@ public sealed class Plugin : IDalamudPlugin
         var unit = (AtkUnitBase*)addon.Address;
         if (unit == null) return false;
 
-        var values = stackalloc AtkValue[3];
+        var values = stackalloc AtkValue[2];
 
         values[0].Type = AtkValueType.Int;
         values[0].Int = 2;
 
         values[1].Type = AtkValueType.UInt;
         values[1].UInt = (uint)index;
-
-        // Matches your manual working pattern more closely.
-        values[2].Type = AtkValueType.Bool;
-        values[2].Bool = true;
 
         unit->FireCallback(3, values, true);
 
@@ -155,17 +161,39 @@ public sealed class Plugin : IDalamudPlugin
         var unit = (AtkUnitBase*)addon.Address;
         if (unit == null) return false;
 
-        var values = stackalloc AtkValue[2];
+        var values = stackalloc AtkValue[1];
 
         values[0].Type = AtkValueType.Int;
         values[0].Int = 2;
 
-        values[1].Type = AtkValueType.Bool;
-        values[1].Bool = true;
-
         unit->FireCallback(2, values, true);
 
         Log.Information("[SS] FireCallback: (Int=2, Bool=true)");
+        return true;
+    }
+
+    // =========================================================
+    // Talk advance via ECommons AddonMaster
+    // =========================================================
+    private unsafe bool ClickTalkECommons()
+    {
+        var addon = GameGui.GetAddonByName("Talk", 1);
+        if (addon.IsNull)
+        {
+            Log.Warning("[Talk] Talk addon not open.");
+            return false;
+        }
+
+        var unit = (AtkUnitBase*)addon.Address;
+        if (unit == null || !unit->IsVisible)
+        {
+            Log.Warning("[Talk] Talk addon not visible.");
+            return false;
+        }
+
+        // This is the same mechanism TextAdvance uses.
+        new AddonMaster.Talk(addon).Click();
+        Log.Information("[Talk] ECommons AddonMaster.Talk.Click()");
         return true;
     }
 
@@ -188,12 +216,21 @@ public sealed class Plugin : IDalamudPlugin
     private unsafe void OnCommand(string command, string args)
     {
         var a = (args ?? string.Empty).Trim().ToLowerInvariant();
+        Log.Information($"[CMD] raw args='{args}' parsed='{a}'");
 
         switch (a)
         {
             case "config":
                 ToggleConfigUi();
                 return;
+
+            case "talk":
+                {
+                    Log.Information("[TalkTest] entered /repricer talk");
+                    var ok = ClickTalkECommons();
+                    Log.Information(ok ? "[TalkTest] Sent (ECommons)" : "[TalkTest] Failed (ECommons)");
+                    return;
+                }
 
             case "mbnodelist":
                 _ui.DumpAddonNodeList("ItemSearchResult", s => Log.Information(s));
@@ -407,6 +444,7 @@ public sealed class Plugin : IDalamudPlugin
             return;
 
         var rlOpen = !GameGui.GetAddonByName("RetainerList", 1).IsNull;
+        var talkOpen = !GameGui.GetAddonByName("Talk", 1).IsNull;
         var ssOpen = !GameGui.GetAddonByName("SelectString", 1).IsNull;
         var sellListOpen = !GameGui.GetAddonByName("RetainerSellList", 1).IsNull;
 
@@ -430,6 +468,40 @@ public sealed class Plugin : IDalamudPlugin
                     _sellListCountCaptured = false;
                     ClickRetainerByIndex(row);
 
+                    _phase = RunPhase.WaitingTalk;
+
+                    _lastActionUtc = now;
+                    return;
+                }
+
+            case RunPhase.WaitingTalk:
+                {
+                    // If SelectString already opened (Talk skipped/instant), move on.
+                    if (ssOpen)
+                    {
+                        Log.Information($"[RR] SelectString opened for row {_runOrder[_runPos]}; choosing Sell items.");
+                        ClickSelectStringSellItems();
+
+                        _phase = RunPhase.WaitingRetainerSellList;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    // If Talk is open, click it to advance/close.
+                    if (talkOpen)
+                    {
+                        Log.Information($"[RR] Talk open for row {_runOrder[_runPos]}; clicking Talk advance.");
+                        var ok = ClickTalkECommons();
+                        Log.Information(ok ? "[RR] Talk click sent." : "[RR] Talk click failed.");
+
+                        // Stay in WaitingTalk until Talk closes or SelectString appears.
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    // Talk is not open and SelectString isn't open yet.
+                    // This is the common one-tick gap: Talk closes, then SelectString appears.
+                    Log.Information($"[RR] Talk closed for row {_runOrder[_runPos]}; waiting for SelectString.");
                     _phase = RunPhase.WaitingSelectString;
                     _lastActionUtc = now;
                     return;
@@ -437,6 +509,16 @@ public sealed class Plugin : IDalamudPlugin
 
             case RunPhase.WaitingSelectString:
                 {
+                    // If Talk appears late, handle it here and stay in this phase.
+                    if (talkOpen)
+                    {
+                        Log.Information($"[RR] Talk open (late) for row {_runOrder[_runPos]}; clicking Talk advance.");
+                        var ok = ClickTalkECommons();
+                        Log.Information(ok ? "[RR] Talk click sent." : "[RR] Talk click failed.");
+                        _lastActionUtc = now;
+                        return;
+                    }
+
                     if (!ssOpen) return;
 
                     Log.Information($"[RR] SelectString opened for row {_runOrder[_runPos]}; choosing Sell items.");
