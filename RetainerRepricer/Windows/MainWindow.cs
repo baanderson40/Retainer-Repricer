@@ -12,16 +12,20 @@ public sealed unsafe class MainWindow : Window, IDisposable
 {
     private readonly Plugin _plugin;
 
-    // Runtime state placeholder
-    private bool _running;
-
-    // Overlay size (keep consistent with anchor math)
+    // =========================================================
+    // Overlay sizing / anchoring
+    // =========================================================
     private const float OverlayW = 140f;
     private const float OverlayH = 38f;
 
-    // Default anchor: raised above RetainerList
     private const float RaiseY = 38f;
     private const float MoveX = 4f;
+
+    // =========================================================
+    // UI tick pacing (plugin has its own action pacing)
+    // =========================================================
+    private DateTime _lastTickUtc = DateTime.MinValue;
+    private const double TickIntervalSeconds = 0.25;
 
     public MainWindow(Plugin plugin)
         : base(
@@ -43,7 +47,9 @@ public sealed unsafe class MainWindow : Window, IDisposable
 
     public void Dispose() { }
 
-    // Toggle via /repricer (intent only)
+    // =========================================================
+    // Intent (overlay wants open/closed)
+    // =========================================================
     public void ToggleIntent()
     {
         var wants = !_plugin.Configuration.OverlayWantsOpen;
@@ -51,15 +57,16 @@ public sealed unsafe class MainWindow : Window, IDisposable
         _plugin.Configuration.Save();
     }
 
-    // Called by UiBuilder.OpenMainUi
     public void EnsureIntentOpen()
     {
         if (_plugin.Configuration.OverlayWantsOpen) return;
-
         _plugin.Configuration.OverlayWantsOpen = true;
         _plugin.Configuration.Save();
     }
 
+    // =========================================================
+    // DrawConditions
+    // =========================================================
     public override bool DrawConditions()
     {
         if (!_plugin.Configuration.OverlayEnabled)
@@ -68,9 +75,22 @@ public sealed unsafe class MainWindow : Window, IDisposable
         if (!_plugin.Configuration.OverlayWantsOpen)
             return false;
 
+        // IMPORTANT:
+        // Tick even if RetainerList is not visible, or we could miss SelectString/SellList transitions.
+        var now = DateTime.UtcNow;
+        if (_plugin.IsRunning && (now - _lastTickUtc).TotalSeconds >= TickIntervalSeconds)
+        {
+            _plugin.TickRun();
+            _lastTickUtc = now;
+        }
+
+        // Only DRAW/ANCHOR overlay when RetainerList is visible.
         var retainerList = Plugin.GameGui.GetAddonByName("RetainerList", 1);
         if (retainerList.IsNull)
             return false;
+
+        // Sync roster into config while RetainerList is open.
+        _plugin.TrySyncRetainersThrottled();
 
         ImGui.SetNextWindowSize(new Vector2(OverlayW, OverlayH), ImGuiCond.Always);
         AnchorToRetainerList((AtkUnitBase*)retainerList.Address);
@@ -86,32 +106,39 @@ public sealed unsafe class MainWindow : Window, IDisposable
         var y = unit->Y;
         var w = unit->GetScaledWidth(true);
 
-        // Right-align overlay to RetainerList right edge, raise above by RaiseY
         var overlayX = (x + w) - MoveX - OverlayW + _plugin.Configuration.OverlayOffsetX;
         var overlayY = (y - RaiseY) + _plugin.Configuration.OverlayOffsetY;
 
         ImGui.SetNextWindowPos(new Vector2(overlayX, overlayY), ImGuiCond.Always);
     }
 
+    // =========================================================
+    // Draw
+    // =========================================================
     public override void Draw()
     {
         ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new Vector2(4, 3));
         ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(6, 4));
 
         // Start/Stop toggle
-        var icon = _running ? FontAwesomeIcon.Stop : FontAwesomeIcon.Play;
+        var icon = _plugin.IsRunning ? FontAwesomeIcon.Stop : FontAwesomeIcon.Play;
 
         ImGui.PushID("rr-startstop");
         if (ImGuiComponents.IconButton(icon))
-            _running = !_running;
+        {
+            if (_plugin.IsRunning)
+                _plugin.StopRun();
+            else
+                _plugin.StartRunFromRetainerList();
+        }
         ImGui.PopID();
 
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(_running ? "Stop" : "Start");
+            ImGui.SetTooltip(_plugin.IsRunning ? "Stop" : "Start");
 
         ImGui.SameLine();
 
-        // Config
+        // Config button
         ImGui.PushID("rr-config");
         if (ImGuiComponents.IconButton(FontAwesomeIcon.Cog))
             _plugin.ToggleConfigUi();
@@ -120,9 +147,9 @@ public sealed unsafe class MainWindow : Window, IDisposable
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("Config");
 
-        // Right-aligned status text
+        // Right-aligned status
         ImGui.SameLine();
-        var status = _running ? "Running" : "Idle";
+        var status = _plugin.IsRunning ? "Running" : "Idle";
 
         var avail = ImGui.GetContentRegionAvail().X;
         var textW = ImGui.CalcTextSize(status).X;

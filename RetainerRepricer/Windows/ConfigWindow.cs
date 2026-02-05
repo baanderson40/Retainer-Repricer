@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Windowing;
 
@@ -6,34 +7,37 @@ namespace RetainerRepricer.Windows;
 
 public sealed class ConfigWindow : Window, IDisposable
 {
+    private readonly Plugin _plugin;
     private readonly Configuration _cfg;
 
     public ConfigWindow(Plugin plugin)
         : base("Retainer Repricer Configuration##Config")
     {
+        _plugin = plugin;
+        _cfg = plugin.Configuration;
+
         Flags = ImGuiWindowFlags.NoCollapse;
         SizeConstraints = new WindowSizeConstraints
         {
             MinimumSize = new(360, 180),
-            MaximumSize = new(800, 600)
+            MaximumSize = new(800, 600),
         };
-
-        _cfg = plugin.Configuration;
     }
 
     public void Dispose() { }
 
     public override void Draw()
     {
-        var enabled = _cfg.OverlayEnabled;
-        if (ImGui.Checkbox("Enable overlay on Retainer List", ref enabled))
+        // =========================================================
+        // Overlay settings
+        // =========================================================
+        var overlayEnabled = _cfg.OverlayEnabled;
+        if (ImGui.Checkbox("Enable overlay on Retainer List", ref overlayEnabled))
         {
-            _cfg.OverlayEnabled = enabled;
+            _cfg.OverlayEnabled = overlayEnabled;
 
-            if (!enabled)
-            {
+            if (!overlayEnabled)
                 _cfg.OverlayWantsOpen = false;
-            }
 
             _cfg.Save();
         }
@@ -46,7 +50,6 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         ImGui.Separator();
-
         ImGui.TextUnformatted("Overlay anchor offset");
 
         var ox = _cfg.OverlayOffsetX;
@@ -61,6 +64,48 @@ public sealed class ConfigWindow : Window, IDisposable
         {
             _cfg.OverlayOffsetY = oy;
             _cfg.Save();
+        }
+
+        // =========================================================
+        // Retainer enable/disable list
+        // =========================================================
+        ImGui.Separator();
+        ImGui.TextUnformatted("Retainers");
+
+        var keys = _cfg.RetainersEnabled.Keys
+            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (keys.Count == 0)
+        {
+            ImGui.TextUnformatted("Open the summoning bell retainer list, then reopen this config.");
+            return;
+        }
+
+        if (ImGui.Button("Enable all"))
+        {
+            foreach (var k in keys) _cfg.RetainersEnabled[k] = true;
+            _cfg.Save();
+        }
+
+        ImGui.SameLine();
+
+        if (ImGui.Button("Disable all"))
+        {
+            foreach (var k in keys) _cfg.RetainersEnabled[k] = false;
+            _cfg.Save();
+        }
+
+        ImGui.Spacing();
+
+        foreach (var name in keys)
+        {
+            var enabled = _cfg.RetainersEnabled[name];
+            if (ImGui.Checkbox(name, ref enabled))
+            {
+                _cfg.RetainersEnabled[name] = enabled;
+                _cfg.Save();
+            }
         }
     }
 }
