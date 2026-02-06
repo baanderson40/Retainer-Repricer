@@ -11,9 +11,6 @@ using RetainerRepricer.Windows;
 using System;
 using System.Collections.Generic;
 
-// Alias to avoid "ValueType" naming collisions and keep callsites clean.
-using AtkValueType = FFXIVClientStructs.FFXIV.Component.GUI.ValueType;
-
 namespace RetainerRepricer;
 
 public sealed class Plugin : IDalamudPlugin
@@ -47,11 +44,11 @@ public sealed class Plugin : IDalamudPlugin
     private enum RunPhase
     {
         Idle,
-        NeedOpen,               // ready to click next retainer row in RetainerList
-        WaitingTalk,            // waiting for Talk after clicking a retainer; click to advance
-        WaitingSelectString,    // waiting for SelectString after Talk closes
-        WaitingRetainerSellList,// waiting for RetainerSellList after choosing Sell items
-        WaitingReturn,          // waiting for user to return to RetainerList
+        NeedOpen,                // ready to click next retainer row in RetainerList
+        WaitingTalk,             // waiting for Talk after clicking a retainer; click to advance
+        WaitingSelectString,     // waiting for SelectString after Talk closes
+        WaitingRetainerSellList, // waiting for RetainerSellList after choosing Sell items
+        WaitingReturn,           // waiting for user to return to RetainerList
     }
 
     private RunPhase _phase = RunPhase.Idle;
@@ -77,7 +74,6 @@ public sealed class Plugin : IDalamudPlugin
     public Plugin()
     {
         // ECommons needs to be initialized early so Svc and AddonMaster work.
-        // If your ECommons version requires a different Init signature, adjust this line.
         ECommonsMain.Init(PluginInterface, this);
 
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
@@ -120,61 +116,59 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     // =========================================================
-    // UI Callbacks (FireCallback helpers)
+    // UI navigation (ECommons AddonMaster wrappers)
     // =========================================================
 
-    /// <summary>
-    /// Click a retainer row in RetainerList.
-    /// Observed args: Int=2, UInt=rowIndex, (Bool=true via callback/updateVisibility).
-    /// </summary>
     private unsafe bool ClickRetainerByIndex(int index)
     {
         var addon = GameGui.GetAddonByName("RetainerList", 1);
         if (addon.IsNull) return false;
 
-        var unit = (AtkUnitBase*)addon.Address;
-        if (unit == null) return false;
+        try
+        {
+            var rl = new AddonMaster.RetainerList(addon.Address);
+            var retainers = rl.Retainers;
 
-        var values = stackalloc AtkValue[2];
+            if (index < 0 || index >= retainers.Length) return false;
 
-        values[0].Type = AtkValueType.Int;
-        values[0].Int = 2;
+            var ok = retainers[index].Select();
+            Log.Information(ok
+                ? $"[RL] ECommons RetainerList select index={index}"
+                : $"[RL] ECommons RetainerList entry inactive index={index}");
 
-        values[1].Type = AtkValueType.UInt;
-        values[1].UInt = (uint)index;
-
-        unit->FireCallback(3, values, true);
-
-        Log.Information($"[RL] FireCallback: (Int=2, UInt={index}, Bool=true)");
-        return true;
+            return ok;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "[RL] ECommons RetainerList select failed.");
+            return false;
+        }
     }
 
-    /// <summary>
-    /// SelectString -> choose "Sell items"
-    /// Observed args: Int=2 (and close with Bool=true / updateVisibility)
-    /// </summary>
     private unsafe bool ClickSelectStringSellItems()
     {
         var addon = GameGui.GetAddonByName("SelectString", 1);
         if (addon.IsNull) return false;
 
-        var unit = (AtkUnitBase*)addon.Address;
-        if (unit == null) return false;
+        const int sellItemsIndex = 2; // 0-based: third entry
 
-        var values = stackalloc AtkValue[1];
+        try
+        {
+            var ss = new AddonMaster.SelectString(addon.Address);
 
-        values[0].Type = AtkValueType.Int;
-        values[0].Int = 2;
+            if (sellItemsIndex < 0 || sellItemsIndex >= ss.EntryCount) return false;
 
-        unit->FireCallback(2, values, true);
-
-        Log.Information("[SS] FireCallback: (Int=2, Bool=true)");
-        return true;
+            ss.Entries[sellItemsIndex].Select();
+            Log.Information($"[SS] ECommons SelectString select index={sellItemsIndex}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "[SS] ECommons SelectString select failed.");
+            return false;
+        }
     }
 
-    // =========================================================
-    // Talk advance via ECommons AddonMaster
-    // =========================================================
     private unsafe bool ClickTalkECommons()
     {
         var addon = GameGui.GetAddonByName("Talk", 1);
@@ -191,16 +185,14 @@ public sealed class Plugin : IDalamudPlugin
             return false;
         }
 
-        // This is the same mechanism TextAdvance uses.
-        new AddonMaster.Talk(addon).Click();
-        Log.Information("[Talk] ECommons AddonMaster.Talk.Click()");
+        new AddonMaster.Talk(addon.Address).Click();
+        Log.Information("[Talk] ECommons Talk click");
         return true;
     }
 
     // =========================================================
     // RetainerSellList helpers
     // =========================================================
-
     internal int? GetCurrentListedCount()
     {
         var raw = _ui.ReadAddonTextNode("RetainerSellList", Ui.NodePaths.RetainerSellList_CountNodeId);
@@ -438,7 +430,6 @@ public sealed class Plugin : IDalamudPlugin
     {
         if (!IsRunning) return;
 
-        // Pace all actions centrally so UI ticks can be faster than actions safely.
         var now = DateTime.UtcNow;
         if ((now - _lastActionUtc).TotalSeconds < ActionIntervalSeconds)
             return;
@@ -469,14 +460,12 @@ public sealed class Plugin : IDalamudPlugin
                     ClickRetainerByIndex(row);
 
                     _phase = RunPhase.WaitingTalk;
-
                     _lastActionUtc = now;
                     return;
                 }
 
             case RunPhase.WaitingTalk:
                 {
-                    // If SelectString already opened (Talk skipped/instant), move on.
                     if (ssOpen)
                     {
                         Log.Information($"[RR] SelectString opened for row {_runOrder[_runPos]}; choosing Sell items.");
@@ -487,20 +476,16 @@ public sealed class Plugin : IDalamudPlugin
                         return;
                     }
 
-                    // If Talk is open, click it to advance/close.
                     if (talkOpen)
                     {
                         Log.Information($"[RR] Talk open for row {_runOrder[_runPos]}; clicking Talk advance.");
                         var ok = ClickTalkECommons();
                         Log.Information(ok ? "[RR] Talk click sent." : "[RR] Talk click failed.");
 
-                        // Stay in WaitingTalk until Talk closes or SelectString appears.
                         _lastActionUtc = now;
                         return;
                     }
 
-                    // Talk is not open and SelectString isn't open yet.
-                    // This is the common one-tick gap: Talk closes, then SelectString appears.
                     Log.Information($"[RR] Talk closed for row {_runOrder[_runPos]}; waiting for SelectString.");
                     _phase = RunPhase.WaitingSelectString;
                     _lastActionUtc = now;
@@ -509,7 +494,6 @@ public sealed class Plugin : IDalamudPlugin
 
             case RunPhase.WaitingSelectString:
                 {
-                    // If Talk appears late, handle it here and stay in this phase.
                     if (talkOpen)
                     {
                         Log.Information($"[RR] Talk open (late) for row {_runOrder[_runPos]}; clicking Talk advance.");
@@ -542,7 +526,6 @@ public sealed class Plugin : IDalamudPlugin
                         Log.Information($"[RR] Listed count captured = {listed?.ToString() ?? "null"}");
                     }
 
-                    // For now, you manually exit back to RetainerList.
                     _phase = RunPhase.WaitingReturn;
                     _lastActionUtc = now;
                     return;
@@ -550,7 +533,6 @@ public sealed class Plugin : IDalamudPlugin
 
             case RunPhase.WaitingReturn:
                 {
-                    // Wait until we're back on RetainerList and other UIs are closed.
                     if (rlOpen && !sellListOpen && !ssOpen)
                     {
                         Log.Information("[RR] Back on RetainerList; ready for next retainer.");
@@ -592,7 +574,6 @@ public sealed class Plugin : IDalamudPlugin
     {
         if (string.IsNullOrWhiteSpace(s)) return null;
 
-        // Expect "19/20" but tolerate spaces or stray characters.
         int value = 0;
         bool any = false;
 
@@ -604,7 +585,7 @@ public sealed class Plugin : IDalamudPlugin
             {
                 any = true;
                 value = (value * 10) + (ch - '0');
-                if (value > 999) return 999; // sanity clamp
+                if (value > 999) return 999;
             }
         }
 
