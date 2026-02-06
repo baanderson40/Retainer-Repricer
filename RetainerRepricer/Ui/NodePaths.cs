@@ -21,4 +21,11 @@ internal static class NodePaths
     // RetainerSellList nodes
     // =========================================================
     public const int RetainerSellList_CountNodeId = 19; // "19/20" style
+
+    // =========================================================
+    // RetainerSell nodes
+    // =========================================================
+    public const int RetainerSell_ItemNameNodeId = 7;   // item name text (ends with HQ glyph when HQ)
+    public const int RetainerSell_AskingPriceNumericNodeId = 10; // NumericInput component node
+    public const ushort RetainerSell_AskingPriceTextNodeId = 5;  // child text node inside the component
 }

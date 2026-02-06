@@ -4,12 +4,13 @@ using Dalamud.IoC;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using ECommons;
-using ECommons.DalamudServices;
+using ECommons.Automation;
 using ECommons.UIHelpers.AddonMasterImplementations;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using RetainerRepricer.Windows;
 using System;
 using System.Collections.Generic;
+using System.Text;
 
 namespace RetainerRepricer;
 
@@ -44,11 +45,13 @@ public sealed class Plugin : IDalamudPlugin
     private enum RunPhase
     {
         Idle,
-        NeedOpen,                // ready to click next retainer row in RetainerList
-        WaitingTalk,             // waiting for Talk after clicking a retainer; click to advance
-        WaitingSelectString,     // waiting for SelectString after Talk closes
-        WaitingRetainerSellList, // waiting for RetainerSellList after choosing Sell items
-        WaitingReturn,           // waiting for user to return to RetainerList
+        NeedOpen,                 // ready to click next retainer row in RetainerList
+        WaitingTalk,              // waiting for Talk after clicking a retainer; click to advance
+        WaitingSelectString,      // waiting for SelectString after Talk closes
+        WaitingRetainerSellList,  // waiting for RetainerSellList after choosing Sell items
+        OpeningFirstSellItem,     // fire RetainerSellList callback to open item detail
+        WaitingRetainerSell,      // wait for RetainerSell to appear (and clear ContextMenu if needed)
+        WaitingReturn,            // waiting for user to return to RetainerList
     }
 
     private RunPhase _phase = RunPhase.Idle;
@@ -61,6 +64,7 @@ public sealed class Plugin : IDalamudPlugin
 
     // When we enter RetainerSellList, capture listed count once.
     private bool _sellListCountCaptured;
+    private int _slotIndexToOpen = 0; // 0-based slot in RetainerSellList you want to open first
 
     // =========================================================
     // Retainer name sync -> Configuration
@@ -89,7 +93,7 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "toggle | config | count | talk (debug) | mbdump (debug) | mbnodelist (debug) | rldump (debug)"
+            HelpMessage = "toggle | config | count | talk (debug) | hqdump (debug) | mbdump (debug) | mbnodelist (debug) | rldump (debug)"
         });
 
         PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
@@ -116,9 +120,82 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     // =========================================================
+    // Commands
+    // =========================================================
+    private unsafe void OnCommand(string command, string args)
+    {
+        var a = (args ?? string.Empty).Trim().ToLowerInvariant();
+        Log.Information($"[CMD] raw args='{args}' parsed='{a}'");
+
+        switch (a)
+        {
+            case "config":
+                ToggleConfigUi();
+                return;
+
+            case "talk":
+                {
+                    Log.Information("[TalkTest] entered /repricer talk");
+                    var ok = ClickTalkECommons();
+                    Log.Information(ok ? "[TalkTest] Sent (ECommons)" : "[TalkTest] Failed (ECommons)");
+                    return;
+                }
+
+            case "hqdump":
+                {
+                    // Asking price
+                    var priceText = _ui.ReadRetainerSellAskingPriceText();
+                    var asking = _ui.ReadRetainerSellAskingPrice();
+                    Log.Information($"[RS] askingPrice raw='{priceText}' parsed={asking?.ToString() ?? "null"}");
+
+                    // Item name + HQ glyph
+                    var rawName = _ui.ReadRetainerSellItemNameRaw();
+                    var cleaned = _ui.NormalizeItemName(rawName);
+                    var isHq = _ui.RetainerSellNameContainsHqGlyph(rawName);
+
+                    Log.Information($"[HQ] raw='{rawName}'");
+                    Log.Information($"[HQ] cleaned='{cleaned}'");
+                    Log.Information($"[HQ] containsHqGlyph={isHq} (glyph U+{(int)Ui.UiReader.RetainerSell_HqGlyphChar:X4})");
+                    return;
+                }
+
+            case "mbnodelist":
+                _ui.DumpAddonNodeList("ItemSearchResult", s => Log.Information(s));
+                return;
+
+            case "mbdump":
+                DumpMarketRows();
+                return;
+
+            case "rldump":
+                DumpRetainerRows();
+                return;
+
+            case "count":
+                {
+                    var raw = _ui.ReadRetainerSellListCountText();
+                    var count = _ui.ReadRetainerSellListListedCount();
+
+                    if (count == null)
+                    {
+                        Log.Warning("[Count] Listed count returned null (open RetainerSellList first).");
+                        return;
+                    }
+
+                    Log.Information($"[Count] Listed = {count} (raw='{raw}')");
+                    return;
+                }
+
+            default:
+                // /repricer (no args) toggles overlay intent
+                MainWindow.ToggleIntent();
+                return;
+        }
+    }
+
+    // =========================================================
     // UI navigation (ECommons AddonMaster wrappers)
     // =========================================================
-
     private unsafe bool ClickRetainerByIndex(int index)
     {
         var addon = GameGui.GetAddonByName("RetainerList", 1);
@@ -190,71 +267,40 @@ public sealed class Plugin : IDalamudPlugin
         return true;
     }
 
-    // =========================================================
-    // RetainerSellList helpers
-    // =========================================================
-    internal int? GetCurrentListedCount()
+    private unsafe bool FireRetainerSellList_OpenItem(int slotIndex0)
     {
-        var raw = _ui.ReadAddonTextNode("RetainerSellList", Ui.NodePaths.RetainerSellList_CountNodeId);
-        var count = ParseListedCount(raw);
+        var addon = GameGui.GetAddonByName("RetainerSellList", 1);
+        if (addon.IsNull) return false;
 
-        Log.Information($"[RSL] Listed count text='{raw}' parsed={count?.ToString() ?? "null"}");
-        return count;
+        var unit = (AtkUnitBase*)addon.Address;
+        if (unit == null || !unit->IsVisible) return false;
+
+        // Lua: /pcall RetainerSellList true 0 idx 1
+        Callback.Fire(unit, updateState: true, 0, slotIndex0, 1);
+
+        Log.Information($"[RSL] FireCallback open item: (0, {slotIndex0}, 1)");
+        return true;
+    }
+
+    private unsafe bool FireContextMenuDismiss()
+    {
+        var addon = GameGui.GetAddonByName("ContextMenu", 1);
+        if (addon.IsNull) return false;
+
+        var unit = (AtkUnitBase*)addon.Address;
+        if (unit == null || !unit->IsVisible) return false;
+
+        // Lua tries (0,0) then (1,0) to clear it; keep both.
+        Callback.Fire(unit, updateState: true, 0, 0);
+        Callback.Fire(unit, updateState: true, 1, 0);
+
+        Log.Information("[CTX] FireCallback dismiss tried: (0,0) then (1,0)");
+        return true;
     }
 
     // =========================================================
-    // Commands
+    // Debug: dump market/retainer list rows
     // =========================================================
-    private unsafe void OnCommand(string command, string args)
-    {
-        var a = (args ?? string.Empty).Trim().ToLowerInvariant();
-        Log.Information($"[CMD] raw args='{args}' parsed='{a}'");
-
-        switch (a)
-        {
-            case "config":
-                ToggleConfigUi();
-                return;
-
-            case "talk":
-                {
-                    Log.Information("[TalkTest] entered /repricer talk");
-                    var ok = ClickTalkECommons();
-                    Log.Information(ok ? "[TalkTest] Sent (ECommons)" : "[TalkTest] Failed (ECommons)");
-                    return;
-                }
-
-            case "mbnodelist":
-                _ui.DumpAddonNodeList("ItemSearchResult", s => Log.Information(s));
-                return;
-
-            case "mbdump":
-                DumpMarketRows();
-                return;
-
-            case "rldump":
-                DumpRetainerRows();
-                return;
-
-            case "count":
-                {
-                    var count = GetCurrentListedCount();
-                    if (count == null)
-                    {
-                        Log.Warning("[Count] Listed count returned null (open RetainerSellList first).");
-                        return;
-                    }
-                    Log.Information($"[Count] Listed = {count}");
-                    return;
-                }
-
-            default:
-                // /repricer (no args) toggles overlay intent
-                MainWindow.ToggleIntent();
-                return;
-        }
-    }
-
     private unsafe void DumpMarketRows()
     {
         var list = _ui.GetMarketList();
@@ -280,7 +326,7 @@ public sealed class Plugin : IDalamudPlugin
             _ui.DumpHqIconState(r, i, s => Log.Information(s));
             var isHq = _ui.RowIsHq(r);
 
-            var unit = ParseGil(unitRaw);
+            var unit = Ui.UiReader.ParseGil(unitRaw);
             var qty = int.TryParse(qtyRaw, out var q) ? q : 0;
 
             Log.Information($"[MB] row {i}: seller={seller} unit={unit} qty={qty} hq={(isHq ? "HQ" : "NQ")}");
@@ -522,11 +568,44 @@ public sealed class Plugin : IDalamudPlugin
                     if (!_sellListCountCaptured)
                     {
                         _sellListCountCaptured = true;
-                        var listed = GetCurrentListedCount();
-                        Log.Information($"[RR] Listed count captured = {listed?.ToString() ?? "null"}");
+                        var raw = _ui.ReadRetainerSellListCountText();
+                        var listed = _ui.ReadRetainerSellListListedCount();
+                        Log.Information($"[RR] Listed count captured = {listed?.ToString() ?? "null"} (raw='{raw}')");
                     }
 
-                    _phase = RunPhase.WaitingReturn;
+                    _slotIndexToOpen = 0;
+                    _phase = RunPhase.OpeningFirstSellItem;
+                    _lastActionUtc = now;
+                    return;
+                }
+
+            case RunPhase.OpeningFirstSellItem:
+                {
+                    if (!sellListOpen) return;
+
+                    var idx = Math.Clamp(_slotIndexToOpen, 0, 19);
+                    if (!FireRetainerSellList_OpenItem(idx))
+                        return;
+
+                    _phase = RunPhase.WaitingRetainerSell;
+                    _lastActionUtc = now;
+                    return;
+                }
+
+            case RunPhase.WaitingRetainerSell:
+                {
+                    var ctxOpen = !GameGui.GetAddonByName("ContextMenu", 1).IsNull;
+                    if (ctxOpen)
+                    {
+                        FireContextMenuDismiss();
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    var sellOpen = !GameGui.GetAddonByName("RetainerSell", 1).IsNull;
+                    if (!sellOpen) return;
+
+                    Log.Information($"[RR] RetainerSell opened for slot {_slotIndexToOpen}.");
                     _lastActionUtc = now;
                     return;
                 }
@@ -548,52 +627,7 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     // =========================================================
-    // Parsing Helpers
-    // =========================================================
-    private static int? ParseGil(string? s)
-    {
-        if (string.IsNullOrWhiteSpace(s)) return null;
-
-        long value = 0;
-        bool any = false;
-
-        foreach (var ch in s)
-        {
-            if (ch >= '0' && ch <= '9')
-            {
-                any = true;
-                value = (value * 10) + (ch - '0');
-                if (value > int.MaxValue) return int.MaxValue;
-            }
-        }
-
-        return any ? (int)value : null;
-    }
-
-    public static int? ParseListedCount(string? s)
-    {
-        if (string.IsNullOrWhiteSpace(s)) return null;
-
-        int value = 0;
-        bool any = false;
-
-        foreach (var ch in s)
-        {
-            if (ch == '/') break;
-
-            if (ch >= '0' && ch <= '9')
-            {
-                any = true;
-                value = (value * 10) + (ch - '0');
-                if (value > 999) return 999;
-            }
-        }
-
-        return any ? value : null;
-    }
-
-    // =========================================================
-    // UI helpers
+    // Window helpers
     // =========================================================
     public void ToggleConfigUi() => ConfigWindow.Toggle();
     private void OpenMainUi() => MainWindow.EnsureIntentOpen();
