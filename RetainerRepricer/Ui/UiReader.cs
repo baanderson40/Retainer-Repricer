@@ -16,7 +16,16 @@ internal sealed unsafe class UiReader
     // =========================================================
     // Observed HQ marker glyph inside RetainerSell item name payload.
     // This is NOT the last character due to SeString/control payload bytes.
-    public const char RetainerSell_HqGlyphChar = '\uE03C'; // 
+    public const char RetainerSell_HqGlyphChar = '\uE03C';
+
+
+    public enum ItemSearchResultStatus
+    {
+        None,
+        NoItemsFound,
+        PleaseWaitRetry,
+        OtherMessage,
+    }
 
     // =========================================================
     // Core addon/unit helpers
@@ -232,6 +241,49 @@ internal sealed unsafe class UiReader
         }
 
         log($"[HQ] row {rowIndex}: draw=0x{n->DrawFlags:X} a={n->Color.A}");
+    }
+
+    // =========================================================
+    // ItemSearchResult: error/status message (NodeId 5)
+    // =========================================================
+    public string GetItemSearchResultErrorMessage()
+    {
+        // Message is empty/null when no error/status.
+        var raw = ReadAddonTextNode("ItemSearchResult", NodePaths.ItemSearchResult_ErrorMessageNodeId);
+        return NormalizeStatusText(raw);
+    }
+
+    public ItemSearchResultStatus GetItemSearchResultStatus(out string message)
+    {
+        message = GetItemSearchResultErrorMessage();
+        if (string.IsNullOrWhiteSpace(message))
+            return ItemSearchResultStatus.None;
+
+        // Exact strings you care about (match your screenshots).
+        // Use OrdinalIgnoreCase + Contains to survive punctuation/spacing variations.
+        if (message.Contains("No items found", StringComparison.OrdinalIgnoreCase))
+            return ItemSearchResultStatus.NoItemsFound;
+
+        if (message.Contains("Please wait and try your search again", StringComparison.OrdinalIgnoreCase))
+            return ItemSearchResultStatus.PleaseWaitRetry;
+
+        return ItemSearchResultStatus.OtherMessage;
+    }
+
+    private static string NormalizeStatusText(string? raw)
+    {
+        // Similar spirit to NormalizeItemName, but for normal UI text messages:
+        // Keep printable ASCII; strip control/payload chars; trim.
+        if (string.IsNullOrWhiteSpace(raw)) return string.Empty;
+
+        var sb = new StringBuilder(raw.Length);
+        foreach (var ch in raw)
+        {
+            if (ch >= 0x20 && ch <= 0x7E)
+                sb.Append(ch);
+        }
+
+        return sb.ToString().Trim();
     }
 
     // =========================================================

@@ -1,11 +1,3 @@
-// Drop-in replacement Plugin.cs (readability refactor only; preserves all gates + behavior)
-//
-// Changes are strictly naming + small helper extraction.
-// NO phase sequencing changes. NO added/removes of waits/gates.
-//
-// NOTE: If you already have other members below this snippet (other windows, etc.),
-// keep them—this is meant to replace your current Plugin.cs contents as posted.
-
 using Dalamud.Game.Command;
 using Dalamud.Interface.Windowing;
 using Dalamud.IoC;
@@ -38,6 +30,9 @@ public sealed class Plugin : IDalamudPlugin
     private const double ActionIntervalSeconds = 0.75;     // pacing between actions (safe while testing)
     private const double RetainerSyncIntervalSeconds = 2.0;
     private const int UndercutAmount = 1;
+
+    // Throttle handling (ItemSearchResult: "Please wait and try your search again")
+    private const double ItemSearchResultThrottleBackoffSeconds = 5.0;
 
     public Configuration Configuration { get; }
     public readonly WindowSystem WindowSystem = new("RetainerRepricer");
@@ -98,6 +93,10 @@ public sealed class Plugin : IDalamudPlugin
     private string _stagedReferenceSeller = string.Empty;
     private bool _stagedReferenceIsMine;
     private bool _hasAppliedStagedPrice;
+
+    // ItemSearchResult throttle handling (one retry policy)
+    private bool _isrThrottleRetried;
+    private DateTime _isrThrottleUntilUtc = DateTime.MinValue;
 
     // Retainer name sync -> Configuration
     private DateTime _lastRetainerSyncUtc = DateTime.MinValue;
@@ -764,7 +763,7 @@ public sealed class Plugin : IDalamudPlugin
                 }
 
             // =========================================================
-            // Repricing pipeline (behavior preserved)
+            // Repricing pipeline (behavior preserved + ISR message gate)
             // =========================================================
 
             case RunPhase.CaptureSellContext:
@@ -789,6 +788,10 @@ public sealed class Plugin : IDalamudPlugin
                 {
                     if (!retainerSellVisible) return;
 
+                    // Reset ISR throttle policy per item
+                    _isrThrottleRetried = false;
+                    _isrThrottleUntilUtc = DateTime.MinValue;
+
                     var addon = GameGui.GetAddonByName("RetainerSell", 1);
                     if (addon.IsNull) return;
 
@@ -804,6 +807,62 @@ public sealed class Plugin : IDalamudPlugin
                 {
                     if (!marketOpen) return;
 
+                    // Gate 0: ItemSearchResult error/status message (NodeId 5)
+                    var status = _ui.GetItemSearchResultStatus(out var msg);
+
+                    if (status == Ui.UiReader.ItemSearchResultStatus.NoItemsFound)
+                    {
+                        Log.Information($"[RR] ISR: '{msg}' -> no competing listings; skip repricing.");
+                        _phase = RunPhase.CleanupAfterItem;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    if (status == Ui.UiReader.ItemSearchResultStatus.PleaseWaitRetry)
+                    {
+                        // Still in backoff window: just wait (do not spam actions).
+                        if (now < _isrThrottleUntilUtc)
+                            return;
+
+                        // First time: set backoff and wait.
+                        if (!_isrThrottleRetried && _isrThrottleUntilUtc == DateTime.MinValue)
+                        {
+                            _isrThrottleUntilUtc = now.AddSeconds(ItemSearchResultThrottleBackoffSeconds);
+                            Log.Warning("[RR] ISR throttle: 'Please wait...' -> backing off 5s then retry once.");
+                            return;
+                        }
+
+                        // Backoff elapsed: retry once by re-clicking Compare Prices (refresh without closing ISR).
+                        if (!_isrThrottleRetried)
+                        {
+                            var sellAddon = GameGui.GetAddonByName("RetainerSell", 1);
+                            if (sellAddon.IsNull) return;
+
+                            new AddonMaster.RetainerSell(sellAddon.Address).ComparePrices();
+                            _isrThrottleRetried = true;
+                            _isrThrottleUntilUtc = DateTime.MinValue;
+
+                            Log.Warning("[RR] ISR throttle: retry sent (Compare Prices).");
+                            _lastActionUtc = now;
+                            return;
+                        }
+
+                        // Retried once and still throttled: move on (no price change).
+                        Log.Warning("[RR] ISR throttle: still 'Please wait...' after one retry -> skip item.");
+                        _phase = RunPhase.CleanupAfterItem;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    if (status == Ui.UiReader.ItemSearchResultStatus.OtherMessage)
+                    {
+                        Log.Warning($"[RR] ISR message: '{msg}' -> skipping item.");
+                        _phase = RunPhase.CleanupAfterItem;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    // Existing readiness gates
                     var list = _ui.GetMarketList();
                     if (list == null)
                     {
@@ -830,6 +889,33 @@ public sealed class Plugin : IDalamudPlugin
                 {
                     if (!retainerSellVisible) return;
                     if (!marketOpen) return;
+
+                    // Defensive: if message appears late, honor it.
+                    var status = _ui.GetItemSearchResultStatus(out var msg);
+
+                    if (status == Ui.UiReader.ItemSearchResultStatus.NoItemsFound)
+                    {
+                        Log.Information($"[RR] ISR: '{msg}' -> no competing listings; skip repricing.");
+                        _phase = RunPhase.CleanupAfterItem;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    if (status == Ui.UiReader.ItemSearchResultStatus.PleaseWaitRetry)
+                    {
+                        Log.Warning("[RR] ISR throttle surfaced during read -> returning to ISR gate.");
+                        _phase = RunPhase.WaitingItemSearchResult;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    if (status == Ui.UiReader.ItemSearchResultStatus.OtherMessage)
+                    {
+                        Log.Warning($"[RR] ISR message: '{msg}' -> skipping item.");
+                        _phase = RunPhase.CleanupAfterItem;
+                        _lastActionUtc = now;
+                        return;
+                    }
 
                     if (!TryPickReferenceListing(out var lowestPrice, out var lowestSeller))
                     {
