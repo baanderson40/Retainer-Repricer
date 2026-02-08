@@ -19,9 +19,9 @@ internal sealed unsafe class UiReader
     public const char RetainerSell_HqGlyphChar = '\uE03C'; // 
 
     // =========================================================
-    // Addon / Unit / NodeList helpers
+    // Core addon/unit helpers
     // =========================================================
-    private AtkUnitBase* GetUnitBase(string addonName, int index = 1)
+    private AtkUnitBase* GetVisibleUnitBase(string addonName, int index = 1)
     {
         var addon = _gui.GetAddonByName(addonName, index);
         if (addon.IsNull) return null;
@@ -32,26 +32,64 @@ internal sealed unsafe class UiReader
         return unit;
     }
 
-    public AtkComponentBase* GetAddonComponent(string addonName, int componentNodeId)
+    private static AtkResNode* FindNodeById(AtkUldManager* uld, int nodeId)
     {
-        var unit = GetUnitBase(addonName, 1);
-        if (unit == null) return null;
+        if (uld == null) return null;
 
-        var nl = unit->UldManager.NodeList;
-        var count = unit->UldManager.NodeListCount;
-        if (nl == null || count <= 0) return null;
+        var nodes = uld->NodeList;
+        var count = uld->NodeListCount;
+        if (nodes == null || count <= 0) return null;
 
         for (int i = 0; i < count; i++)
         {
-            var n = nl[i];
+            var n = nodes[i];
             if (n == null) continue;
-            if (n->NodeId != componentNodeId) continue;
-
-            var compNode = (AtkComponentNode*)n;
-            return compNode->Component;
+            if (n->NodeId == nodeId) return n;
         }
 
         return null;
+    }
+
+    private static AtkResNode* FindNodeById(AtkComponentBase* comp, ushort nodeId)
+    {
+        if (comp == null) return null;
+
+        var uld = &comp->UldManager;
+        var nodes = uld->NodeList;
+        var count = uld->NodeListCount;
+        if (nodes == null || count <= 0) return null;
+
+        for (int i = 0; i < count; i++)
+        {
+            var n = nodes[i];
+            if (n == null) continue;
+            if (n->NodeId == nodeId) return n;
+        }
+
+        return null;
+    }
+
+    private static string? ReadTextNode(AtkResNode* node)
+    {
+        if (node == null) return null;
+        if (node->Type != NodeType.Text) return null;
+
+        return ((AtkTextNode*)node)->NodeText.ToString();
+    }
+
+    // =========================================================
+    // Addon / Component helpers
+    // =========================================================
+    public AtkComponentBase* GetAddonComponent(string addonName, int componentNodeId)
+    {
+        var unit = GetVisibleUnitBase(addonName, 1);
+        if (unit == null) return null;
+
+        var n = FindNodeById(&unit->UldManager, componentNodeId);
+        if (n == null) return null;
+
+        var compNode = (AtkComponentNode*)n;
+        return compNode->Component;
     }
 
     // =========================================================
@@ -59,24 +97,11 @@ internal sealed unsafe class UiReader
     // =========================================================
     public string? ReadAddonTextNode(string addonName, int nodeId)
     {
-        var unit = GetUnitBase(addonName, 1);
+        var unit = GetVisibleUnitBase(addonName, 1);
         if (unit == null) return null;
 
-        var uld = unit->UldManager;
-        var count = uld.NodeListCount;
-        if (count <= 0 || uld.NodeList == null) return null;
-
-        for (int i = 0; i < count; i++)
-        {
-            var node = uld.NodeList[i];
-            if (node == null) continue;
-            if (node->NodeId != nodeId) continue;
-            if (node->Type != NodeType.Text) return null;
-
-            return ((AtkTextNode*)node)->NodeText.ToString();
-        }
-
-        return null;
+        var n = FindNodeById(&unit->UldManager, nodeId);
+        return ReadTextNode(n);
     }
 
     // =========================================================
@@ -84,24 +109,8 @@ internal sealed unsafe class UiReader
     // =========================================================
     public string? ReadComponentTextNode(AtkComponentBase* comp, ushort nodeId)
     {
-        if (comp == null) return null;
-
-        var uld = comp->UldManager;
-        var nodes = uld.NodeList;
-        var count = uld.NodeListCount;
-        if (nodes == null || count <= 0) return null;
-
-        for (int i = 0; i < count; i++)
-        {
-            var n = nodes[i];
-            if (n == null) continue;
-            if (n->NodeId != nodeId) continue;
-            if (n->Type != NodeType.Text) return null;
-
-            return ((AtkTextNode*)n)->NodeText.ToString();
-        }
-
-        return null;
+        var n = FindNodeById(comp, nodeId);
+        return ReadTextNode(n);
     }
 
     // =========================================================
@@ -114,9 +123,9 @@ internal sealed unsafe class UiReader
     {
         if (renderer == null) return null;
 
-        var uld = renderer->UldManager;
-        var nodes = uld.NodeList;
-        var count = uld.NodeListCount;
+        var uld = &renderer->UldManager;
+        var nodes = uld->NodeList;
+        var count = uld->NodeListCount;
         if (nodes == null || count <= 0) return null;
 
         for (int i = 0; i < count; i++)
@@ -124,9 +133,8 @@ internal sealed unsafe class UiReader
             var n = nodes[i];
             if (n == null) continue;
             if (n->NodeId != nodeId) continue;
-            if (n->Type != NodeType.Text) return null;
 
-            return ((AtkTextNode*)n)->NodeText.ToString();
+            return ReadTextNode(n);
         }
 
         return null;
@@ -136,9 +144,9 @@ internal sealed unsafe class UiReader
     {
         if (renderer == null) return null;
 
-        var uld = renderer->UldManager;
-        var nodes = uld.NodeList;
-        var count = uld.NodeListCount;
+        var uld = &renderer->UldManager;
+        var nodes = uld->NodeList;
+        var count = uld->NodeListCount;
         if (nodes == null || count <= 0) return null;
 
         for (int i = 0; i < count; i++)
@@ -156,27 +164,52 @@ internal sealed unsafe class UiReader
     // =========================================================
     public AtkComponentList* GetMarketList()
     {
-        var unit = GetUnitBase("ItemSearchResult", 1);
+        // NOTE: do not require visible here; list can be valid while animating in.
+        var addon = _gui.GetAddonByName("ItemSearchResult", 1);
+        if (addon.IsNull) return null;
+
+        var unit = (AtkUnitBase*)addon.Address;
         if (unit == null) return null;
 
-        var nl = unit->UldManager.NodeList;
-        var count = unit->UldManager.NodeListCount;
-        if (nl == null || count <= 0) return null;
+        var n = FindNodeById(&unit->UldManager, NodePaths.ItemSearchResult_ListNodeId); // list component node
+        if (n == null) return null;
 
-        for (int i = 0; i < count; i++)
-        {
-            var n = nl[i];
-            if (n == null) continue;
-            if (n->NodeId != 26) continue; // known node id for AtkComponentList
+        var compNode = (AtkComponentNode*)n;
+        var comp = compNode->Component;
+        return comp != null ? (AtkComponentList*)comp : null;
+    }
 
-            var compNode = (AtkComponentNode*)n;
-            var comp = compNode->Component;
-            if (comp == null) return null;
+    // (Kept private; plugin has its own TryReadMarketRow and uses RowIsHq/ReadRendererText)
+    private bool TryReadMarketRow(int rowIndex, out int unitPrice, out string seller, out bool isHq)
+    {
+        unitPrice = 0;
+        seller = string.Empty;
+        isHq = false;
 
-            return (AtkComponentList*)comp;
-        }
+        var list = GetMarketList();
+        if (list == null) return false;
 
-        return null;
+        var count = list->GetItemCount();
+        if (count <= 0 || rowIndex < 0 || rowIndex >= count) return false;
+
+        var r = list->GetItemRenderer(rowIndex);
+        if (r == null) return false;
+
+        // CRITICAL: renderer uld can be null/empty while rows are constructing
+        if (r->UldManager.NodeList == null || r->UldManager.NodeListCount <= 0)
+            return false;
+
+        isHq = RowIsHq(r);
+
+        var unitRaw = ReadRendererText(r, NodePaths.UnitPriceNodeId);
+        var sellerRaw = ReadRendererText(r, NodePaths.SellerNodeId);
+
+        var parsed = ParseGil(unitRaw);
+        if (parsed == null || parsed.Value <= 0) return false;
+
+        unitPrice = parsed.Value;
+        seller = (sellerRaw ?? string.Empty).Trim('\'', ' ');
+        return true;
     }
 
     public bool RowIsHq(AtkComponentListItemRenderer* renderer)
@@ -206,27 +239,15 @@ internal sealed unsafe class UiReader
     // =========================================================
     public AtkComponentList* GetRetainerList()
     {
-        var unit = GetUnitBase("RetainerList", 1);
+        var unit = GetVisibleUnitBase("RetainerList", 1);
         if (unit == null) return null;
 
-        var nl = unit->UldManager.NodeList;
-        var count = unit->UldManager.NodeListCount;
-        if (nl == null || count <= 0) return null;
+        var n = FindNodeById(&unit->UldManager, NodePaths.RetainerListNodeId);
+        if (n == null) return null;
 
-        for (int i = 0; i < count; i++)
-        {
-            var n = nl[i];
-            if (n == null) continue;
-            if (n->NodeId != NodePaths.RetainerListNodeId) continue;
-
-            var compNode = (AtkComponentNode*)n;
-            var comp = compNode->Component;
-            if (comp == null) return null;
-
-            return (AtkComponentList*)comp;
-        }
-
-        return null;
+        var compNode = (AtkComponentNode*)n;
+        var comp = compNode->Component;
+        return comp != null ? (AtkComponentList*)comp : null;
     }
 
     // =========================================================
@@ -267,10 +288,7 @@ internal sealed unsafe class UiReader
         => !string.IsNullOrEmpty(raw) && raw.IndexOf(RetainerSell_HqGlyphChar) >= 0;
 
     public bool IsRetainerSellItemHq()
-    {
-        var raw = ReadRetainerSellItemNameRaw();
-        return RetainerSellNameContainsHqGlyph(raw);
-    }
+        => RetainerSellNameContainsHqGlyph(ReadRetainerSellItemNameRaw());
 
     public string GetRetainerSellItemNameDisplay(bool stripHqGlyph = true)
     {
@@ -336,7 +354,7 @@ internal sealed unsafe class UiReader
     }
 
     // =========================================================
-    // Parsing helpers (moved from Plugin; keep behavior identical)
+    // Parsing helpers
     // =========================================================
     public static int? ParseGil(string? s)
     {
@@ -413,5 +431,32 @@ internal sealed unsafe class UiReader
 
             log($"[NodeList] i={i} id={n->NodeId} type={n->Type} x={n->X} y={n->Y}");
         }
+    }
+
+    public static string DumpNonAsciiCodepoints(string? raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return "<null/empty>";
+
+        var sb = new StringBuilder();
+        foreach (var ch in raw)
+        {
+            if (ch < 0x20 || ch > 0x7E)
+                sb.Append($"U+{(int)ch:X4} ");
+        }
+        return sb.Length == 0 ? "<none>" : sb.ToString().Trim();
+    }
+
+    private int FindVisibleAddonIndex(string name, int max = 5)
+    {
+        for (int i = 1; i <= max; i++)
+        {
+            var a = _gui.GetAddonByName(name, i);
+            if (a.IsNull) continue;
+
+            var u = (AtkUnitBase*)a.Address;
+            if (u != null && u->IsVisible)
+                return i;
+        }
+        return -1;
     }
 }

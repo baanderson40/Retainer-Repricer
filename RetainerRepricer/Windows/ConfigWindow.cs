@@ -24,29 +24,42 @@ public sealed class ConfigWindow : Window, IDisposable
         };
     }
 
-    public void Dispose() { }
+    public void Dispose()
+    {
+        // nothing to dispose
+    }
 
     public override void Draw()
     {
-        // =========================================================
-        // Overlay settings
-        // =========================================================
+        DrawOverlaySettings();
+
+        ImGui.Separator();
+
+        DrawRetainerEnableList();
+    }
+
+    // =========================================================
+    // Overlay settings
+    // =========================================================
+    private void DrawOverlaySettings()
+    {
         var overlayEnabled = _cfg.OverlayEnabled;
         if (ImGui.Checkbox("Enable overlay on Retainer List", ref overlayEnabled))
         {
             _cfg.OverlayEnabled = overlayEnabled;
 
+            // If overlay is disabled, also force it closed.
             if (!overlayEnabled)
                 _cfg.OverlayWantsOpen = false;
 
-            _cfg.Save();
+            SaveCfg();
         }
 
         var wantsOpen = _cfg.OverlayWantsOpen;
         if (ImGui.Checkbox("Overlay default open", ref wantsOpen))
         {
             _cfg.OverlayWantsOpen = wantsOpen;
-            _cfg.Save();
+            SaveCfg();
         }
 
         ImGui.Separator();
@@ -56,56 +69,72 @@ public sealed class ConfigWindow : Window, IDisposable
         if (ImGui.SliderFloat("Offset X", ref ox, -200f, 200f, "%.0f"))
         {
             _cfg.OverlayOffsetX = ox;
-            _cfg.Save();
+            SaveCfg();
         }
 
         var oy = _cfg.OverlayOffsetY;
         if (ImGui.SliderFloat("Offset Y", ref oy, -200f, 200f, "%.0f"))
         {
             _cfg.OverlayOffsetY = oy;
-            _cfg.Save();
+            SaveCfg();
         }
+    }
 
-        // =========================================================
-        // Retainer enable/disable list
-        // =========================================================
-        ImGui.Separator();
+    // =========================================================
+    // Retainer enable/disable list
+    // =========================================================
+    private void DrawRetainerEnableList()
+    {
         ImGui.TextUnformatted("Retainers");
 
-        var keys = _cfg.RetainersEnabled.Keys
+        var names = _cfg.RetainersEnabled.Keys
             .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        if (keys.Count == 0)
+        if (names.Count == 0)
         {
             ImGui.TextUnformatted("Open the summoning bell retainer list, then reopen this config.");
             return;
         }
 
+        DrawRetainerBulkButtons(names);
+
+        ImGui.Spacing();
+
+        foreach (var name in names)
+            DrawRetainerToggle(name);
+    }
+
+    private void DrawRetainerBulkButtons(System.Collections.Generic.IReadOnlyList<string> names)
+    {
         if (ImGui.Button("Enable all"))
         {
-            foreach (var k in keys) _cfg.RetainersEnabled[k] = true;
-            _cfg.Save();
+            foreach (var n in names)
+                _cfg.RetainersEnabled[n] = true;
+
+            SaveCfg();
         }
 
         ImGui.SameLine();
 
         if (ImGui.Button("Disable all"))
         {
-            foreach (var k in keys) _cfg.RetainersEnabled[k] = false;
-            _cfg.Save();
-        }
+            foreach (var n in names)
+                _cfg.RetainersEnabled[n] = false;
 
-        ImGui.Spacing();
-
-        foreach (var name in keys)
-        {
-            var enabled = _cfg.RetainersEnabled[name];
-            if (ImGui.Checkbox(name, ref enabled))
-            {
-                _cfg.RetainersEnabled[name] = enabled;
-                _cfg.Save();
-            }
+            SaveCfg();
         }
     }
+
+    private void DrawRetainerToggle(string name)
+    {
+        var enabled = _cfg.RetainersEnabled[name];
+        if (ImGui.Checkbox(name, ref enabled))
+        {
+            _cfg.RetainersEnabled[name] = enabled;
+            SaveCfg();
+        }
+    }
+
+    private void SaveCfg() => _cfg.Save();
 }

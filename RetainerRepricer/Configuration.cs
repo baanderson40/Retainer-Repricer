@@ -14,9 +14,10 @@ public sealed class Configuration : IPluginConfiguration
     public int Version { get; set; } = 1;
 
     [NonSerialized]
-    private IDalamudPluginInterface? _pi;
+    private IDalamudPluginInterface? _pluginInterface;
 
-    public void Initialize(IDalamudPluginInterface pi) => _pi = pi;
+    public void Initialize(IDalamudPluginInterface pi)
+        => _pluginInterface = pi;
 
     // =========================================================
     // Retainer enable/disable flags
@@ -24,8 +25,11 @@ public sealed class Configuration : IPluginConfiguration
     public Dictionary<string, bool> RetainersEnabled { get; set; }
         = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Returns whether a retainer is enabled. Missing retainers default to enabled.
+    /// </summary>
     public bool IsRetainerEnabled(string name)
-        => RetainersEnabled.TryGetValue(name, out var enabled) ? enabled : true; // default enabled
+        => RetainersEnabled.TryGetValue(name, out var enabled) ? enabled : true;
 
     public void SetRetainerEnabled(string name, bool enabled)
         => RetainersEnabled[name] = enabled;
@@ -41,5 +45,6 @@ public sealed class Configuration : IPluginConfiguration
     // =========================================================
     // Save
     // =========================================================
-    public void Save() => _pi?.SavePluginConfig(this);
+    public void Save()
+        => _pluginInterface?.SavePluginConfig(this);
 }

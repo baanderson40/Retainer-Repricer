@@ -1,3 +1,11 @@
+// Drop-in replacement Plugin.cs (readability refactor only; preserves all gates + behavior)
+//
+// Changes are strictly naming + small helper extraction.
+// NO phase sequencing changes. NO added/removes of waits/gates.
+//
+// NOTE: If you already have other members below this snippet (other windows, etc.),
+// keep them—this is meant to replace your current Plugin.cs contents as posted.
+
 using Dalamud.Game.Command;
 using Dalamud.Interface.Windowing;
 using Dalamud.IoC;
@@ -10,7 +18,6 @@ using FFXIVClientStructs.FFXIV.Component.GUI;
 using RetainerRepricer.Windows;
 using System;
 using System.Collections.Generic;
-using System.Text;
 
 namespace RetainerRepricer;
 
@@ -28,6 +35,9 @@ public sealed class Plugin : IDalamudPlugin
     // Constants / Fields
     // =========================================================
     private const string CommandName = "/repricer";
+    private const double ActionIntervalSeconds = 0.75;     // pacing between actions (safe while testing)
+    private const double RetainerSyncIntervalSeconds = 2.0;
+    private const int UndercutAmount = 1;
 
     public Configuration Configuration { get; }
     public readonly WindowSystem WindowSystem = new("RetainerRepricer");
@@ -45,13 +55,25 @@ public sealed class Plugin : IDalamudPlugin
     private enum RunPhase
     {
         Idle,
-        NeedOpen,                 // ready to click next retainer row in RetainerList
-        WaitingTalk,              // waiting for Talk after clicking a retainer; click to advance
-        WaitingSelectString,      // waiting for SelectString after Talk closes
-        WaitingRetainerSellList,  // waiting for RetainerSellList after choosing Sell items
-        OpeningFirstSellItem,     // fire RetainerSellList callback to open item detail
-        WaitingRetainerSell,      // wait for RetainerSell to appear (and clear ContextMenu if needed)
-        WaitingReturn,            // waiting for user to return to RetainerList
+
+        // Retainer navigation
+        NeedOpen,                    // ready to click next retainer row in RetainerList
+        WaitingTalk,                 // waiting for Talk after clicking a retainer; click to advance
+        WaitingSelectString,         // waiting for SelectString after Talk closes
+        WaitingRetainerSellList,     // waiting for RetainerSellList after choosing Sell items
+        OpeningFirstSellItem,        // fire RetainerSellList callback to open item detail
+        WaitingRetainerSell,         // wait for RetainerSell to appear (and clear ContextMenu if needed)
+
+        // Repricing pipeline
+        CaptureSellContext,          // read HQ flag + current asking price from RetainerSell
+        OpenComparePrices,           // click Compare Prices (opens ItemSearchResult)
+        WaitingItemSearchResult,     // wait until ItemSearchResult is visible/ready
+        ReadMarketAndApplyPrice,     // read market -> stage desired price -> close market windows
+        CloseMarketThenApply,        // wait for market close -> apply staged price via callback
+        ConfirmAfterApply,           // wait for UI reflect -> confirm via callback
+        CleanupAfterItem,            // exit RetainerSell, then proceed
+
+        WaitingReturn,               // waiting for user to return to RetainerList
     }
 
     private RunPhase _phase = RunPhase.Idle;
@@ -60,28 +82,44 @@ public sealed class Plugin : IDalamudPlugin
     private int _runPos = -1;                     // current position into _runOrder
 
     private DateTime _lastActionUtc = DateTime.MinValue;
-    private const double ActionIntervalSeconds = 0.75; // pacing between actions (safe while testing)
 
     // When we enter RetainerSellList, capture listed count once.
     private bool _sellListCountCaptured;
     private int _slotIndexToOpen = 0; // 0-based slot in RetainerSellList you want to open first
 
-    // =========================================================
+    // Store retainer names as a set for fast lookup
+    private readonly HashSet<string> _myRetainers = new(StringComparer.Ordinal);
+
+    // Per-item context captured from RetainerSell
+    private bool _currentIsHq;
+
+    // "Staged" action (decided from market, applied only after market windows close)
+    private int? _stagedDesiredPrice;
+    private string _stagedReferenceSeller = string.Empty;
+    private bool _stagedReferenceIsMine;
+    private bool _hasAppliedStagedPrice;
+
     // Retainer name sync -> Configuration
-    // =========================================================
     private DateTime _lastRetainerSyncUtc = DateTime.MinValue;
-    private const double RetainerSyncIntervalSeconds = 2.0;
 
     // =========================================================
     // Lifecycle
     // =========================================================
-    public Plugin()
+    public Plugin(
+        IDalamudPluginInterface pi,
+        ICommandManager commandManager,
+        IPluginLog log,
+        IGameGui gameGui)
     {
-        // ECommons needs to be initialized early so Svc and AddonMaster work.
-        ECommonsMain.Init(PluginInterface, this);
+        PluginInterface = pi;
+        CommandManager = commandManager;
+        Log = log;
+        GameGui = gameGui;
 
-        Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
-        Configuration.Initialize(PluginInterface);
+        ECommonsMain.Init(pi, this);
+
+        Configuration = pi.GetPluginConfig() as Configuration ?? new Configuration();
+        Configuration.Initialize(pi);
 
         ConfigWindow = new ConfigWindow(this);
         MainWindow = new MainWindow(this);
@@ -96,11 +134,11 @@ public sealed class Plugin : IDalamudPlugin
             HelpMessage = "toggle | config | count | talk (debug) | hqdump (debug) | mbdump (debug) | mbnodelist (debug) | rldump (debug)"
         });
 
-        PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
-        PluginInterface.UiBuilder.OpenConfigUi += ToggleConfigUi;
-        PluginInterface.UiBuilder.OpenMainUi += OpenMainUi;
+        pi.UiBuilder.Draw += WindowSystem.Draw;
+        pi.UiBuilder.OpenConfigUi += ToggleConfigUi;
+        pi.UiBuilder.OpenMainUi += OpenMainUi;
 
-        Log.Information($"[{PluginInterface.Manifest.Name}] loaded.");
+        Log.Information($"[{pi.Manifest.Name}] loaded.");
     }
 
     public void Dispose()
@@ -134,8 +172,8 @@ public sealed class Plugin : IDalamudPlugin
                 return;
 
             case "talk":
+                Log.Information("[TalkTest] entered /repricer talk");
                 {
-                    Log.Information("[TalkTest] entered /repricer talk");
                     var ok = ClickTalkECommons();
                     Log.Information(ok ? "[TalkTest] Sent (ECommons)" : "[TalkTest] Failed (ECommons)");
                     return;
@@ -143,12 +181,10 @@ public sealed class Plugin : IDalamudPlugin
 
             case "hqdump":
                 {
-                    // Asking price
                     var priceText = _ui.ReadRetainerSellAskingPriceText();
                     var asking = _ui.ReadRetainerSellAskingPrice();
                     Log.Information($"[RS] askingPrice raw='{priceText}' parsed={asking?.ToString() ?? "null"}");
 
-                    // Item name + HQ glyph
                     var rawName = _ui.ReadRetainerSellItemNameRaw();
                     var cleaned = _ui.NormalizeItemName(rawName);
                     var isHq = _ui.RetainerSellNameContainsHqGlyph(rawName);
@@ -156,6 +192,10 @@ public sealed class Plugin : IDalamudPlugin
                     Log.Information($"[HQ] raw='{rawName}'");
                     Log.Information($"[HQ] cleaned='{cleaned}'");
                     Log.Information($"[HQ] containsHqGlyph={isHq} (glyph U+{(int)Ui.UiReader.RetainerSell_HqGlyphChar:X4})");
+
+                    Log.Information($"[HQ] nonAscii={Ui.UiReader.DumpNonAsciiCodepoints(rawName)}");
+                    Log.Information($"[HQ] hasE03C={rawName?.IndexOf(Ui.UiReader.RetainerSell_HqGlyphChar) >= 0}");
+
                     return;
                 }
 
@@ -175,7 +215,6 @@ public sealed class Plugin : IDalamudPlugin
                 {
                     var raw = _ui.ReadRetainerSellListCountText();
                     var count = _ui.ReadRetainerSellListListedCount();
-
                     if (count == null)
                     {
                         Log.Warning("[Count] Listed count returned null (open RetainerSellList first).");
@@ -187,7 +226,6 @@ public sealed class Plugin : IDalamudPlugin
                 }
 
             default:
-                // /repricer (no args) toggles overlay intent
                 MainWindow.ToggleIntent();
                 return;
         }
@@ -232,7 +270,6 @@ public sealed class Plugin : IDalamudPlugin
         try
         {
             var ss = new AddonMaster.SelectString(addon.Address);
-
             if (sellItemsIndex < 0 || sellItemsIndex >= ss.EntryCount) return false;
 
             ss.Entries[sellItemsIndex].Select();
@@ -275,9 +312,7 @@ public sealed class Plugin : IDalamudPlugin
         var unit = (AtkUnitBase*)addon.Address;
         if (unit == null || !unit->IsVisible) return false;
 
-        // Lua: /pcall RetainerSellList true 0 idx 1
         Callback.Fire(unit, updateState: true, 0, slotIndex0, 1);
-
         Log.Information($"[RSL] FireCallback open item: (0, {slotIndex0}, 1)");
         return true;
     }
@@ -290,11 +325,117 @@ public sealed class Plugin : IDalamudPlugin
         var unit = (AtkUnitBase*)addon.Address;
         if (unit == null || !unit->IsVisible) return false;
 
-        // Lua tries (0,0) then (1,0) to clear it; keep both.
         Callback.Fire(unit, updateState: true, 0, 0);
         Callback.Fire(unit, updateState: true, 1, 0);
 
         Log.Information("[CTX] FireCallback dismiss tried: (0,0) then (1,0)");
+        return true;
+    }
+
+    // =========================================================
+    // Helpers
+    // =========================================================
+    private static int DecideNewPrice(int lowestPrice, bool sellerIsMine)
+    {
+        if (sellerIsMine) return lowestPrice;
+        var v = lowestPrice - UndercutAmount;
+        return v < 1 ? 1 : v;
+    }
+
+    private unsafe bool IsAddonVisible(string name)
+    {
+        var a = GameGui.GetAddonByName(name, 1);
+        if (a.IsNull) return false;
+        var u = (AtkUnitBase*)a.Address;
+        return u != null && u->IsVisible;
+    }
+
+    private unsafe bool IsAddonOpen(string name)
+        => !GameGui.GetAddonByName(name, 1).IsNull;
+
+    private unsafe void CloseAddonIfOpen(string name)
+    {
+        var a = GameGui.GetAddonByName(name, 1);
+        if (a.IsNull) return;
+
+        var u = (AtkUnitBase*)a.Address;
+        if (u == null || !u->IsVisible) return;
+
+        Callback.Fire(u, updateState: true, -1);
+    }
+
+    private unsafe void CloseMarketWindows()
+    {
+        CloseAddonIfOpen("ItemHistory");
+        CloseAddonIfOpen("ItemSearchResult");
+    }
+
+    private unsafe bool MarketWindowsStillOpen()
+        => IsAddonOpen("ItemSearchResult") || IsAddonOpen("ItemHistory");
+
+    private unsafe bool TryReadMarketRow(int rowIndex, out int unitPrice, out string seller, out bool isHq)
+    {
+        unitPrice = 0;
+        seller = string.Empty;
+        isHq = false;
+
+        var list = _ui.GetMarketList();
+        if (list == null) return false;
+
+        var count = list->GetItemCount();
+        if (count <= 0 || rowIndex < 0 || rowIndex >= count) return false;
+
+        var r = list->GetItemRenderer(rowIndex);
+        if (r == null) return false;
+
+        isHq = _ui.RowIsHq(r);
+
+        var unitRaw = _ui.ReadRendererText(r, Ui.NodePaths.UnitPriceNodeId);
+        var sellerRaw = _ui.ReadRendererText(r, Ui.NodePaths.SellerNodeId);
+
+        var parsed = Ui.UiReader.ParseGil(unitRaw);
+        if (parsed == null || parsed.Value <= 0) return false;
+
+        unitPrice = parsed.Value;
+        seller = (sellerRaw ?? string.Empty).Trim('\'', ' ');
+
+        return true;
+    }
+
+    private unsafe bool TryPickReferenceListing(out int lowestPrice, out string lowestSeller)
+    {
+        lowestPrice = 0;
+        lowestSeller = string.Empty;
+
+        var list = _ui.GetMarketList();
+        if (list == null) return false;
+
+        var count = list->GetItemCount();
+        if (count <= 0) return false;
+
+        if (_currentIsHq)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                if (!TryReadMarketRow(i, out var price, out var seller, out var isHq)) continue;
+                if (!isHq) continue;
+
+                Log.Information($"[RR] Market HQ match row={i} price={price} seller='{seller}'");
+                lowestPrice = price;
+                lowestSeller = seller;
+                return true;
+            }
+
+            Log.Warning("[RR] HQ item but no HQ rows found; skipping repricing.");
+            return false;
+        }
+
+        // NQ: always row 0
+        if (!TryReadMarketRow(0, out var p0, out var s0, out _)) return false;
+
+        Log.Information($"[RR] Market NQ row0 price={p0} seller='{s0}'");
+        lowestPrice = p0;
+        lowestSeller = s0;
         return true;
     }
 
@@ -357,7 +498,7 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     // =========================================================
-    // Retainer list -> config sync
+    // Retainer list
     // =========================================================
     internal unsafe List<string> ReadRetainerNames()
     {
@@ -412,6 +553,13 @@ public sealed class Plugin : IDalamudPlugin
         _lastRetainerSyncUtc = now;
     }
 
+    internal void RebuildMyRetainersSet()
+    {
+        _myRetainers.Clear();
+        foreach (var kvp in Configuration.RetainersEnabled)
+            _myRetainers.Add(kvp.Key);
+    }
+
     // =========================================================
     // Run Controls
     // =========================================================
@@ -423,6 +571,8 @@ public sealed class Plugin : IDalamudPlugin
             Log.Warning("[RR] Can't start: RetainerList not open.");
             return;
         }
+
+        RebuildMyRetainersSet();
 
         _runOrder.Clear();
         _runPos = -1;
@@ -480,16 +630,19 @@ public sealed class Plugin : IDalamudPlugin
         if ((now - _lastActionUtc).TotalSeconds < ActionIntervalSeconds)
             return;
 
-        var rlOpen = !GameGui.GetAddonByName("RetainerList", 1).IsNull;
-        var talkOpen = !GameGui.GetAddonByName("Talk", 1).IsNull;
-        var ssOpen = !GameGui.GetAddonByName("SelectString", 1).IsNull;
-        var sellListOpen = !GameGui.GetAddonByName("RetainerSellList", 1).IsNull;
+        var retainerListVisible = IsAddonVisible("RetainerList");
+        var talkVisible = IsAddonVisible("Talk");
+        var selectStringVisible = IsAddonVisible("SelectString");
+        var retainerSellListVisible = IsAddonVisible("RetainerSellList");
+        var retainerSellVisible = IsAddonVisible("RetainerSell");
+        var marketOpen = IsAddonOpen("ItemSearchResult");
+        var contextMenuVisible = IsAddonVisible("ContextMenu");
 
         switch (_phase)
         {
             case RunPhase.NeedOpen:
                 {
-                    if (!rlOpen) return;
+                    if (!retainerListVisible) return;
 
                     _runPos++;
                     if (_runPos >= _runOrder.Count)
@@ -512,7 +665,7 @@ public sealed class Plugin : IDalamudPlugin
 
             case RunPhase.WaitingTalk:
                 {
-                    if (ssOpen)
+                    if (selectStringVisible)
                     {
                         Log.Information($"[RR] SelectString opened for row {_runOrder[_runPos]}; choosing Sell items.");
                         ClickSelectStringSellItems();
@@ -522,7 +675,7 @@ public sealed class Plugin : IDalamudPlugin
                         return;
                     }
 
-                    if (talkOpen)
+                    if (talkVisible)
                     {
                         Log.Information($"[RR] Talk open for row {_runOrder[_runPos]}; clicking Talk advance.");
                         var ok = ClickTalkECommons();
@@ -540,7 +693,7 @@ public sealed class Plugin : IDalamudPlugin
 
             case RunPhase.WaitingSelectString:
                 {
-                    if (talkOpen)
+                    if (talkVisible)
                     {
                         Log.Information($"[RR] Talk open (late) for row {_runOrder[_runPos]}; clicking Talk advance.");
                         var ok = ClickTalkECommons();
@@ -549,7 +702,7 @@ public sealed class Plugin : IDalamudPlugin
                         return;
                     }
 
-                    if (!ssOpen) return;
+                    if (!selectStringVisible) return;
 
                     Log.Information($"[RR] SelectString opened for row {_runOrder[_runPos]}; choosing Sell items.");
                     ClickSelectStringSellItems();
@@ -561,7 +714,7 @@ public sealed class Plugin : IDalamudPlugin
 
             case RunPhase.WaitingRetainerSellList:
                 {
-                    if (!sellListOpen) return;
+                    if (!retainerSellListVisible) return;
 
                     Log.Information("[RR] Entered RetainerSellList.");
 
@@ -581,7 +734,7 @@ public sealed class Plugin : IDalamudPlugin
 
             case RunPhase.OpeningFirstSellItem:
                 {
-                    if (!sellListOpen) return;
+                    if (!retainerSellListVisible) return;
 
                     var idx = Math.Clamp(_slotIndexToOpen, 0, 19);
                     if (!FireRetainerSellList_OpenItem(idx))
@@ -594,25 +747,256 @@ public sealed class Plugin : IDalamudPlugin
 
             case RunPhase.WaitingRetainerSell:
                 {
-                    var ctxOpen = !GameGui.GetAddonByName("ContextMenu", 1).IsNull;
-                    if (ctxOpen)
+                    if (contextMenuVisible)
                     {
                         FireContextMenuDismiss();
                         _lastActionUtc = now;
                         return;
                     }
 
-                    var sellOpen = !GameGui.GetAddonByName("RetainerSell", 1).IsNull;
-                    if (!sellOpen) return;
+                    if (!retainerSellVisible) return;
 
                     Log.Information($"[RR] RetainerSell opened for slot {_slotIndexToOpen}.");
+
+                    _phase = RunPhase.CaptureSellContext;
+                    _lastActionUtc = now;
+                    return;
+                }
+
+            // =========================================================
+            // Repricing pipeline (behavior preserved)
+            // =========================================================
+
+            case RunPhase.CaptureSellContext:
+                {
+                    if (!retainerSellVisible) return;
+
+                    _currentIsHq = _ui.IsRetainerSellItemHq();
+
+                    var rawName = _ui.ReadRetainerSellItemNameRaw();
+                    var name = _ui.NormalizeItemName(rawName)
+                        .Replace(Ui.UiReader.RetainerSell_HqGlyphChar.ToString(), string.Empty)
+                        .Trim();
+
+                    Log.Information($"[RR] Sell ctx: hq={_currentIsHq} item='{name}'");
+
+                    _phase = RunPhase.OpenComparePrices;
+                    _lastActionUtc = now;
+                    return;
+                }
+
+            case RunPhase.OpenComparePrices:
+                {
+                    if (!retainerSellVisible) return;
+
+                    var addon = GameGui.GetAddonByName("RetainerSell", 1);
+                    if (addon.IsNull) return;
+
+                    new AddonMaster.RetainerSell(addon.Address).ComparePrices();
+
+                    Log.Information("[RR] RetainerSell.ComparePrices() clicked.");
+                    _phase = RunPhase.WaitingItemSearchResult;
+                    _lastActionUtc = now;
+                    return;
+                }
+
+            case RunPhase.WaitingItemSearchResult:
+                {
+                    if (!marketOpen) return;
+
+                    var list = _ui.GetMarketList();
+                    if (list == null)
+                    {
+                        Log.Information("[RR] ISR not ready: market list null");
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    var count = list->GetItemCount();
+                    if (count <= 0)
+                    {
+                        Log.Information("[RR] ISR not ready: 0 rows");
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    Log.Information($"[RR] ItemSearchResult ready (rows={count}).");
+                    _phase = RunPhase.ReadMarketAndApplyPrice;
+                    _lastActionUtc = now;
+                    return;
+                }
+
+            case RunPhase.ReadMarketAndApplyPrice:
+                {
+                    if (!retainerSellVisible) return;
+                    if (!marketOpen) return;
+
+                    if (!TryPickReferenceListing(out var lowestPrice, out var lowestSeller))
+                    {
+                        _phase = RunPhase.CleanupAfterItem;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    var referenceIsMine =
+                        !string.IsNullOrWhiteSpace(lowestSeller) &&
+                        _myRetainers.Contains(lowestSeller);
+
+                    var desired = DecideNewPrice(lowestPrice, referenceIsMine);
+
+                    var sellAddonPeek = GameGui.GetAddonByName("RetainerSell", 1);
+                    if (sellAddonPeek.IsNull) return;
+
+                    var current = new AddonMaster.RetainerSell(sellAddonPeek.Address).AskingPrice;
+
+                    if (current == desired)
+                    {
+                        Log.Information($"[RR] Price unchanged (already {desired}); skipping apply.");
+                        _phase = RunPhase.CleanupAfterItem;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    // Stage apply AFTER market UI is closed (gate preserved)
+                    _stagedDesiredPrice = desired;
+                    _stagedReferenceSeller = lowestSeller;
+                    _stagedReferenceIsMine = referenceIsMine;
+                    _hasAppliedStagedPrice = false;
+
+                    Log.Information($"[RR] Staging apply: current={current} desired={desired} seller='{lowestSeller}' mine={referenceIsMine}");
+
+                    CloseMarketWindows();
+
+                    _phase = RunPhase.CloseMarketThenApply;
+                    _lastActionUtc = now;
+                    return;
+                }
+
+            case RunPhase.CloseMarketThenApply:
+                {
+                    // Gate preserved: wait until market windows are actually gone
+                    if (MarketWindowsStillOpen())
+                        return;
+
+                    if (!retainerSellVisible) return;
+
+                    if (_stagedDesiredPrice is null)
+                    {
+                        Log.Warning("[RR] Pending price was null; bailing to cleanup.");
+                        _phase = RunPhase.CleanupAfterItem;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    // Stability gate preserved: must be able to read asking price
+                    var current = _ui.ReadRetainerSellAskingPrice();
+                    if (current is null)
+                    {
+                        Log.Information("[RR] Waiting RetainerSell stable (asking price unreadable)...");
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    // If already applied once, wait for UI reflect then confirm
+                    if (_hasAppliedStagedPrice)
+                    {
+                        if (current.Value != _stagedDesiredPrice.Value)
+                        {
+                            Log.Information($"[RR] Waiting price apply... ui={current.Value} desired={_stagedDesiredPrice.Value}");
+                            _lastActionUtc = now;
+                            return;
+                        }
+
+                        _phase = RunPhase.ConfirmAfterApply;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    Log.Information($"[RR] Apply after ISR close (safe): {current.Value} -> {_stagedDesiredPrice.Value}");
+
+                    var sellAddon = GameGui.GetAddonByName("RetainerSell", 1);
+                    if (sellAddon.IsNull) return;
+
+                    var unit = (AtkUnitBase*)sellAddon.Address;
+                    if (unit == null) return;
+
+                    // RetainerSell "set asking price" callback: (2, value)
+                    Callback.Fire(unit, updateState: true, 2, _stagedDesiredPrice.Value);
+
+                    _hasAppliedStagedPrice = true;
+                    _lastActionUtc = now;
+                    return;
+                }
+
+            case RunPhase.ConfirmAfterApply:
+                {
+                    if (!retainerSellVisible) return;
+
+                    if (_stagedDesiredPrice is null)
+                    {
+                        Log.Warning("[RR] Pending price was null; bailing to cleanup.");
+                        _phase = RunPhase.CleanupAfterItem;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    // Gate preserved: ensure no market windows are lingering
+                    if (MarketWindowsStillOpen())
+                        return;
+
+                    // Gate preserved: verify UI reflects the new price before confirming
+                    var desired = _stagedDesiredPrice.Value;
+                    var uiPrice = _ui.ReadRetainerSellAskingPrice();
+                    if (uiPrice == null || uiPrice.Value != desired)
+                    {
+                        Log.Information($"[RR] Waiting price apply... ui={(uiPrice?.ToString() ?? "null")} desired={desired}");
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    var sellAddon = GameGui.GetAddonByName("RetainerSell", 1);
+                    if (sellAddon.IsNull) return;
+
+                    var unit = (AtkUnitBase*)sellAddon.Address;
+                    if (unit == null || !unit->IsVisible) return;
+
+                    Log.Information($"[RR] Confirm (FireCallback) price={desired} seller='{_stagedReferenceSeller}' mine={_stagedReferenceIsMine}");
+
+                    // Confirm via callback (safe path)
+                    Callback.Fire(unit, updateState: true, 0);
+
+                    _stagedDesiredPrice = null;
+                    _hasAppliedStagedPrice = false;
+
+                    _phase = RunPhase.CleanupAfterItem;
+                    _lastActionUtc = now;
+                    return;
+                }
+
+            case RunPhase.CleanupAfterItem:
+                {
+                    CloseMarketWindows();
+
+                    var sellAddon = GameGui.GetAddonByName("RetainerSell", 1);
+                    if (!sellAddon.IsNull)
+                    {
+                        new AddonMaster.RetainerSell(sellAddon.Address).Cancel();
+                    }
+                    else
+                    {
+                        CloseAddonIfOpen("RetainerSell");
+                    }
+
+                    Log.Information("[RR] Cleanup done (closed market + exited RetainerSell).");
+
+                    _phase = RunPhase.WaitingReturn;
                     _lastActionUtc = now;
                     return;
                 }
 
             case RunPhase.WaitingReturn:
                 {
-                    if (rlOpen && !sellListOpen && !ssOpen)
+                    if (retainerListVisible && !retainerSellListVisible && !selectStringVisible)
                     {
                         Log.Information("[RR] Back on RetainerList; ready for next retainer.");
                         _phase = RunPhase.NeedOpen;

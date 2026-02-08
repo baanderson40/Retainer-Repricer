@@ -45,22 +45,26 @@ public sealed unsafe class MainWindow : Window, IDisposable
         IsOpen = true;
     }
 
-    public void Dispose() { }
+    public void Dispose()
+    {
+        // nothing to dispose
+    }
 
     // =========================================================
     // Intent (overlay wants open/closed)
     // =========================================================
     public void ToggleIntent()
-    {
-        var wants = !_plugin.Configuration.OverlayWantsOpen;
-        _plugin.Configuration.OverlayWantsOpen = wants;
-        _plugin.Configuration.Save();
-    }
+        => SetOverlayIntent(!_plugin.Configuration.OverlayWantsOpen);
 
     public void EnsureIntentOpen()
+        => SetOverlayIntent(true);
+
+    private void SetOverlayIntent(bool wantsOpen)
     {
-        if (_plugin.Configuration.OverlayWantsOpen) return;
-        _plugin.Configuration.OverlayWantsOpen = true;
+        if (_plugin.Configuration.OverlayWantsOpen == wantsOpen)
+            return;
+
+        _plugin.Configuration.OverlayWantsOpen = wantsOpen;
         _plugin.Configuration.Save();
     }
 
@@ -69,33 +73,62 @@ public sealed unsafe class MainWindow : Window, IDisposable
     // =========================================================
     public override bool DrawConditions()
     {
+        if (!ShouldOverlayBeActive())
+            return false;
+
+        // IMPORTANT:
+        // Tick even if RetainerList is not visible, or we could miss SelectString/SellList transitions.
+        TickPluginIfNeeded();
+
+        // Only DRAW/ANCHOR overlay when RetainerList is visible.
+        var retainerListUnit = GetRetainerListUnit();
+        if (retainerListUnit == null)
+            return false;
+
+        // Sync roster into config while RetainerList is open.
+        _plugin.TrySyncRetainersThrottled();
+
+        PrepareOverlayWindow(retainerListUnit);
+        return true;
+    }
+
+    private bool ShouldOverlayBeActive()
+    {
         if (!_plugin.Configuration.OverlayEnabled)
             return false;
 
         if (!_plugin.Configuration.OverlayWantsOpen)
             return false;
 
-        // IMPORTANT:
-        // Tick even if RetainerList is not visible, or we could miss SelectString/SellList transitions.
-        var now = DateTime.UtcNow;
-        if (_plugin.IsRunning && (now - _lastTickUtc).TotalSeconds >= TickIntervalSeconds)
-        {
-            _plugin.TickRun();
-            _lastTickUtc = now;
-        }
+        return true;
+    }
 
-        // Only DRAW/ANCHOR overlay when RetainerList is visible.
+    private void TickPluginIfNeeded()
+    {
+        if (!_plugin.IsRunning)
+            return;
+
+        var now = DateTime.UtcNow;
+        if ((now - _lastTickUtc).TotalSeconds < TickIntervalSeconds)
+            return;
+
+        _plugin.TickRun();
+        _lastTickUtc = now;
+    }
+
+    private static AtkUnitBase* GetRetainerListUnit()
+    {
         var retainerList = Plugin.GameGui.GetAddonByName("RetainerList", 1);
         if (retainerList.IsNull)
-            return false;
+            return null;
 
-        // Sync roster into config while RetainerList is open.
-        _plugin.TrySyncRetainersThrottled();
+        return (AtkUnitBase*)retainerList.Address;
+    }
 
+    private void PrepareOverlayWindow(AtkUnitBase* retainerListUnit)
+    {
         ImGui.SetNextWindowSize(new Vector2(OverlayW, OverlayH), ImGuiCond.Always);
-        AnchorToRetainerList((AtkUnitBase*)retainerList.Address);
-
-        return true;
+        AnchorToRetainerList(retainerListUnit);
     }
 
     private void AnchorToRetainerList(AtkUnitBase* unit)
@@ -120,7 +153,17 @@ public sealed unsafe class MainWindow : Window, IDisposable
         ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new Vector2(4, 3));
         ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(6, 4));
 
-        // Start/Stop toggle
+        DrawStartStopButton();
+        ImGui.SameLine();
+        DrawConfigButton();
+        ImGui.SameLine();
+        DrawRightAlignedStatusText();
+
+        ImGui.PopStyleVar(2);
+    }
+
+    private void DrawStartStopButton()
+    {
         var icon = _plugin.IsRunning ? FontAwesomeIcon.Stop : FontAwesomeIcon.Play;
 
         ImGui.PushID("rr-startstop");
@@ -135,10 +178,10 @@ public sealed unsafe class MainWindow : Window, IDisposable
 
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(_plugin.IsRunning ? "Stop" : "Start");
+    }
 
-        ImGui.SameLine();
-
-        // Config button
+    private void DrawConfigButton()
+    {
         ImGui.PushID("rr-config");
         if (ImGuiComponents.IconButton(FontAwesomeIcon.Cog))
             _plugin.ToggleConfigUi();
@@ -146,18 +189,17 @@ public sealed unsafe class MainWindow : Window, IDisposable
 
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("Config");
+    }
 
-        // Right-aligned status
-        ImGui.SameLine();
+    private void DrawRightAlignedStatusText()
+    {
         var status = _plugin.IsRunning ? "Running" : "Idle";
 
         var avail = ImGui.GetContentRegionAvail().X;
         var textW = ImGui.CalcTextSize(status).X;
-        ImGui.SameLine(MathF.Max(0, ImGui.GetCursorPosX() + avail - textW));
 
+        ImGui.SameLine(MathF.Max(0, ImGui.GetCursorPosX() + avail - textW));
         ImGui.AlignTextToFramePadding();
         ImGui.TextUnformatted(status);
-
-        ImGui.PopStyleVar(2);
     }
 }
