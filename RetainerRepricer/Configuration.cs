@@ -2,6 +2,7 @@ using Dalamud.Configuration;
 using Dalamud.Plugin;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace RetainerRepricer;
 
@@ -41,6 +42,45 @@ public sealed class Configuration : IPluginConfiguration
     public bool OverlayWantsOpen { get; set; } = true;
     public float OverlayOffsetX { get; set; } = 0f;
     public float OverlayOffsetY { get; set; } = 0f;
+
+    // =========================================================
+    // Sell list (v1)
+    // =========================================================
+    [Serializable]
+    public sealed class SellListEntry
+    {
+        public uint ItemId { get; set; }
+        public string Name { get; set; } = string.Empty;
+    }
+
+    // Keyed by ItemId to prevent duplicates.
+    public Dictionary<uint, SellListEntry> SellList { get; set; } = new();
+
+    public bool HasSellItem(uint itemId) => SellList.ContainsKey(itemId);
+
+    public bool AddSellItem(uint itemId, string name)
+    {
+        if (itemId == 0) return false;
+        if (SellList.ContainsKey(itemId)) return false;
+
+        var n = (name ?? string.Empty).Trim();
+
+        SellList[itemId] = new SellListEntry
+        {
+            ItemId = itemId,
+            Name = n,
+        };
+        return true;
+    }
+
+    public bool RemoveSellItem(uint itemId) => SellList.Remove(itemId);
+
+    public IEnumerable<SellListEntry> GetSellListSorted()
+        => SellList.Values
+            .OrderBy(e => string.IsNullOrWhiteSpace(e.Name) ? "zzz" : e.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(e => e.ItemId);
+
+    public void ClearSellList() => SellList.Clear();
 
     // =========================================================
     // Save

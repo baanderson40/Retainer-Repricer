@@ -27,7 +27,7 @@ public sealed class Plugin : IDalamudPlugin
     // Constants / Fields
     // =========================================================
     private const string CommandName = "/repricer";
-    private const double ActionIntervalSeconds = 0.75;     // pacing between actions (safe while testing)
+    private const double ActionIntervalSeconds = 0.275;     // pacing between actions (safe while testing)
     private const double RetainerSyncIntervalSeconds = 2.0;
     private const int UndercutAmount = 1;
 
@@ -39,6 +39,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private ConfigWindow ConfigWindow { get; }
     private MainWindow MainWindow { get; }
+    private ContextMenuManager ContextMenu { get; }
 
     private readonly Ui.UiReader _ui;
 
@@ -126,6 +127,7 @@ public sealed class Plugin : IDalamudPlugin
 
         ConfigWindow = new ConfigWindow(this);
         MainWindow = new MainWindow(this);
+        ContextMenu = new ContextMenuManager(Configuration);
 
         WindowSystem.AddWindow(ConfigWindow);
         WindowSystem.AddWindow(MainWindow);
@@ -154,6 +156,7 @@ public sealed class Plugin : IDalamudPlugin
 
         ConfigWindow.Dispose();
         MainWindow.Dispose();
+        ContextMenu.Dispose();
 
         CommandManager.RemoveHandler(CommandName);
 
