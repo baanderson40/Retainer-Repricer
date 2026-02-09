@@ -2,6 +2,8 @@ using System;
 using System.Text;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Component.GUI;
+using ECommons.Automation;
+using FFXIVClientStructs.FFXIV.Client.Game;
 
 namespace RetainerRepricer.Ui;
 
@@ -287,6 +289,61 @@ internal sealed unsafe class UiReader
     }
 
     // =========================================================
+    // Inventory helpers (Selling / new listings)
+    // =========================================================
+
+    // Containers we scan for sellable items
+    private static readonly InventoryType[] SellScanContainers =
+    {
+        InventoryType.Inventory1,
+        InventoryType.Inventory2,
+        InventoryType.Inventory3,
+        InventoryType.Inventory4,
+    };
+
+    /// <summary>
+    /// Find an itemId in player inventory bags and return container + slot.
+    /// </summary>
+    public bool TryFindItemInInventory(uint itemId, out int container, out int slot)
+    {
+        container = 0;
+        slot = 0;
+
+        if (itemId == 0)
+            return false;
+
+        var inv = InventoryManager.Instance();
+        if (inv == null)
+            return false;
+
+        foreach (var type in SellScanContainers)
+        {
+            var cont = inv->GetInventoryContainer(type);
+            if (cont == null || !cont->IsLoaded)
+                continue;
+
+            for (var i = 0; i < cont->Size; i++)
+            {
+                var s = cont->GetInventorySlot(i);
+                if (s == null)
+                    continue;
+
+                if (s->ItemId != itemId)
+                    continue;
+
+                if (s->Quantity <= 0)
+                    continue;
+
+                container = (int)type;
+                slot = i;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // =========================================================
     // RetainerList: AtkComponentList access
     // =========================================================
     public AtkComponentList* GetRetainerList()
@@ -404,6 +461,29 @@ internal sealed unsafe class UiReader
 
         return (anyLeft ? left : null, anyRight ? right : null);
     }
+    /// <summary>
+    /// Clicks InventoryGrid slot to open RetainerSell (new listing path).
+    /// Equivalent to `/pcall InventoryGrid true 0 slot container`.
+    /// </summary>
+    public bool TryOpenRetainerSellFromInventory(int container, int slot)
+    {
+        var idx = FindVisibleAddonIndex("InventoryGrid", 10);
+        if (idx < 0)
+            return false;
+
+        var addon = _gui.GetAddonByName("InventoryGrid", idx);
+        if (addon.IsNull)
+            return false;
+
+        var unit = (AtkUnitBase*)addon.Address;
+        if (unit == null || !unit->IsVisible)
+            return false;
+
+        // Callback signature observed in SND / AutoRetainer:
+        Callback.Fire(unit, updateState: true, 15, container, slot);
+        return true;
+    }
+
 
     // =========================================================
     // Parsing helpers

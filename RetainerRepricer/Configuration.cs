@@ -12,7 +12,8 @@ public sealed class Configuration : IPluginConfiguration
     // =========================================================
     // Dalamud config versioning
     // =========================================================
-    public int Version { get; set; } = 1;
+    // PASTE: replace your Version line with this
+    public int Version { get; set; } = 2;
 
     [NonSerialized]
     private IDalamudPluginInterface? _pluginInterface;
@@ -21,14 +22,19 @@ public sealed class Configuration : IPluginConfiguration
         => _pluginInterface = pi;
 
     // =========================================================
+    // Master enable/disable
+    // =========================================================
+    // PASTE: add this block right after Initialize(...)
+    // When false: no running, no context menu injection, no overlay drawing.
+    // Config window still works.
+    public bool PluginEnabled { get; set; } = true;
+
+    // =========================================================
     // Retainer enable/disable flags
     // =========================================================
     public Dictionary<string, bool> RetainersEnabled { get; set; }
         = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>
-    /// Returns whether a retainer is enabled. Missing retainers default to enabled.
-    /// </summary>
     public bool IsRetainerEnabled(string name)
         => RetainersEnabled.TryGetValue(name, out var enabled) ? enabled : true;
 
@@ -36,10 +42,10 @@ public sealed class Configuration : IPluginConfiguration
         => RetainersEnabled[name] = enabled;
 
     // =========================================================
-    // Overlay settings
+    // Overlay settings (visual only)
     // =========================================================
+    // PASTE: replace your existing Overlay settings block with this
     public bool OverlayEnabled { get; set; } = true;
-    public bool OverlayWantsOpen { get; set; } = true;
     public float OverlayOffsetX { get; set; } = 0f;
     public float OverlayOffsetY { get; set; } = 0f;
 
@@ -53,7 +59,6 @@ public sealed class Configuration : IPluginConfiguration
         public string Name { get; set; } = string.Empty;
     }
 
-    // Keyed by ItemId to prevent duplicates.
     public Dictionary<uint, SellListEntry> SellList { get; set; } = new();
 
     public bool HasSellItem(uint itemId) => SellList.ContainsKey(itemId);

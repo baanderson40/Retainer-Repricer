@@ -174,30 +174,44 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawSettingsTab()
     {
+        DrawPluginSettings();
+        ImGui.Separator();
         DrawOverlaySettings();
     }
 
     // =========================================================
     // Overlay settings
     // =========================================================
-    private void DrawOverlaySettings()
+    private void DrawPluginSettings()
     {
-        var overlayEnabled = _cfg.OverlayEnabled;
-        if (ImGui.Checkbox("Enable overlay on Retainer List", ref overlayEnabled))
-        {
-            _cfg.OverlayEnabled = overlayEnabled;
+        ImGui.TextUnformatted("Plugin");
 
-            // If overlay is disabled, also force it closed.
-            if (!overlayEnabled)
-                _cfg.OverlayWantsOpen = false;
+        var enabled = _cfg.PluginEnabled;
+        if (ImGui.Checkbox("Enable plugin functionality", ref enabled))
+        {
+            _cfg.PluginEnabled = enabled;
+
+            // If we disable the plugin, force-stop any active run immediately.
+            if (!enabled && _plugin.IsRunning)
+                _plugin.StopRun();
 
             SaveCfg();
         }
 
-        var wantsOpen = _cfg.OverlayWantsOpen;
-        if (ImGui.Checkbox("Overlay default open", ref wantsOpen))
+        if (!_cfg.PluginEnabled)
+            ImGui.TextDisabled("Plugin is disabled: automation + overlay + context menu are off. Config remains available.");
+    }
+
+    private void DrawOverlaySettings()
+    {
+        ImGui.TextUnformatted("Overlay");
+
+        // Overlay should be controlled independently of PluginEnabled,
+        // but if the plugin is disabled, overlay will not appear anyway.
+        var overlayEnabled = _cfg.OverlayEnabled;
+        if (ImGui.Checkbox("Enable overlay window", ref overlayEnabled))
         {
-            _cfg.OverlayWantsOpen = wantsOpen;
+            _cfg.OverlayEnabled = overlayEnabled;
             SaveCfg();
         }
 

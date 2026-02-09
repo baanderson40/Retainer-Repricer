@@ -14,7 +14,7 @@ internal sealed class ContextMenuManager : IDisposable
     private const SeIconChar PrefixIcon = SeIconChar.BoxedLetterR;
 
     // UI color indices (tweak later)
-    private const ushort ColorPrefix = 32;   // orange/gold
+    private const ushort ColorPrefix = 31;   // orange/gold
     private const ushort ColorRemove = 539;  // brighter red
     private const ushort ColorDisabled = 703; // fallback grey
 
@@ -28,6 +28,9 @@ internal sealed class ContextMenuManager : IDisposable
 
     private void OnMenuOpened(IMenuOpenedArgs args)
     {
+        if (!_cfg.PluginEnabled)
+            return;
+
         if (args.MenuType != ContextMenuType.Inventory)
             return;
 
@@ -62,7 +65,7 @@ internal sealed class ContextMenuManager : IDisposable
                 IsSubmenu = false,
 
                 Prefix = PrefixIcon,
-                PrefixColor = ColorRemove,
+                PrefixColor = ColorPrefix,
 
                 Name = new SeStringBuilder()
                     .AddUiForeground("- Remove from Sell List", ColorRemove)
@@ -109,7 +112,8 @@ internal sealed class ContextMenuManager : IDisposable
             PrefixColor = ColorPrefix,
 
             Name = new SeStringBuilder()
-                .AddText("+ Add to Sell List")
+                //.AddText("+ Add to Sell List")
+                .AddUiForeground(" + Add to Sell List", ColorPrefix)
                 .Build(),
 
             OnClicked = _ =>

@@ -22,12 +22,13 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static ICommandManager CommandManager { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
     [PluginService] internal static IGameGui GameGui { get; private set; } = null!;
+    [PluginService] internal static IFramework Framework { get; private set; } = null!;
 
     // =========================================================
     // Constants / Fields
     // =========================================================
     private const string CommandName = "/repricer";
-    private const double ActionIntervalSeconds = 0.275;     // pacing between actions (safe while testing)
+    private const double ActionIntervalSeconds = 0.35;     // pacing between actions (safe while testing)
     private const double RetainerSyncIntervalSeconds = 2.0;
     private const int UndercutAmount = 1;
 
@@ -53,26 +54,31 @@ public sealed class Plugin : IDalamudPlugin
         Idle,
 
         // Retainer navigation
-        NeedOpen,                        // ready to click next retainer row in RetainerList
-        WaitingTalk,                     // waiting for Talk after clicking a retainer; click to advance
-        WaitingSelectString,             // waiting for SelectString after Talk closes
-        WaitingRetainerSellList,         // waiting for RetainerSellList after choosing Sell items (first entry for retainer)
+        NeedOpen,                         // ready to click next retainer row in RetainerList
+        WaitingTalk,                      // waiting for Talk after clicking a retainer; click to advance
+        WaitingSelectString,              // waiting for SelectString after Talk closes
+        WaitingRetainerSellList,          // waiting for RetainerSellList after choosing Sell items (first entry for retainer)
 
-        OpeningSellItem,                 // open current slot in RetainerSellList
-        WaitingRetainerSell,             // wait for RetainerSell to appear (and clear ContextMenu if needed)
+        // Selling pipeline (NEW listings from player inventory) - now runs AFTER repricing
+        Sell_FindNextItemInInventory,      // iterate SellList -> find item in inventory (capacity-bounded)
+        Sell_OpenRetainerSellFromInventory,// open RetainerSell by selecting inventory slot
+
+        // Repricing listed items
+        OpeningSellItem,                  // open current slot in RetainerSellList
+        WaitingRetainerSell,              // wait for RetainerSell to appear (and clear ContextMenu if needed)
 
         // Repricing pipeline
-        CaptureSellContext,              // read HQ flag + current asking price from RetainerSell
-        OpenComparePrices,               // click Compare Prices (opens ItemSearchResult)
-        WaitingItemSearchResult,         // wait until ItemSearchResult is visible/ready
-        ReadMarketAndApplyPrice,         // read market -> stage desired price -> close market windows
-        CloseMarketThenApply,            // wait for market close -> apply staged price via callback
-        ConfirmAfterApply,               // wait for UI reflect -> confirm via callback
+        CaptureSellContext,               // read HQ flag + current asking price from RetainerSell
+        OpenComparePrices,                // click Compare Prices (opens ItemSearchResult)
+        WaitingItemSearchResult,          // wait until ItemSearchResult is visible/ready
+        ReadMarketAndApplyPrice,          // read market -> stage desired price -> close market windows
+        CloseMarketThenApply,             // wait for market close -> apply staged price via callback
+        ConfirmAfterApply,                // wait for UI reflect -> confirm via callback
 
-        CleanupAfterItem,                // exit RetainerSell
-        WaitingRetainerSellListAfterItem,// wait until back in RetainerSellList, then advance slot or finish retainer
+        CleanupAfterItem,                 // exit RetainerSell
+        WaitingRetainerSellListAfterItem, // wait until back in RetainerSellList, then advance slot or move phases
 
-        ExitToRetainerList,              // auto unwind: RetainerSellList -> SelectString -> Talk -> RetainerList
+        ExitToRetainerList,               // auto unwind: RetainerSellList -> SelectString -> Talk -> RetainerList
     }
 
     private RunPhase _phase = RunPhase.Idle;
@@ -86,6 +92,23 @@ public sealed class Plugin : IDalamudPlugin
     private bool _sellListCountCaptured;
     private int _listedCountThisRetainer;
     private int _slotIndexToOpen; // 0-based slot cursor
+
+    // =========================================================
+    // Selling (NEW listings) state (AFTER repricing)
+    // =========================================================
+    private readonly List<uint> _sellQueue = new(); // SellList ItemIds (per-retainer pass)
+    private int _sellQueuePos = 0;
+
+    // Capacity limiting for selling
+    private int _sellCapacityThisRetainer = 0;      // max new listings allowed this retainer (20 - listedCount at entry)
+    private int _soldThisRetainer = 0;              // number of new listings completed this retainer
+
+    private bool _processingListedItem = true; // true = repricing existing listing; false = selling new listing
+    private uint _currentSellItemId = 0;
+
+    // The inventory slot we intend to click to open RetainerSell for a new listing
+    private InventorySlotRef _pendingSellSlot;
+    private bool _hasPendingSellSlot;
 
     // Store retainer names as a set for fast lookup
     private readonly HashSet<string> _myRetainers = new(StringComparer.Ordinal);
@@ -105,6 +128,10 @@ public sealed class Plugin : IDalamudPlugin
 
     // Retainer name sync -> Configuration
     private DateTime _lastRetainerSyncUtc = DateTime.MinValue;
+
+    // Framework tick
+    private DateTime _lastFrameworkTickUtc = DateTime.MinValue;
+    private const double FrameworkTickIntervalSeconds = 0.10; // outer throttle; TickRun has its own pacing too
 
     // =========================================================
     // Lifecycle
@@ -136,12 +163,13 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "toggle | config | count | talk (debug) | hqdump (debug) | mbdump (debug) | mbnodelist (debug) | rldump (debug)"
+            HelpMessage = "toggle | stop | config | count | talk (debug) | hqdump (debug) | mbdump (debug) | mbnodelist (debug) | rldump (debug)"
         });
 
         pi.UiBuilder.Draw += WindowSystem.Draw;
         pi.UiBuilder.OpenConfigUi += ToggleConfigUi;
         pi.UiBuilder.OpenMainUi += OpenMainUi;
+        Framework.Update += OnFrameworkUpdate;
 
         Log.Information($"[{pi.Manifest.Name}] loaded.");
     }
@@ -151,6 +179,7 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.Draw -= WindowSystem.Draw;
         PluginInterface.UiBuilder.OpenConfigUi -= ToggleConfigUi;
         PluginInterface.UiBuilder.OpenMainUi -= OpenMainUi;
+        Framework.Update -= OnFrameworkUpdate;
 
         WindowSystem.RemoveAllWindows();
 
@@ -175,6 +204,11 @@ public sealed class Plugin : IDalamudPlugin
         {
             case "config":
                 ToggleConfigUi();
+                return;
+
+            case "stop":
+                if (IsRunning)
+                    StopRun();
                 return;
 
             case "talk":
@@ -232,7 +266,7 @@ public sealed class Plugin : IDalamudPlugin
                 }
 
             default:
-                MainWindow.ToggleIntent();
+                ToggleConfigUi();
                 return;
         }
     }
@@ -346,6 +380,48 @@ public sealed class Plugin : IDalamudPlugin
         if (sellerIsMine) return lowestPrice;
         var v = lowestPrice - UndercutAmount;
         return v < 1 ? 1 : v;
+    }
+
+    // =========================================================
+    // Inventory selling helpers (wired to UiReader)
+    // =========================================================
+    private struct InventorySlotRef
+    {
+        public int Container;
+        public int Slot;
+    }
+
+    /// <summary>
+    /// Find an itemId in player inventory and return (container, slot).
+    /// Uses UiReader inventory scan (InventoryManager).
+    /// </summary>
+    private bool TryFindItemInInventory(uint itemId, out InventorySlotRef slotRef)
+    {
+        slotRef = default;
+
+        // UiReader returns container/slot as ints
+        if (_ui.TryFindItemInInventory(itemId, out var container, out var slot))
+        {
+            slotRef = new InventorySlotRef
+            {
+                Container = container,
+                Slot = slot,
+            };
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Click InventoryGrid slot to open RetainerSell for a NEW listing.
+    /// Uses UiReader callback fire against InventoryGrid.
+    /// </summary>
+    private unsafe bool TryOpenRetainerSellFromInventory(InventorySlotRef slotRef)
+    {
+        // IMPORTANT: InventoryGrid must be visible/open for this to work.
+        // If it isn't, this will return false and we skip this sell attempt.
+        return _ui.TryOpenRetainerSellFromInventory(slotRef.Container, slotRef.Slot);
     }
 
     private unsafe bool IsAddonVisible(string name)
@@ -599,6 +675,16 @@ public sealed class Plugin : IDalamudPlugin
         _listedCountThisRetainer = 0;
         _slotIndexToOpen = 0;
 
+        // selling state
+        _sellQueue.Clear();
+        _sellQueuePos = 0;
+        _sellCapacityThisRetainer = 0;
+        _soldThisRetainer = 0;
+
+        _processingListedItem = true;
+        _currentSellItemId = 0;
+        _hasPendingSellSlot = false;
+
         var count = list->GetItemCount();
         for (int i = 0; i < count; i++)
         {
@@ -640,7 +726,28 @@ public sealed class Plugin : IDalamudPlugin
         _listedCountThisRetainer = 0;
         _slotIndexToOpen = 0;
 
+        _sellQueue.Clear();
+        _sellQueuePos = 0;
+        _sellCapacityThisRetainer = 0;
+        _soldThisRetainer = 0;
+
+        _processingListedItem = true;
+        _currentSellItemId = 0;
+        _hasPendingSellSlot = false;
+
         Log.Information("[RR] Stopped.");
+    }
+
+    private void OnFrameworkUpdate(IFramework framework)
+    {
+        if (!IsRunning) return;
+
+        var now = DateTime.UtcNow;
+        if ((now - _lastFrameworkTickUtc).TotalSeconds < FrameworkTickIntervalSeconds)
+            return;
+
+        TickRun();
+        _lastFrameworkTickUtc = now;
     }
 
     // =========================================================
@@ -681,6 +788,21 @@ public sealed class Plugin : IDalamudPlugin
                     _sellListCountCaptured = false;
                     _listedCountThisRetainer = 0;
                     _slotIndexToOpen = 0;
+
+                    // selling state (per retainer) - runs after repricing
+                    _sellQueue.Clear();
+                    foreach (var e in Configuration.GetSellListSorted())
+                    {
+                        if (e.ItemId != 0)
+                            _sellQueue.Add(e.ItemId);
+                    }
+                    _sellQueuePos = 0;
+                    _sellCapacityThisRetainer = 0;
+                    _soldThisRetainer = 0;
+
+                    _processingListedItem = true;
+                    _currentSellItemId = 0;
+                    _hasPendingSellSlot = false;
 
                     var row = _runOrder[_runPos];
                     Log.Information($"[RR] Opening retainer row {row} (pos {_runPos + 1}/{_runOrder.Count})");
@@ -756,22 +878,22 @@ public sealed class Plugin : IDalamudPlugin
                         _listedCountThisRetainer = Math.Clamp(listed, 0, 20);
                         _slotIndexToOpen = 0;
 
-                        Log.Information($"[RR] Entered RetainerSellList. Listed={_listedCountThisRetainer} (raw='{raw}')");
+                        // capacity is based on current listed count (repricing does not change it)
+                        _sellCapacityThisRetainer = Math.Max(0, 20 - _listedCountThisRetainer);
+                        _soldThisRetainer = 0;
+
+                        Log.Information($"[RR] Entered RetainerSellList. Listed={_listedCountThisRetainer} (raw='{raw}'); SellCapacity={_sellCapacityThisRetainer}");
                     }
 
-                    if (_listedCountThisRetainer <= 0)
-                    {
-                        Log.Information("[RR] No listed items for this retainer; exiting to RetainerList.");
-                        _phase = RunPhase.ExitToRetainerList;
-                        _lastActionUtc = now;
-                        return;
-                    }
-
-                    _phase = RunPhase.OpeningSellItem;
+                    // CHANGE: Reprice first; selling happens only after repricing completes.
+                    _phase = (_listedCountThisRetainer <= 0) ? RunPhase.Sell_FindNextItemInInventory : RunPhase.OpeningSellItem;
                     _lastActionUtc = now;
                     return;
                 }
 
+            // =========================================================
+            // Repricing existing listed items
+            // =========================================================
             case RunPhase.OpeningSellItem:
                 {
                     if (!retainerSellListVisible) return;
@@ -780,14 +902,16 @@ public sealed class Plugin : IDalamudPlugin
 
                     if (_slotIndexToOpen >= _listedCountThisRetainer)
                     {
-                        Log.Information($"[RR] Finished retainer items ({_listedCountThisRetainer}); exiting to RetainerList.");
-                        _phase = RunPhase.ExitToRetainerList;
+                        // CHANGE: after repricing, proceed to selling phase (capacity-bounded), not exit.
+                        _phase = RunPhase.Sell_FindNextItemInInventory;
                         _lastActionUtc = now;
                         return;
                     }
 
                     var idx = Math.Clamp(_slotIndexToOpen, 0, 19);
                     Log.Information($"[RR] Opening sell slot {idx} ({_slotIndexToOpen + 1}/{_listedCountThisRetainer})");
+
+                    _processingListedItem = true;
 
                     if (!FireRetainerSellList_OpenItem(idx))
                         return;
@@ -808,7 +932,7 @@ public sealed class Plugin : IDalamudPlugin
 
                     if (!retainerSellVisible) return;
 
-                    Log.Information($"[RR] RetainerSell opened for slot {_slotIndexToOpen}.");
+                    Log.Information($"[RR] RetainerSell opened (processingListedItem={_processingListedItem}).");
 
                     _phase = RunPhase.CaptureSellContext;
                     _lastActionUtc = now;
@@ -818,7 +942,6 @@ public sealed class Plugin : IDalamudPlugin
             // =========================================================
             // Repricing pipeline (unchanged)
             // =========================================================
-
             case RunPhase.CaptureSellContext:
                 {
                     if (!retainerSellVisible) return;
@@ -1109,18 +1232,34 @@ public sealed class Plugin : IDalamudPlugin
                     return;
                 }
 
-            // Synchronize on being back in RetainerSellList before moving to next slot
+            // Synchronize on being back in RetainerSellList before moving on
             case RunPhase.WaitingRetainerSellListAfterItem:
                 {
                     if (!retainerSellListVisible) return;
                     if (retainerSellVisible) return;
 
+                    // If we just processed a NEW listing, count it toward capacity and continue selling (if capacity remains)
+                    if (!_processingListedItem)
+                    {
+                        _processingListedItem = true; // reset default
+                        _hasPendingSellSlot = false;
+                        _currentSellItemId = 0;
+
+                        _soldThisRetainer++;
+                        Log.Information($"[RR] SoldThisRetainer={_soldThisRetainer}/{_sellCapacityThisRetainer}");
+
+                        _phase = RunPhase.Sell_FindNextItemInInventory;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    // Otherwise we just processed a listed item -> advance slot index
                     _slotIndexToOpen++;
 
                     if (_slotIndexToOpen >= _listedCountThisRetainer)
                     {
-                        Log.Information($"[RR] Finished retainer items ({_listedCountThisRetainer}); exiting to RetainerList.");
-                        _phase = RunPhase.ExitToRetainerList;
+                        // finished repricing -> proceed to selling
+                        _phase = RunPhase.Sell_FindNextItemInInventory;
                         _lastActionUtc = now;
                         return;
                     }
@@ -1130,7 +1269,117 @@ public sealed class Plugin : IDalamudPlugin
                     return;
                 }
 
+            // =========================================================
+            // Selling pipeline (AFTER repricing), capacity-bounded
+            // =========================================================
+            case RunPhase.Sell_FindNextItemInInventory:
+                {
+                    if (!retainerSellListVisible) return;
+
+                    if (_sellCapacityThisRetainer <= 0)
+                    {
+                        Log.Information("[RR] Sell skipped: retainer is full (20/20).");
+                        _phase = RunPhase.ExitToRetainerList;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    if (_soldThisRetainer >= _sellCapacityThisRetainer)
+                    {
+                        Log.Information($"[RR] Sell complete: reached capacity {_soldThisRetainer}/{_sellCapacityThisRetainer}.");
+                        _phase = RunPhase.ExitToRetainerList;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    if (_sellQueue.Count == 0)
+                    {
+                        Log.Information("[RR] Sell skipped: SellQueue empty.");
+                        _phase = RunPhase.ExitToRetainerList;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    // Walk sell queue and find first item that exists in player inventory.
+                    while (_sellQueuePos < _sellQueue.Count)
+                    {
+                        var itemId = _sellQueue[_sellQueuePos];
+                        _sellQueuePos++;
+
+                        if (itemId == 0) continue;
+
+                        if (TryFindItemInInventory(itemId, out var slotRef))
+                        {
+                            _currentSellItemId = itemId;
+                            _pendingSellSlot = slotRef;
+                            _hasPendingSellSlot = true;
+
+                            Log.Information($"[RR] Sell candidate found in inventory: itemId={itemId} container={slotRef.Container} slot={slotRef.Slot} (cap {_soldThisRetainer}/{_sellCapacityThisRetainer})");
+
+                            _phase = RunPhase.Sell_OpenRetainerSellFromInventory;
+                            _lastActionUtc = now;
+                            return;
+                        }
+
+                        Log.Information($"[RR] Sell candidate not found in inventory: itemId={itemId}");
+                    }
+
+                    // No sellable items found in inventory -> done
+                    Log.Information("[RR] Sell complete: no SellList items found in inventory.");
+                    _phase = RunPhase.ExitToRetainerList;
+                    _lastActionUtc = now;
+                    return;
+                }
+
+            case RunPhase.Sell_OpenRetainerSellFromInventory:
+                {
+                    if (!retainerSellListVisible) return;
+
+                    if (_sellCapacityThisRetainer <= 0 || _soldThisRetainer >= _sellCapacityThisRetainer)
+                    {
+                        _phase = RunPhase.ExitToRetainerList;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    if (!_hasPendingSellSlot)
+                    {
+                        Log.Warning("[RR] Sell_Open: no pending slot; returning to Sell_FindNext.");
+                        _phase = RunPhase.Sell_FindNextItemInInventory;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    // Mark as NEW listing (not repricing an existing listed row)
+                    _processingListedItem = false;
+
+                    var ok = TryOpenRetainerSellFromInventory(_pendingSellSlot);
+
+                    if (!ok)
+                    {
+                        Log.Warning($"[RR] Sell_Open: failed to open RetainerSell from inventory (itemId={_currentSellItemId}); skipping.");
+                        _hasPendingSellSlot = false;
+                        _pendingSellSlot = default;
+                        _currentSellItemId = 0;
+
+                        _phase = RunPhase.Sell_FindNextItemInInventory;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    Log.Information($"[RR] Sell_Open: requested RetainerSell from inventory (itemId={_currentSellItemId}). Waiting RetainerSell...");
+
+                    _hasPendingSellSlot = false;
+                    _pendingSellSlot = default;
+
+                    _phase = RunPhase.WaitingRetainerSell;
+                    _lastActionUtc = now;
+                    return;
+                }
+
+            // =========================================================
             // Auto unwind: close one layer per tick until RetainerList is the only visible screen
+            // =========================================================
             case RunPhase.ExitToRetainerList:
                 {
                     // Priority 1: market windows
@@ -1210,5 +1459,5 @@ public sealed class Plugin : IDalamudPlugin
     // Window helpers
     // =========================================================
     public void ToggleConfigUi() => ConfigWindow.Toggle();
-    private void OpenMainUi() => MainWindow.EnsureIntentOpen();
+    private void OpenMainUi() => ToggleConfigUi();
 }

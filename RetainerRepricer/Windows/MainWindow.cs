@@ -21,12 +21,6 @@ public sealed unsafe class MainWindow : Window, IDisposable
     private const float RaiseY = 38f;
     private const float MoveX = 4f;
 
-    // =========================================================
-    // UI tick pacing (plugin has its own action pacing)
-    // =========================================================
-    private DateTime _lastTickUtc = DateTime.MinValue;
-    private const double TickIntervalSeconds = 0.25;
-
     public MainWindow(Plugin plugin)
         : base(
             "Retainer Repricer##Overlay",
@@ -50,22 +44,59 @@ public sealed unsafe class MainWindow : Window, IDisposable
         // nothing to dispose
     }
 
-    // =========================================================
-    // Intent (overlay wants open/closed)
-    // =========================================================
-    public void ToggleIntent()
-        => SetOverlayIntent(!_plugin.Configuration.OverlayWantsOpen);
-
-    public void EnsureIntentOpen()
-        => SetOverlayIntent(true);
-
-    private void SetOverlayIntent(bool wantsOpen)
+    private static AtkUnitBase* GetVisibleUnit(string addonName)
     {
-        if (_plugin.Configuration.OverlayWantsOpen == wantsOpen)
-            return;
+        var a = Plugin.GameGui.GetAddonByName(addonName, 1);
+        if (a.IsNull) return null;
 
-        _plugin.Configuration.OverlayWantsOpen = wantsOpen;
-        _plugin.Configuration.Save();
+        var u = (AtkUnitBase*)a.Address;
+        if (u == null || !u->IsVisible) return null;
+
+        return u;
+    }
+
+    private static bool IsAddonVisible(string addonName)
+        => GetVisibleUnit(addonName) != null;
+
+    private static bool IsAddonOpen(string addonName)
+        => !Plugin.GameGui.GetAddonByName(addonName, 1).IsNull;
+
+    private bool AnyRepricerAddonVisible()
+    {
+        // “Flow” windows where we want the Stop button available
+        if (IsAddonVisible("RetainerList")) return true;
+        if (IsAddonVisible("RetainerSellList")) return true;
+        if (IsAddonVisible("RetainerSell")) return true;
+        if (IsAddonVisible("SelectString")) return true;
+        if (IsAddonVisible("Talk")) return true;
+
+        // Market windows can be open while Sell is open
+        if (IsAddonOpen("ItemSearchResult")) return true;
+        if (IsAddonOpen("ItemHistory")) return true;
+
+        return false;
+    }
+
+    private static AtkUnitBase* GetBestAnchorUnit()
+    {
+        // Prefer anchoring to whichever of these is currently visible.
+        // This keeps the overlay accessible after RetainerList disappears.
+        var u = GetVisibleUnit("RetainerList");
+        if (u != null) return u;
+
+        u = GetVisibleUnit("RetainerSellList");
+        if (u != null) return u;
+
+        u = GetVisibleUnit("RetainerSell");
+        if (u != null) return u;
+
+        u = GetVisibleUnit("SelectString");
+        if (u != null) return u;
+
+        u = GetVisibleUnit("Talk");
+        if (u != null) return u;
+
+        return null;
     }
 
     // =========================================================
@@ -73,65 +104,34 @@ public sealed unsafe class MainWindow : Window, IDisposable
     // =========================================================
     public override bool DrawConditions()
     {
-        if (!ShouldOverlayBeActive())
+        // Master plugin kill switch: no overlay when disabled
+        if (!_plugin.Configuration.PluginEnabled)
             return false;
 
-        // IMPORTANT:
-        // Tick even if RetainerList is not visible, or we could miss SelectString/SellList transitions.
-        TickPluginIfNeeded();
-
-        // Only DRAW/ANCHOR overlay when RetainerList is visible.
-        var retainerListUnit = GetRetainerListUnit();
-        if (retainerListUnit == null)
-            return false;
-
-        // Sync roster into config while RetainerList is open.
-        _plugin.TrySyncRetainersThrottled();
-
-        PrepareOverlayWindow(retainerListUnit);
-        return true;
-    }
-
-    private bool ShouldOverlayBeActive()
-    {
+        // Overlay toggle: only controls this window
         if (!_plugin.Configuration.OverlayEnabled)
             return false;
 
-        if (!_plugin.Configuration.OverlayWantsOpen)
+        // Only show while we're in the retainer/sell/market flow,
+        // so Stop is available even after RetainerList disappears.
+        if (!AnyRepricerAddonVisible())
             return false;
+
+        // Sync roster only when RetainerList is visible (same behavior as before)
+        if (IsAddonVisible("RetainerList"))
+            _plugin.TrySyncRetainersThrottled();
+
+        var anchor = GetBestAnchorUnit();
+        if (anchor == null)
+            return false;
+
+        ImGui.SetNextWindowSize(new Vector2(OverlayW, OverlayH), ImGuiCond.Always);
+        AnchorToUnit(anchor);
 
         return true;
     }
 
-    private void TickPluginIfNeeded()
-    {
-        if (!_plugin.IsRunning)
-            return;
-
-        var now = DateTime.UtcNow;
-        if ((now - _lastTickUtc).TotalSeconds < TickIntervalSeconds)
-            return;
-
-        _plugin.TickRun();
-        _lastTickUtc = now;
-    }
-
-    private static AtkUnitBase* GetRetainerListUnit()
-    {
-        var retainerList = Plugin.GameGui.GetAddonByName("RetainerList", 1);
-        if (retainerList.IsNull)
-            return null;
-
-        return (AtkUnitBase*)retainerList.Address;
-    }
-
-    private void PrepareOverlayWindow(AtkUnitBase* retainerListUnit)
-    {
-        ImGui.SetNextWindowSize(new Vector2(OverlayW, OverlayH), ImGuiCond.Always);
-        AnchorToRetainerList(retainerListUnit);
-    }
-
-    private void AnchorToRetainerList(AtkUnitBase* unit)
+    private void AnchorToUnit(AtkUnitBase* unit)
     {
         if (unit == null) return;
 
@@ -168,12 +168,19 @@ public sealed unsafe class MainWindow : Window, IDisposable
 
         ImGui.PushID("rr-startstop");
         if (ImGuiComponents.IconButton(icon))
-        {
-            if (_plugin.IsRunning)
-                _plugin.StopRun();
-            else
-                _plugin.StartRunFromRetainerList();
-        }
+{
+    if (_plugin.IsRunning)
+    {
+        _plugin.StopRun();
+    }
+    else
+    {
+        // Don't allow starting while plugin is disabled
+        if (_plugin.Configuration.PluginEnabled)
+            _plugin.StartRunFromRetainerList();
+    }
+}
+
         ImGui.PopID();
 
         if (ImGui.IsItemHovered())

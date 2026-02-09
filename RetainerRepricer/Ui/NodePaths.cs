@@ -9,7 +9,7 @@ internal static class NodePaths
     public const int ItemSearchResult_ListNodeId = 26;
 
     // Error/status message text node (empty when no error; shows "No items found." / "Please wait...")
-    public const int ItemSearchResult_ErrorMessageNodeId = 5; 
+    public const int ItemSearchResult_ErrorMessageNodeId = 5;
 
     // ItemSearchResult row renderer nodes (AtkComponentListItemRenderer)
     public const ushort HqIconNodeId = 3;
