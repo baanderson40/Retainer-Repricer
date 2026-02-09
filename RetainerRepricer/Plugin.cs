@@ -52,23 +52,26 @@ public sealed class Plugin : IDalamudPlugin
         Idle,
 
         // Retainer navigation
-        NeedOpen,                    // ready to click next retainer row in RetainerList
-        WaitingTalk,                 // waiting for Talk after clicking a retainer; click to advance
-        WaitingSelectString,         // waiting for SelectString after Talk closes
-        WaitingRetainerSellList,     // waiting for RetainerSellList after choosing Sell items
-        OpeningFirstSellItem,        // fire RetainerSellList callback to open item detail
-        WaitingRetainerSell,         // wait for RetainerSell to appear (and clear ContextMenu if needed)
+        NeedOpen,                        // ready to click next retainer row in RetainerList
+        WaitingTalk,                     // waiting for Talk after clicking a retainer; click to advance
+        WaitingSelectString,             // waiting for SelectString after Talk closes
+        WaitingRetainerSellList,         // waiting for RetainerSellList after choosing Sell items (first entry for retainer)
+
+        OpeningSellItem,                 // open current slot in RetainerSellList
+        WaitingRetainerSell,             // wait for RetainerSell to appear (and clear ContextMenu if needed)
 
         // Repricing pipeline
-        CaptureSellContext,          // read HQ flag + current asking price from RetainerSell
-        OpenComparePrices,           // click Compare Prices (opens ItemSearchResult)
-        WaitingItemSearchResult,     // wait until ItemSearchResult is visible/ready
-        ReadMarketAndApplyPrice,     // read market -> stage desired price -> close market windows
-        CloseMarketThenApply,        // wait for market close -> apply staged price via callback
-        ConfirmAfterApply,           // wait for UI reflect -> confirm via callback
-        CleanupAfterItem,            // exit RetainerSell, then proceed
+        CaptureSellContext,              // read HQ flag + current asking price from RetainerSell
+        OpenComparePrices,               // click Compare Prices (opens ItemSearchResult)
+        WaitingItemSearchResult,         // wait until ItemSearchResult is visible/ready
+        ReadMarketAndApplyPrice,         // read market -> stage desired price -> close market windows
+        CloseMarketThenApply,            // wait for market close -> apply staged price via callback
+        ConfirmAfterApply,               // wait for UI reflect -> confirm via callback
 
-        WaitingReturn,               // waiting for user to return to RetainerList
+        CleanupAfterItem,                // exit RetainerSell
+        WaitingRetainerSellListAfterItem,// wait until back in RetainerSellList, then advance slot or finish retainer
+
+        WaitingReturn,                   // waiting for user to return to RetainerList (between retainers)
     }
 
     private RunPhase _phase = RunPhase.Idle;
@@ -78,9 +81,10 @@ public sealed class Plugin : IDalamudPlugin
 
     private DateTime _lastActionUtc = DateTime.MinValue;
 
-    // When we enter RetainerSellList, capture listed count once.
+    // Per-retainer item loop state
     private bool _sellListCountCaptured;
-    private int _slotIndexToOpen = 0; // 0-based slot in RetainerSellList you want to open first
+    private int _listedCountThisRetainer;
+    private int _slotIndexToOpen; // 0-based slot cursor
 
     // Store retainer names as a set for fast lookup
     private readonly HashSet<string> _myRetainers = new(StringComparer.Ordinal);
@@ -575,7 +579,10 @@ public sealed class Plugin : IDalamudPlugin
 
         _runOrder.Clear();
         _runPos = -1;
+
         _sellListCountCaptured = false;
+        _listedCountThisRetainer = 0;
+        _slotIndexToOpen = 0;
 
         var count = list->GetItemCount();
         for (int i = 0; i < count; i++)
@@ -613,7 +620,10 @@ public sealed class Plugin : IDalamudPlugin
 
         _runOrder.Clear();
         _runPos = -1;
+
         _sellListCountCaptured = false;
+        _listedCountThisRetainer = 0;
+        _slotIndexToOpen = 0;
 
         Log.Information("[RR] Stopped.");
     }
@@ -651,10 +661,14 @@ public sealed class Plugin : IDalamudPlugin
                         return;
                     }
 
+                    // reset per-retainer loop state
+                    _sellListCountCaptured = false;
+                    _listedCountThisRetainer = 0;
+                    _slotIndexToOpen = 0;
+
                     var row = _runOrder[_runPos];
                     Log.Information($"[RR] Opening retainer row {row} (pos {_runPos + 1}/{_runOrder.Count})");
 
-                    _sellListCountCaptured = false;
                     ClickRetainerByIndex(row);
 
                     _phase = RunPhase.WaitingTalk;
@@ -711,31 +725,54 @@ public sealed class Plugin : IDalamudPlugin
                     return;
                 }
 
+            // First entry into RetainerSellList for the current retainer
             case RunPhase.WaitingRetainerSellList:
                 {
                     if (!retainerSellListVisible) return;
 
-                    Log.Information("[RR] Entered RetainerSellList.");
-
                     if (!_sellListCountCaptured)
                     {
                         _sellListCountCaptured = true;
+
                         var raw = _ui.ReadRetainerSellListCountText();
-                        var listed = _ui.ReadRetainerSellListListedCount();
-                        Log.Information($"[RR] Listed count captured = {listed?.ToString() ?? "null"} (raw='{raw}')");
+                        var listed = _ui.ReadRetainerSellListListedCount() ?? 0;
+
+                        _listedCountThisRetainer = Math.Clamp(listed, 0, 20);
+                        _slotIndexToOpen = 0;
+
+                        Log.Information($"[RR] Entered RetainerSellList. Listed={_listedCountThisRetainer} (raw='{raw}')");
                     }
 
-                    _slotIndexToOpen = 0;
-                    _phase = RunPhase.OpeningFirstSellItem;
+                    if (_listedCountThisRetainer <= 0)
+                    {
+                        Log.Information("[RR] No listed items for this retainer; waiting for return to RetainerList.");
+                        _phase = RunPhase.WaitingReturn;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    _phase = RunPhase.OpeningSellItem;
                     _lastActionUtc = now;
                     return;
                 }
 
-            case RunPhase.OpeningFirstSellItem:
+            case RunPhase.OpeningSellItem:
                 {
                     if (!retainerSellListVisible) return;
 
+                    if (_slotIndexToOpen < 0) _slotIndexToOpen = 0;
+
+                    if (_slotIndexToOpen >= _listedCountThisRetainer)
+                    {
+                        Log.Information($"[RR] Finished retainer items ({_listedCountThisRetainer}); waiting for return to RetainerList.");
+                        _phase = RunPhase.WaitingReturn;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
                     var idx = Math.Clamp(_slotIndexToOpen, 0, 19);
+                    Log.Information($"[RR] Opening sell slot {idx} ({_slotIndexToOpen + 1}/{_listedCountThisRetainer})");
+
                     if (!FireRetainerSellList_OpenItem(idx))
                         return;
 
@@ -763,7 +800,7 @@ public sealed class Plugin : IDalamudPlugin
                 }
 
             // =========================================================
-            // Repricing pipeline (behavior preserved + ISR message gate)
+            // Repricing pipeline (unchanged)
             // =========================================================
 
             case RunPhase.CaptureSellContext:
@@ -788,7 +825,6 @@ public sealed class Plugin : IDalamudPlugin
                 {
                     if (!retainerSellVisible) return;
 
-                    // Reset ISR throttle policy per item
                     _isrThrottleRetried = false;
                     _isrThrottleUntilUtc = DateTime.MinValue;
 
@@ -807,7 +843,6 @@ public sealed class Plugin : IDalamudPlugin
                 {
                     if (!marketOpen) return;
 
-                    // Gate 0: ItemSearchResult error/status message (NodeId 5)
                     var status = _ui.GetItemSearchResultStatus(out var msg);
 
                     if (status == Ui.UiReader.ItemSearchResultStatus.NoItemsFound)
@@ -820,11 +855,9 @@ public sealed class Plugin : IDalamudPlugin
 
                     if (status == Ui.UiReader.ItemSearchResultStatus.PleaseWaitRetry)
                     {
-                        // Still in backoff window: just wait (do not spam actions).
                         if (now < _isrThrottleUntilUtc)
                             return;
 
-                        // First time: set backoff and wait.
                         if (!_isrThrottleRetried && _isrThrottleUntilUtc == DateTime.MinValue)
                         {
                             _isrThrottleUntilUtc = now.AddSeconds(ItemSearchResultThrottleBackoffSeconds);
@@ -832,7 +865,6 @@ public sealed class Plugin : IDalamudPlugin
                             return;
                         }
 
-                        // Backoff elapsed: retry once by re-clicking Compare Prices (refresh without closing ISR).
                         if (!_isrThrottleRetried)
                         {
                             var sellAddon = GameGui.GetAddonByName("RetainerSell", 1);
@@ -847,7 +879,6 @@ public sealed class Plugin : IDalamudPlugin
                             return;
                         }
 
-                        // Retried once and still throttled: move on (no price change).
                         Log.Warning("[RR] ISR throttle: still 'Please wait...' after one retry -> skip item.");
                         _phase = RunPhase.CleanupAfterItem;
                         _lastActionUtc = now;
@@ -862,7 +893,6 @@ public sealed class Plugin : IDalamudPlugin
                         return;
                     }
 
-                    // Existing readiness gates
                     var list = _ui.GetMarketList();
                     if (list == null)
                     {
@@ -890,7 +920,6 @@ public sealed class Plugin : IDalamudPlugin
                     if (!retainerSellVisible) return;
                     if (!marketOpen) return;
 
-                    // Defensive: if message appears late, honor it.
                     var status = _ui.GetItemSearchResultStatus(out var msg);
 
                     if (status == Ui.UiReader.ItemSearchResultStatus.NoItemsFound)
@@ -943,7 +972,6 @@ public sealed class Plugin : IDalamudPlugin
                         return;
                     }
 
-                    // Stage apply AFTER market UI is closed (gate preserved)
                     _stagedDesiredPrice = desired;
                     _stagedReferenceSeller = lowestSeller;
                     _stagedReferenceIsMine = referenceIsMine;
@@ -960,7 +988,6 @@ public sealed class Plugin : IDalamudPlugin
 
             case RunPhase.CloseMarketThenApply:
                 {
-                    // Gate preserved: wait until market windows are actually gone
                     if (MarketWindowsStillOpen())
                         return;
 
@@ -974,7 +1001,6 @@ public sealed class Plugin : IDalamudPlugin
                         return;
                     }
 
-                    // Stability gate preserved: must be able to read asking price
                     var current = _ui.ReadRetainerSellAskingPrice();
                     if (current is null)
                     {
@@ -983,7 +1009,6 @@ public sealed class Plugin : IDalamudPlugin
                         return;
                     }
 
-                    // If already applied once, wait for UI reflect then confirm
                     if (_hasAppliedStagedPrice)
                     {
                         if (current.Value != _stagedDesiredPrice.Value)
@@ -1006,7 +1031,6 @@ public sealed class Plugin : IDalamudPlugin
                     var unit = (AtkUnitBase*)sellAddon.Address;
                     if (unit == null) return;
 
-                    // RetainerSell "set asking price" callback: (2, value)
                     Callback.Fire(unit, updateState: true, 2, _stagedDesiredPrice.Value);
 
                     _hasAppliedStagedPrice = true;
@@ -1026,11 +1050,9 @@ public sealed class Plugin : IDalamudPlugin
                         return;
                     }
 
-                    // Gate preserved: ensure no market windows are lingering
                     if (MarketWindowsStillOpen())
                         return;
 
-                    // Gate preserved: verify UI reflects the new price before confirming
                     var desired = _stagedDesiredPrice.Value;
                     var uiPrice = _ui.ReadRetainerSellAskingPrice();
                     if (uiPrice == null || uiPrice.Value != desired)
@@ -1048,7 +1070,6 @@ public sealed class Plugin : IDalamudPlugin
 
                     Log.Information($"[RR] Confirm (FireCallback) price={desired} seller='{_stagedReferenceSeller}' mine={_stagedReferenceIsMine}");
 
-                    // Confirm via callback (safe path)
                     Callback.Fire(unit, updateState: true, 0);
 
                     _stagedDesiredPrice = null;
@@ -1059,6 +1080,7 @@ public sealed class Plugin : IDalamudPlugin
                     return;
                 }
 
+            // Exit RetainerSell (do NOT go back to RetainerList yet)
             case RunPhase.CleanupAfterItem:
                 {
                     CloseMarketWindows();
@@ -1075,7 +1097,29 @@ public sealed class Plugin : IDalamudPlugin
 
                     Log.Information("[RR] Cleanup done (closed market + exited RetainerSell).");
 
-                    _phase = RunPhase.WaitingReturn;
+                    _phase = RunPhase.WaitingRetainerSellListAfterItem;
+                    _lastActionUtc = now;
+                    return;
+                }
+
+            // Synchronize on being back in RetainerSellList before moving to next slot
+            case RunPhase.WaitingRetainerSellListAfterItem:
+                {
+                    // Wait until we're truly back on the list view.
+                    if (!retainerSellListVisible) return;
+                    if (retainerSellVisible) return;
+
+                    _slotIndexToOpen++;
+
+                    if (_slotIndexToOpen >= _listedCountThisRetainer)
+                    {
+                        Log.Information($"[RR] Finished retainer items ({_listedCountThisRetainer}); waiting for return to RetainerList.");
+                        _phase = RunPhase.WaitingReturn;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    _phase = RunPhase.OpeningSellItem;
                     _lastActionUtc = now;
                     return;
                 }
