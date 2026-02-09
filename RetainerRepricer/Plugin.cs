@@ -71,7 +71,7 @@ public sealed class Plugin : IDalamudPlugin
         CleanupAfterItem,                // exit RetainerSell
         WaitingRetainerSellListAfterItem,// wait until back in RetainerSellList, then advance slot or finish retainer
 
-        WaitingReturn,                   // waiting for user to return to RetainerList (between retainers)
+        ExitToRetainerList,              // auto unwind: RetainerSellList -> SelectString -> Talk -> RetainerList
     }
 
     private RunPhase _phase = RunPhase.Idle;
@@ -376,6 +376,18 @@ public sealed class Plugin : IDalamudPlugin
     private unsafe bool MarketWindowsStillOpen()
         => IsAddonOpen("ItemSearchResult") || IsAddonOpen("ItemHistory");
 
+    private unsafe void CloseRetainerSellIfOpen()
+    {
+        var sellAddon = GameGui.GetAddonByName("RetainerSell", 1);
+        if (!sellAddon.IsNull)
+        {
+            new AddonMaster.RetainerSell(sellAddon.Address).Cancel();
+            return;
+        }
+
+        CloseAddonIfOpen("RetainerSell");
+    }
+
     private unsafe bool TryReadMarketRow(int rowIndex, out int unitPrice, out string seller, out bool isHq)
     {
         unitPrice = 0;
@@ -645,6 +657,7 @@ public sealed class Plugin : IDalamudPlugin
         var retainerSellListVisible = IsAddonVisible("RetainerSellList");
         var retainerSellVisible = IsAddonVisible("RetainerSell");
         var marketOpen = IsAddonOpen("ItemSearchResult");
+        var itemHistoryOpen = IsAddonOpen("ItemHistory");
         var contextMenuVisible = IsAddonVisible("ContextMenu");
 
         switch (_phase)
@@ -745,8 +758,8 @@ public sealed class Plugin : IDalamudPlugin
 
                     if (_listedCountThisRetainer <= 0)
                     {
-                        Log.Information("[RR] No listed items for this retainer; waiting for return to RetainerList.");
-                        _phase = RunPhase.WaitingReturn;
+                        Log.Information("[RR] No listed items for this retainer; exiting to RetainerList.");
+                        _phase = RunPhase.ExitToRetainerList;
                         _lastActionUtc = now;
                         return;
                     }
@@ -764,8 +777,8 @@ public sealed class Plugin : IDalamudPlugin
 
                     if (_slotIndexToOpen >= _listedCountThisRetainer)
                     {
-                        Log.Information($"[RR] Finished retainer items ({_listedCountThisRetainer}); waiting for return to RetainerList.");
-                        _phase = RunPhase.WaitingReturn;
+                        Log.Information($"[RR] Finished retainer items ({_listedCountThisRetainer}); exiting to RetainerList.");
+                        _phase = RunPhase.ExitToRetainerList;
                         _lastActionUtc = now;
                         return;
                     }
@@ -1084,16 +1097,7 @@ public sealed class Plugin : IDalamudPlugin
             case RunPhase.CleanupAfterItem:
                 {
                     CloseMarketWindows();
-
-                    var sellAddon = GameGui.GetAddonByName("RetainerSell", 1);
-                    if (!sellAddon.IsNull)
-                    {
-                        new AddonMaster.RetainerSell(sellAddon.Address).Cancel();
-                    }
-                    else
-                    {
-                        CloseAddonIfOpen("RetainerSell");
-                    }
+                    CloseRetainerSellIfOpen();
 
                     Log.Information("[RR] Cleanup done (closed market + exited RetainerSell).");
 
@@ -1105,7 +1109,6 @@ public sealed class Plugin : IDalamudPlugin
             // Synchronize on being back in RetainerSellList before moving to next slot
             case RunPhase.WaitingRetainerSellListAfterItem:
                 {
-                    // Wait until we're truly back on the list view.
                     if (!retainerSellListVisible) return;
                     if (retainerSellVisible) return;
 
@@ -1113,8 +1116,8 @@ public sealed class Plugin : IDalamudPlugin
 
                     if (_slotIndexToOpen >= _listedCountThisRetainer)
                     {
-                        Log.Information($"[RR] Finished retainer items ({_listedCountThisRetainer}); waiting for return to RetainerList.");
-                        _phase = RunPhase.WaitingReturn;
+                        Log.Information($"[RR] Finished retainer items ({_listedCountThisRetainer}); exiting to RetainerList.");
+                        _phase = RunPhase.ExitToRetainerList;
                         _lastActionUtc = now;
                         return;
                     }
@@ -1124,14 +1127,74 @@ public sealed class Plugin : IDalamudPlugin
                     return;
                 }
 
-            case RunPhase.WaitingReturn:
+            // Auto unwind: close one layer per tick until RetainerList is the only visible screen
+            case RunPhase.ExitToRetainerList:
                 {
-                    if (retainerListVisible && !retainerSellListVisible && !selectStringVisible)
+                    // Priority 1: market windows
+                    if (marketOpen || itemHistoryOpen)
                     {
-                        Log.Information("[RR] Back on RetainerList; ready for next retainer.");
+                        Log.Information("[RR] Exit: closing market windows.");
+                        CloseMarketWindows();
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    // Priority 2: context menu overlays
+                    if (contextMenuVisible)
+                    {
+                        Log.Information("[RR] Exit: dismissing ContextMenu.");
+                        FireContextMenuDismiss();
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    // Priority 3: RetainerSell
+                    if (retainerSellVisible)
+                    {
+                        Log.Information("[RR] Exit: closing RetainerSell.");
+                        CloseRetainerSellIfOpen();
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    // Priority 4: RetainerSellList
+                    if (retainerSellListVisible)
+                    {
+                        Log.Information("[RR] Exit: closing RetainerSellList.");
+                        CloseAddonIfOpen("RetainerSellList"); // (-1)
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    // Priority 5: SelectString
+                    if (selectStringVisible)
+                    {
+                        Log.Information("[RR] Exit: closing SelectString.");
+                        CloseAddonIfOpen("SelectString"); // (-1)
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    // Priority 6: Talk
+                    if (talkVisible)
+                    {
+                        Log.Information("[RR] Exit: advancing/closing Talk.");
+                        ClickTalkECommons();
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    // Base condition: back at RetainerList
+                    if (retainerListVisible)
+                    {
+                        Log.Information("[RR] Exit complete: back on RetainerList; continuing to next retainer.");
                         _phase = RunPhase.NeedOpen;
                         _lastActionUtc = now;
+                        return;
                     }
+
+                    // Otherwise: nothing to do yet (timing gap). Keep looping.
+                    _lastActionUtc = now;
                     return;
                 }
 
