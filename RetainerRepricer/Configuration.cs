@@ -9,9 +9,8 @@ namespace RetainerRepricer;
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
-    // =========================================================
-    // Dalamud config versioning
-    // =========================================================
+    #region Dalamud config versioning
+
     public int Version { get; set; } = 2;
 
     [NonSerialized]
@@ -20,22 +19,28 @@ public sealed class Configuration : IPluginConfiguration
     public void Initialize(IDalamudPluginInterface pi)
         => _pluginInterface = pi;
 
-    // =========================================================
-    // Master enable/disable
-    // =========================================================
-    // When false: no running, no context menu injection, no overlay drawing.
-    // Config window still works.
+    public void Save()
+        => _pluginInterface?.SavePluginConfig(this);
+
+    #endregion
+
+    #region Global toggles
+
+    // Master enable switch. When off: no runs, no context menu injection, no overlays.
+    // Config UI stays usable so it’s easy to turn back on.
     public bool PluginEnabled { get; set; } = true;
 
-    // =========================================================
-    // Run behavior
-    // =========================================================
-    // NEW: controls whether the plugin closes the RetainerList addon at end of run.
+    #endregion
+
+    #region Run behavior
+
+    // If enabled, the plugin will close the RetainerList window when a full run finishes.
     public bool CloseRetainerListAddon { get; set; } = true;
 
-    // =========================================================
-    // Retainer enable/disable flags
-    // =========================================================
+    #endregion
+
+    #region Retainer enable/disable
+
     public Dictionary<string, bool> RetainersEnabled { get; set; }
         = new(StringComparer.OrdinalIgnoreCase);
 
@@ -45,16 +50,18 @@ public sealed class Configuration : IPluginConfiguration
     public void SetRetainerEnabled(string name, bool enabled)
         => RetainersEnabled[name] = enabled;
 
-    // =========================================================
-    // Overlay settings (visual only)
-    // =========================================================
+    #endregion
+
+    #region Overlay (visual only)
+
     public bool OverlayEnabled { get; set; } = true;
     public float OverlayOffsetX { get; set; } = 0f;
     public float OverlayOffsetY { get; set; } = 0f;
 
-    // =========================================================
-    // Sell list (v1)
-    // =========================================================
+    #endregion
+
+    #region Sell list
+
     [Serializable]
     public sealed class SellListEntry
     {
@@ -64,35 +71,33 @@ public sealed class Configuration : IPluginConfiguration
 
     public Dictionary<uint, SellListEntry> SellList { get; set; } = new();
 
-    public bool HasSellItem(uint itemId) => SellList.ContainsKey(itemId);
+    public bool HasSellItem(uint itemId)
+        => SellList.ContainsKey(itemId);
 
-    public bool AddSellItem(uint itemId, string name)
+    public bool TryAddSellItem(uint itemId, string name)
     {
         if (itemId == 0) return false;
         if (SellList.ContainsKey(itemId)) return false;
 
-        var n = (name ?? string.Empty).Trim();
-
         SellList[itemId] = new SellListEntry
         {
             ItemId = itemId,
-            Name = n,
+            Name = (name ?? string.Empty).Trim(),
         };
+
         return true;
     }
 
-    public bool RemoveSellItem(uint itemId) => SellList.Remove(itemId);
+    public bool RemoveSellItem(uint itemId)
+        => SellList.Remove(itemId);
+
+    public void ClearSellList()
+        => SellList.Clear();
 
     public IEnumerable<SellListEntry> GetSellListSorted()
         => SellList.Values
             .OrderBy(e => string.IsNullOrWhiteSpace(e.Name) ? "zzz" : e.Name, StringComparer.OrdinalIgnoreCase)
             .ThenBy(e => e.ItemId);
 
-    public void ClearSellList() => SellList.Clear();
-
-    // =========================================================
-    // Save
-    // =========================================================
-    public void Save()
-        => _pluginInterface?.SavePluginConfig(this);
+    #endregion
 }

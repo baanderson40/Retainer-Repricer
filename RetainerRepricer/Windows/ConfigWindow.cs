@@ -1,24 +1,33 @@
-using System;
-using System.Linq;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Windowing;
+using System;
+using System.Linq;
 
 namespace RetainerRepricer.Windows;
 
 public sealed class ConfigWindow : Window, IDisposable
 {
-    private readonly Plugin _plugin;
-    private readonly Configuration _cfg;
-    private bool _confirmClearSellList = false;
+    #region Fields (plugin + config)
 
-    // UI-only state (not saved)
+    private readonly Plugin _plugin;
+    private readonly Configuration _config;
+
+    #endregion
+
+    #region UI-only state (not saved)
+
+    private bool _confirmClearSellList;
     private string _sellListSearch = string.Empty;
+
+    #endregion
+
+    #region Lifecycle
 
     public ConfigWindow(Plugin plugin)
         : base("Retainer Repricer Configuration##Config")
     {
         _plugin = plugin;
-        _cfg = plugin.Configuration;
+        _config = plugin.Configuration;
 
         Flags = ImGuiWindowFlags.NoCollapse;
         SizeConstraints = new WindowSizeConstraints
@@ -30,52 +39,51 @@ public sealed class ConfigWindow : Window, IDisposable
 
     public void Dispose()
     {
-        // nothing to dispose
+        // Nothing to dispose.
     }
+
+    #endregion
+
+    #region Draw
 
     public override void Draw()
     {
-        if (ImGui.BeginTabBar("##rr_cfg_tabs"))
+        if (!ImGui.BeginTabBar("##rr_cfg_tabs"))
+            return;
+
+        // Order: Sell List, Retainers, Settings.
+        if (ImGui.BeginTabItem("Sell List"))
         {
-            // Order requested: Sell List, Retainers, Settings
-            if (ImGui.BeginTabItem("Sell List"))
-            {
-                DrawSellListTab();
-                ImGui.EndTabItem();
-            }
-
-            if (ImGui.BeginTabItem("Retainers"))
-            {
-                DrawRetainersTab();
-                ImGui.EndTabItem();
-            }
-
-            if (ImGui.BeginTabItem("Settings"))
-            {
-                DrawSettingsTab();
-                ImGui.EndTabItem();
-            }
-
-            ImGui.EndTabBar();
+            DrawSellListTab();
+            ImGui.EndTabItem();
         }
+
+        if (ImGui.BeginTabItem("Retainers"))
+        {
+            DrawRetainersTab();
+            ImGui.EndTabItem();
+        }
+
+        if (ImGui.BeginTabItem("Settings"))
+        {
+            DrawSettingsTab();
+            ImGui.EndTabItem();
+        }
+
+        ImGui.EndTabBar();
     }
 
-    // =========================================================
-    // Tabs
-    // =========================================================
+    #endregion
+
+    #region Tabs
+
     private void DrawSellListTab()
     {
         ImGui.TextUnformatted("Items to Sell");
 
-        // Search (UI-only)
-        ImGui.Spacing();
-        ImGui.TextUnformatted("Search");
-        ImGui.SetNextItemWidth(-1);
-        ImGui.InputTextWithHint("##sell_search", "Filter by item name...", ref _sellListSearch, 128);
+        DrawSellListSearch();
 
-        ImGui.Spacing();
-
-        var list = _cfg.SellList;
+        var list = _config.SellList;
         if (list == null || list.Count == 0)
         {
             ImGui.TextDisabled("No items in sell list.");
@@ -83,88 +91,15 @@ public sealed class ConfigWindow : Window, IDisposable
             return;
         }
 
-        // Clear list (2-step confirm)
-        if (!_confirmClearSellList)
-        {
-            if (ImGui.Button("Clear list"))
-                _confirmClearSellList = true;
-        }
-        else
-        {
-            ImGui.TextColored(new System.Numerics.Vector4(1f, 0.6f, 0.2f, 1f), "Clear all items?");
-            if (ImGui.Button("Confirm clear"))
-            {
-                _cfg.ClearSellList();
-                _cfg.Save();
-                _confirmClearSellList = false;
-                return;
-            }
-            ImGui.SameLine();
-            if (ImGui.Button("Cancel"))
-                _confirmClearSellList = false;
-        }
+        DrawSellListClearButton();
 
         ImGui.Separator();
         ImGui.Spacing();
 
-        // Build filtered view
-        var filter = (_sellListSearch ?? string.Empty).Trim();
-        var filterLower = filter.ToLowerInvariant();
-        var hasFilter = filterLower.Length > 0;
-
-        bool LooksLikeId(string s) => uint.TryParse(s, out _);
-
-        uint idFilter = 0;
-        var filterIsId = hasFilter && LooksLikeId(filterLower);
-        if (filterIsId) uint.TryParse(filterLower, out idFilter);
-
-        var rows = list.Values
-            .Where(e =>
-            {
-                if (!hasFilter) return true;
-
-                if (filterIsId)
-                    return e.ItemId == idFilter;
-
-                var name = e.Name ?? string.Empty;
-                return name.ToLowerInvariant().Contains(filterLower);
-            })
-            .OrderBy(e => e.Name ?? string.Empty, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(e => e.ItemId)
-            .ToList();
-
+        var rows = BuildFilteredSellListRows();
         ImGui.TextDisabled($"{rows.Count} item(s)");
 
-        // Table
-        if (ImGui.BeginTable("##sell_list_table", 2, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.BordersV))
-        {
-            ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.WidthStretch);
-            ImGui.TableSetupColumn("##remove", ImGuiTableColumnFlags.WidthFixed, 80f);
-            ImGui.TableHeadersRow();
-
-            uint? removeId = null;
-
-            foreach (var e in rows)
-            {
-                ImGui.TableNextRow();
-
-                ImGui.TableSetColumnIndex(0);
-                var displayName = string.IsNullOrWhiteSpace(e.Name) ? $"(Unknown) [{e.ItemId}]" : e.Name;
-                ImGui.TextUnformatted(displayName);
-
-                ImGui.TableSetColumnIndex(1);
-                if (ImGui.Button($"Remove##sell_{e.ItemId}"))
-                    removeId = e.ItemId;
-            }
-
-            ImGui.EndTable();
-
-            if (removeId.HasValue)
-            {
-                _cfg.RemoveSellItem(removeId.Value);
-                _cfg.Save();
-            }
-        }
+        DrawSellListTable(rows);
     }
 
     private void DrawRetainersTab()
@@ -179,26 +114,131 @@ public sealed class ConfigWindow : Window, IDisposable
         DrawOverlaySettings();
     }
 
-    // =========================================================
-    // Plugin settings
-    // =========================================================
+    #endregion
+
+    #region Sell list tab
+
+    private void DrawSellListSearch()
+    {
+        ImGui.Spacing();
+        ImGui.TextUnformatted("Search");
+        ImGui.SetNextItemWidth(-1);
+        ImGui.InputTextWithHint("##sell_search", "Filter by item name...", ref _sellListSearch, 128);
+        ImGui.Spacing();
+    }
+
+    private void DrawSellListClearButton()
+    {
+        // Two-step confirm to avoid fat-finger clears.
+        if (!_confirmClearSellList)
+        {
+            if (ImGui.Button("Clear list"))
+                _confirmClearSellList = true;
+
+            return;
+        }
+
+        ImGui.TextColored(new System.Numerics.Vector4(1f, 0.6f, 0.2f, 1f), "Clear all items?");
+        if (ImGui.Button("Confirm clear"))
+        {
+            _config.ClearSellList();
+            SaveConfig();
+            _confirmClearSellList = false;
+            return;
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("Cancel"))
+            _confirmClearSellList = false;
+    }
+
+    private System.Collections.Generic.List<Configuration.SellListEntry> BuildFilteredSellListRows()
+    {
+        var list = _config.SellList;
+
+        var filter = (_sellListSearch ?? string.Empty).Trim();
+        var filterLower = filter.ToLowerInvariant();
+        var hasFilter = filterLower.Length > 0;
+
+        static bool LooksLikeId(string s) => uint.TryParse(s, out _);
+
+        uint idFilter = 0;
+        var filterIsId = hasFilter && LooksLikeId(filterLower);
+        if (filterIsId) uint.TryParse(filterLower, out idFilter);
+
+        return list.Values
+            .Where(e =>
+            {
+                if (!hasFilter) return true;
+
+                if (filterIsId)
+                    return e.ItemId == idFilter;
+
+                var name = e.Name ?? string.Empty;
+                return name.ToLowerInvariant().Contains(filterLower);
+            })
+            .OrderBy(e => e.Name ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(e => e.ItemId)
+            .ToList();
+    }
+
+    private void DrawSellListTable(System.Collections.Generic.IReadOnlyList<Configuration.SellListEntry> rows)
+    {
+        if (!ImGui.BeginTable(
+                "##sell_list_table",
+                2,
+                ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.BordersV))
+            return;
+
+        ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.WidthStretch);
+        ImGui.TableSetupColumn("##remove", ImGuiTableColumnFlags.WidthFixed, 80f);
+        ImGui.TableHeadersRow();
+
+        uint? removeId = null;
+
+        foreach (var e in rows)
+        {
+            ImGui.TableNextRow();
+
+            ImGui.TableSetColumnIndex(0);
+            var displayName = string.IsNullOrWhiteSpace(e.Name) ? $"(Unknown) [{e.ItemId}]" : e.Name;
+            ImGui.TextUnformatted(displayName);
+
+            ImGui.TableSetColumnIndex(1);
+            if (ImGui.Button($"Remove##sell_{e.ItemId}"))
+                removeId = e.ItemId;
+        }
+
+        ImGui.EndTable();
+
+        if (removeId.HasValue)
+        {
+            _config.RemoveSellItem(removeId.Value);
+            SaveConfig();
+        }
+    }
+
+    #endregion
+
+    #region Plugin settings tab
+
     private void DrawPluginSettings()
     {
         ImGui.TextUnformatted("Plugin");
 
-        var enabled = _cfg.PluginEnabled;
+        var enabled = _config.PluginEnabled;
         if (ImGui.Checkbox("Enable plugin functionality", ref enabled))
         {
-            _cfg.PluginEnabled = enabled;
+            _config.PluginEnabled = enabled;
 
-            // If we disable the plugin, force-stop any active run immediately.
+            // If we disable the plugin, kill any active run immediately.
             if (!enabled && _plugin.IsRunning)
                 _plugin.StopRun();
 
-            SaveCfg();
+            SaveConfig();
         }
 
-        if (!_cfg.PluginEnabled)
+        if (!_config.PluginEnabled)
         {
             ImGui.TextDisabled("Plugin is disabled: automation + overlay + context menu are off. Config remains available.");
             return;
@@ -207,65 +247,62 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.Spacing();
         ImGui.TextUnformatted("Run behavior");
 
-        // NOTE: This requires a bool on Configuration, e.g.:
-        // public bool CloseRetainerListAddon { get; set; } = true;
-        var closeRetainerList = _cfg.CloseRetainerListAddon;
+        var closeRetainerList = _config.CloseRetainerListAddon;
         if (ImGui.Checkbox("Close Retainer List when finished", ref closeRetainerList))
         {
-            _cfg.CloseRetainerListAddon = closeRetainerList;
-            SaveCfg();
+            _config.CloseRetainerListAddon = closeRetainerList;
+            SaveConfig();
         }
 
-        ImGui.TextDisabled("When enabled, the plugin will close the RetainerList addon at the end of a run. When disabled, it leaves it open.");
+        ImGui.TextDisabled("When enabled, the plugin closes RetainerList at the end of a run. When disabled, it leaves it open.");
     }
 
-    // =========================================================
-    // Overlay settings
-    // =========================================================
+    #endregion
+
+    #region Overlay settings tab
+
     private void DrawOverlaySettings()
     {
         ImGui.TextUnformatted("Overlay");
 
-        // Overlay should be controlled independently of PluginEnabled,
-        // but if the plugin is disabled, overlay will not appear anyway.
-        var overlayEnabled = _cfg.OverlayEnabled;
+        // Overlay toggle is separate from PluginEnabled, but PluginEnabled still gates display.
+        var overlayEnabled = _config.OverlayEnabled;
         if (ImGui.Checkbox("Enable overlay window", ref overlayEnabled))
         {
-            _cfg.OverlayEnabled = overlayEnabled;
-            SaveCfg();
+            _config.OverlayEnabled = overlayEnabled;
+            SaveConfig();
         }
 
         ImGui.Separator();
         ImGui.TextUnformatted("Overlay anchor offset");
 
-        // Save-on-change for sliders, but only write to disk when the drag completes.
-        var ox = _cfg.OverlayOffsetX;
+        // Save-on-change for sliders, but only write to disk once the drag finishes.
+        var ox = _config.OverlayOffsetX;
         if (ImGui.SliderFloat("Offset X", ref ox, -200f, 200f, "%.0f"))
         {
-            _cfg.OverlayOffsetX = ox;
-
+            _config.OverlayOffsetX = ox;
             if (ImGui.IsItemDeactivatedAfterEdit())
-                SaveCfg();
+                SaveConfig();
         }
 
-        var oy = _cfg.OverlayOffsetY;
+        var oy = _config.OverlayOffsetY;
         if (ImGui.SliderFloat("Offset Y", ref oy, -200f, 200f, "%.0f"))
         {
-            _cfg.OverlayOffsetY = oy;
-
+            _config.OverlayOffsetY = oy;
             if (ImGui.IsItemDeactivatedAfterEdit())
-                SaveCfg();
+                SaveConfig();
         }
     }
 
-    // =========================================================
-    // Retainer enable/disable list
-    // =========================================================
+    #endregion
+
+    #region Retainers tab
+
     private void DrawRetainerEnableList()
     {
         ImGui.TextUnformatted("Retainers");
 
-        var names = _cfg.RetainersEnabled.Keys
+        var names = _config.RetainersEnabled.Keys
             .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
@@ -288,9 +325,9 @@ public sealed class ConfigWindow : Window, IDisposable
         if (ImGui.Button("Enable all"))
         {
             foreach (var n in names)
-                _cfg.RetainersEnabled[n] = true;
+                _config.RetainersEnabled[n] = true;
 
-            SaveCfg();
+            SaveConfig();
         }
 
         ImGui.SameLine();
@@ -298,21 +335,27 @@ public sealed class ConfigWindow : Window, IDisposable
         if (ImGui.Button("Disable all"))
         {
             foreach (var n in names)
-                _cfg.RetainersEnabled[n] = false;
+                _config.RetainersEnabled[n] = false;
 
-            SaveCfg();
+            SaveConfig();
         }
     }
 
     private void DrawRetainerToggle(string name)
     {
-        var enabled = _cfg.RetainersEnabled[name];
+        var enabled = _config.RetainersEnabled[name];
         if (ImGui.Checkbox(name, ref enabled))
         {
-            _cfg.RetainersEnabled[name] = enabled;
-            SaveCfg();
+            _config.RetainersEnabled[name] = enabled;
+            SaveConfig();
         }
     }
 
-    private void SaveCfg() => _cfg.Save();
+    #endregion
+
+    #region Save helpers
+
+    private void SaveConfig() => _config.Save();
+
+    #endregion
 }

@@ -1,7 +1,6 @@
 using Dalamud.Game.Gui.ContextMenu;
 using Dalamud.Game.Text;
 using Dalamud.Game.Text.SeStringHandling;
-using Dalamud.Game.Text.SeStringHandling.Payloads;
 using ECommons.DalamudServices;
 using Lumina.Excel.Sheets;
 using System;
@@ -10,25 +9,46 @@ namespace RetainerRepricer;
 
 internal sealed class ContextMenuManager : IDisposable
 {
-    // Prefix icon in left column (true prefix column control)
+    #region UI constants
+
+    // Prefix icon shown in the left column.
     private const SeIconChar PrefixIcon = SeIconChar.BoxedLetterR;
 
-    // UI color indices (tweak later)
-    private const ushort ColorPrefix = 31;   // orange/gold
-    private const ushort ColorRemove = 539;  // brighter red
-    private const ushort ColorDisabled = 703; // fallback grey
+    // UI color indices (easy to tweak later).
+    private const ushort PrefixColor = 31;        // orange/gold
+    private const ushort RemoveColor = 539;       // brighter red
+    private const ushort DisabledColor = 703;     // grey
 
-    private readonly Configuration _cfg;
+    private const string AddLabel = " + Add to Sell List";
+    private const string RemoveLabel = "- Remove from Sell List";
+    private const string NotSellableLabel = " Not Sellable";
 
-    public ContextMenuManager(Configuration cfg)
+    #endregion
+
+    #region Fields
+
+    private readonly Configuration _config;
+
+    #endregion
+
+    #region Lifecycle
+
+    public ContextMenuManager(Configuration config)
     {
-        _cfg = cfg;
+        _config = config;
         Svc.ContextMenu.OnMenuOpened += OnMenuOpened;
     }
 
+    public void Dispose()
+        => Svc.ContextMenu.OnMenuOpened -= OnMenuOpened;
+
+    #endregion
+
+    #region Context menu injection
+
     private void OnMenuOpened(IMenuOpenedArgs args)
     {
-        if (!_cfg.PluginEnabled)
+        if (!_config.PluginEnabled)
             return;
 
         if (args.MenuType != ContextMenuType.Inventory)
@@ -40,22 +60,22 @@ internal sealed class ContextMenuManager : IDisposable
         if (inv.TargetItem == null)
             return;
 
-        // Use BaseItemId (already normalized)
+        // BaseItemId is already normalized by Dalamud.
         var itemId = inv.TargetItem.Value.BaseItemId;
         if (itemId == 0)
             return;
 
-        var isInSellList = _cfg.HasSellItem(itemId);
+        var isInSellList = _config.HasSellItem(itemId);
 
-        // Pull Lumina data once (for name + tradable/marketable gate)
+        // Pull Lumina once (name + tradable/marketable gate).
         var itemRow = Svc.Data.GetExcelSheet<Item>()?.GetRowOrDefault(itemId);
         var itemName = itemRow?.Name.ToString().Trim() ?? string.Empty;
 
-        // v1 gate: match other plugins (untradable => greyed out)
-        // NOTE: If Item row is missing, treat as not marketable (disable add).
-        var marketable = itemRow.HasValue && !itemRow.Value.IsUntradable;
+        // Match the usual behavior: untradable items get a disabled entry.
+        // If we can't read the row, treat it as not sellable.
+        var isSellable = itemRow.HasValue && !itemRow.Value.IsUntradable;
 
-        // If already in sell list, always allow REMOVE (even if untradable)
+        // If it's already tracked, always allow removing it (even if untradable).
         if (isInSellList)
         {
             args.AddMenuItem(new MenuItem
@@ -65,24 +85,23 @@ internal sealed class ContextMenuManager : IDisposable
                 IsSubmenu = false,
 
                 Prefix = PrefixIcon,
-                PrefixColor = ColorPrefix,
+                PrefixColor = PrefixColor,
 
                 Name = new SeStringBuilder()
-                    .AddUiForeground("- Remove from Sell List", ColorRemove)
+                    .AddUiForeground(RemoveLabel, RemoveColor)
                     .Build(),
 
                 OnClicked = _ =>
                 {
-                    if (_cfg.RemoveSellItem(itemId))
-                        _cfg.Save();
+                    if (_config.RemoveSellItem(itemId))
+                        _config.Save();
                 }
             });
 
             return;
         }
 
-        // disable if not marketable
-        if (!marketable)
+        if (!isSellable)
         {
             args.AddMenuItem(new MenuItem
             {
@@ -91,17 +110,16 @@ internal sealed class ContextMenuManager : IDisposable
                 IsSubmenu = false,
 
                 Prefix = PrefixIcon,
-                PrefixColor = ColorPrefix,
+                PrefixColor = PrefixColor,
 
                 Name = new SeStringBuilder()
-                    .AddUiForeground(" Not Sellable", ColorDisabled)
+                    .AddUiForeground(NotSellableLabel, DisabledColor)
                     .Build(),
             });
 
             return;
         }
 
-        // ADD
         args.AddMenuItem(new MenuItem
         {
             IsEnabled = true,
@@ -109,24 +127,20 @@ internal sealed class ContextMenuManager : IDisposable
             IsSubmenu = false,
 
             Prefix = PrefixIcon,
-            PrefixColor = ColorPrefix,
+            PrefixColor = PrefixColor,
 
             Name = new SeStringBuilder()
-                //.AddText("+ Add to Sell List")
-                .AddUiForeground(" + Add to Sell List", ColorPrefix)
+                .AddUiForeground(AddLabel, PrefixColor)
                 .Build(),
 
             OnClicked = _ =>
             {
-                // Prefer Lumina name if available; fall back to empty string
-                if (_cfg.AddSellItem(itemId, itemName))
-                    _cfg.Save();
+                // Prefer Lumina name if available; empty is fine.
+                if (_config.TryAddSellItem(itemId, itemName))
+                    _config.Save();
             }
         });
     }
 
-    public void Dispose()
-    {
-        Svc.ContextMenu.OnMenuOpened -= OnMenuOpened;
-    }
+    #endregion
 }

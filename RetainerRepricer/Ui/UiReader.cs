@@ -1,25 +1,32 @@
-using System;
-using System.Text;
 using Dalamud.Plugin.Services;
-using FFXIVClientStructs.FFXIV.Component.GUI;
 using ECommons.Automation;
 using FFXIVClientStructs.FFXIV.Client.Game;
+using FFXIVClientStructs.FFXIV.Component.GUI;
+using System;
+using System.Text;
 
 namespace RetainerRepricer.Ui;
 
 internal sealed unsafe class UiReader
 {
-    private readonly IGameGui _gui;
+    #region Constants
 
-    public UiReader(IGameGui gui) => _gui = gui;
-
-    // =========================================================
-    // Constants (RetainerSell name payload parsing)
-    // =========================================================
-    // Observed HQ marker glyph inside RetainerSell item name payload.
-    // This is NOT the last character due to SeString/control payload bytes.
+    // Observed HQ marker glyph inside RetainerSell item-name payload.
+    // This shows up alongside SeString/control payload bytes, so don't treat it as "last char".
     public const char RetainerSell_HqGlyphChar = '\uE03C';
 
+    // Inventory containers we scan for SellList items (bags only).
+    private static readonly InventoryType[] SellScanContainers =
+    {
+        InventoryType.Inventory1,
+        InventoryType.Inventory2,
+        InventoryType.Inventory3,
+        InventoryType.Inventory4,
+    };
+
+    #endregion
+
+    #region Types
 
     public enum ItemSearchResultStatus
     {
@@ -29,9 +36,19 @@ internal sealed unsafe class UiReader
         OtherMessage,
     }
 
-    // =========================================================
-    // Core addon/unit helpers
-    // =========================================================
+    #endregion
+
+    #region Fields / lifecycle
+
+    private readonly IGameGui _gui;
+
+    public UiReader(IGameGui gui)
+        => _gui = gui;
+
+    #endregion
+
+    #region Core addon/unit helpers
+
     private AtkUnitBase* GetVisibleUnitBase(string addonName, int index = 1)
     {
         var addon = _gui.GetAddonByName(addonName, index);
@@ -41,6 +58,21 @@ internal sealed unsafe class UiReader
         if (unit == null || !unit->IsVisible) return null;
 
         return unit;
+    }
+
+    private int FindVisibleAddonIndex(string addonName, int max = 5)
+    {
+        for (int i = 1; i <= max; i++)
+        {
+            var a = _gui.GetAddonByName(addonName, i);
+            if (a.IsNull) continue;
+
+            var u = (AtkUnitBase*)a.Address;
+            if (u != null && u->IsVisible)
+                return i;
+        }
+
+        return -1;
     }
 
     private static AtkResNode* FindNodeById(AtkUldManager* uld, int nodeId)
@@ -88,9 +120,10 @@ internal sealed unsafe class UiReader
         return ((AtkTextNode*)node)->NodeText.ToString();
     }
 
-    // =========================================================
-    // Addon / Component helpers
-    // =========================================================
+    #endregion
+
+    #region Generic node readers
+
     public AtkComponentBase* GetAddonComponent(string addonName, int componentNodeId)
     {
         var unit = GetVisibleUnitBase(addonName, 1);
@@ -103,9 +136,6 @@ internal sealed unsafe class UiReader
         return compNode->Component;
     }
 
-    // =========================================================
-    // Generic addon text node reading
-    // =========================================================
     public string? ReadAddonTextNode(string addonName, int nodeId)
     {
         var unit = GetVisibleUnitBase(addonName, 1);
@@ -115,18 +145,16 @@ internal sealed unsafe class UiReader
         return ReadTextNode(n);
     }
 
-    // =========================================================
-    // Component child text node reading
-    // =========================================================
     public string? ReadComponentTextNode(AtkComponentBase* comp, ushort nodeId)
     {
         var n = FindNodeById(comp, nodeId);
         return ReadTextNode(n);
     }
 
-    // =========================================================
-    // Generic renderer node readers (list item renderers)
-    // =========================================================
+    #endregion
+
+    #region Renderer helpers (list item renderers)
+
     public string? ReadRendererText(AtkComponentListItemRenderer* renderer, ushort nodeId)
         => GetRendererTextByNodeId(renderer, nodeId);
 
@@ -170,19 +198,20 @@ internal sealed unsafe class UiReader
         return null;
     }
 
-    // =========================================================
-    // Market board: ItemSearchResult list access + HQ renderer icon
-    // =========================================================
+    #endregion
+
+    #region Market board (ItemSearchResult)
+
     public AtkComponentList* GetMarketList()
     {
-        // NOTE: do not require visible here; list can be valid while animating in.
+        // Don't require visible here; the list can be valid while the window animates in.
         var addon = _gui.GetAddonByName("ItemSearchResult", 1);
         if (addon.IsNull) return null;
 
         var unit = (AtkUnitBase*)addon.Address;
         if (unit == null) return null;
 
-        var n = FindNodeById(&unit->UldManager, NodePaths.ItemSearchResult_ListNodeId); // list component node
+        var n = FindNodeById(&unit->UldManager, NodePaths.ItemSearchResult_ListNodeId);
         if (n == null) return null;
 
         var compNode = (AtkComponentNode*)n;
@@ -190,46 +219,14 @@ internal sealed unsafe class UiReader
         return comp != null ? (AtkComponentList*)comp : null;
     }
 
-    // (Kept private; plugin has its own TryReadMarketRow and uses RowIsHq/ReadRendererText)
-    private bool TryReadMarketRow(int rowIndex, out int unitPrice, out string seller, out bool isHq)
-    {
-        unitPrice = 0;
-        seller = string.Empty;
-        isHq = false;
-
-        var list = GetMarketList();
-        if (list == null) return false;
-
-        var count = list->GetItemCount();
-        if (count <= 0 || rowIndex < 0 || rowIndex >= count) return false;
-
-        var r = list->GetItemRenderer(rowIndex);
-        if (r == null) return false;
-
-        // CRITICAL: renderer uld can be null/empty while rows are constructing
-        if (r->UldManager.NodeList == null || r->UldManager.NodeListCount <= 0)
-            return false;
-
-        isHq = RowIsHq(r);
-
-        var unitRaw = ReadRendererText(r, NodePaths.UnitPriceNodeId);
-        var sellerRaw = ReadRendererText(r, NodePaths.SellerNodeId);
-
-        var parsed = ParseGil(unitRaw);
-        if (parsed == null || parsed.Value <= 0) return false;
-
-        unitPrice = parsed.Value;
-        seller = (sellerRaw ?? string.Empty).Trim('\'', ' ');
-        return true;
-    }
-
     public bool RowIsHq(AtkComponentListItemRenderer* renderer)
     {
         var n = GetRendererNodeById(renderer, NodePaths.HqIconNodeId);
         if (n == null) return false;
 
+        // Observed:
         // HQ -> DrawFlags = 0x0
-        // NQ -> DrawFlags = 0x100 (observed)
+        // NQ -> DrawFlags = 0x100
         return n->DrawFlags == 0;
     }
 
@@ -245,12 +242,9 @@ internal sealed unsafe class UiReader
         log($"[HQ] row {rowIndex}: draw=0x{n->DrawFlags:X} a={n->Color.A}");
     }
 
-    // =========================================================
-    // ItemSearchResult: error/status message (NodeId 5)
-    // =========================================================
     public string GetItemSearchResultErrorMessage()
     {
-        // Message is empty/null when no error/status.
+        // Message is empty/null when there's no error/status.
         var raw = ReadAddonTextNode("ItemSearchResult", NodePaths.ItemSearchResult_ErrorMessageNodeId);
         return NormalizeStatusText(raw);
     }
@@ -261,8 +255,7 @@ internal sealed unsafe class UiReader
         if (string.IsNullOrWhiteSpace(message))
             return ItemSearchResultStatus.None;
 
-        // Exact strings you care about (match your screenshots).
-        // Use OrdinalIgnoreCase + Contains to survive punctuation/spacing variations.
+        // Match the strings we actually see in-game. Use Contains to survive punctuation/spacing changes.
         if (message.Contains("No items found", StringComparison.OrdinalIgnoreCase))
             return ItemSearchResultStatus.NoItemsFound;
 
@@ -274,8 +267,7 @@ internal sealed unsafe class UiReader
 
     private static string NormalizeStatusText(string? raw)
     {
-        // Similar spirit to NormalizeItemName, but for normal UI text messages:
-        // Keep printable ASCII; strip control/payload chars; trim.
+        // For UI status strings: keep printable ASCII; strip payload/control chars; trim.
         if (string.IsNullOrWhiteSpace(raw)) return string.Empty;
 
         var sb = new StringBuilder(raw.Length);
@@ -288,22 +280,10 @@ internal sealed unsafe class UiReader
         return sb.ToString().Trim();
     }
 
-    // =========================================================
-    // Inventory helpers (Selling / new listings)
-    // =========================================================
+    #endregion
 
-    // Containers we scan for sellable items
-    private static readonly InventoryType[] SellScanContainers =
-    {
-        InventoryType.Inventory1,
-        InventoryType.Inventory2,
-        InventoryType.Inventory3,
-        InventoryType.Inventory4,
-    };
+    #region Inventory (new listings)
 
-    /// <summary>
-    /// Find an itemId in player inventory bags and return container + slot.
-    /// </summary>
     public bool TryFindItemInInventory(uint itemId, out int container, out int slot)
     {
         container = 0;
@@ -325,14 +305,9 @@ internal sealed unsafe class UiReader
             for (var i = 0; i < cont->Size; i++)
             {
                 var s = cont->GetInventorySlot(i);
-                if (s == null)
-                    continue;
-
-                if (s->ItemId != itemId)
-                    continue;
-
-                if (s->Quantity <= 0)
-                    continue;
+                if (s == null) continue;
+                if (s->ItemId != itemId) continue;
+                if (s->Quantity <= 0) continue;
 
                 container = (int)type;
                 slot = i;
@@ -343,9 +318,31 @@ internal sealed unsafe class UiReader
         return false;
     }
 
-    // =========================================================
-    // RetainerList: AtkComponentList access
-    // =========================================================
+    public bool TryOpenRetainerSellFromInventory(int container, int slot)
+    {
+        // InventoryGrid has multiple indices depending on layout; grab the first visible one.
+        var idx = FindVisibleAddonIndex("InventoryGrid", 10);
+        if (idx < 0)
+            return false;
+
+        var addon = _gui.GetAddonByName("InventoryGrid", idx);
+        if (addon.IsNull)
+            return false;
+
+        var unit = (AtkUnitBase*)addon.Address;
+        if (unit == null || !unit->IsVisible)
+            return false;
+
+        // Observed callback signature (InventoryGrid):
+        // Callback.Fire(unit, 15, container, slot)
+        Callback.Fire(unit, updateState: true, 15, container, slot);
+        return true;
+    }
+
+    #endregion
+
+    #region RetainerList
+
     public AtkComponentList* GetRetainerList()
     {
         var unit = GetVisibleUnitBase("RetainerList", 1);
@@ -359,39 +356,85 @@ internal sealed unsafe class UiReader
         return comp != null ? (AtkComponentList*)comp : null;
     }
 
-    // =========================================================
-    // RetainerSell: readers + parsing/normalization
-    // =========================================================
+    #endregion
+
+    #region RetainerSell (item name + asking price)
+
     public string? ReadRetainerSellItemNameRaw()
         => ReadAddonTextNode("RetainerSell", NodePaths.RetainerSell_ItemNameNodeId);
 
-    // Back-compat: keep existing method name
+    // Back-compat shim (existing callers).
     public string? ReadRetainerSellItemName()
         => ReadRetainerSellItemNameRaw();
-
-    public string NormalizeItemName(string? raw)
+    public string SanitizeRetainerSellItemName(string? raw)
     {
-        // Goal: produce a readable name. Keep ASCII letters/punct/spaces.
-        // Do NOT rely on "last char" because payload includes markup bytes.
         if (string.IsNullOrEmpty(raw)) return string.Empty;
 
+        // Keep printable ASCII + HQ glyph.
         var sb = new StringBuilder(raw.Length);
         foreach (var ch in raw)
         {
-            // keep visible ascii
             if (ch >= 0x20 && ch <= 0x7E)
-            {
                 sb.Append(ch);
-            }
-            // keep HQ glyph if you want it present for debugging; caller can strip it
             else if (ch == RetainerSell_HqGlyphChar)
-            {
                 sb.Append(ch);
-            }
         }
 
-        return sb.ToString().Trim();
+        var s = sb.ToString().Trim();
+
+        // Known prefix leak: "H'I(" before the real name, no closing ')'.
+        var openParen = s.IndexOf('(');
+        if (openParen >= 0 && openParen <= 6 && s.IndexOf(')', openParen + 1) < 0)
+            s = s[(openParen + 1)..].TrimStart();
+
+        // Prefix leak variant: "H%I&Name..." (and similar).
+        // If there's an '&' very early (before the first space), assume payload prefix and cut after '&'.
+        s = StripEarlyDelimiterPrefix(s);
+
+        // Tail artifacts (IH / IH', etc.).
+        s = StripRetainerSellPayloadArtifacts(s);
+
+        // Normalize whitespace.
+        return string.Join(" ", s.Split(' ', StringSplitOptions.RemoveEmptyEntries)).Trim();
     }
+
+    private static string StripEarlyDelimiterPrefix(string s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return string.Empty;
+
+        var firstSpace = s.IndexOf(' ');
+        if (firstSpace < 0) firstSpace = s.Length;
+
+        var amp = s.IndexOf('&');
+        if (amp >= 0 && amp < firstSpace && amp <= 8)
+            return s[(amp + 1)..].TrimStart();
+
+        return s;
+    }
+
+    private static string StripRetainerSellPayloadArtifacts(string s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return string.Empty;
+
+        s = s.Trim();
+
+        if (s.EndsWith("IH'", StringComparison.Ordinal))
+            s = s[..^3].TrimEnd();
+        else if (s.EndsWith("IH", StringComparison.Ordinal))
+            s = s[..^2].TrimEnd();
+
+        while (s.Length > 0)
+        {
+            var last = s[^1];
+            if (last == '\'' || last == ')' || last == '(')
+                s = s[..^1].TrimEnd();
+            else
+                break;
+        }
+
+        return s;
+    }
+
 
     public bool RetainerSellNameContainsHqGlyph(string? raw)
         => !string.IsNullOrEmpty(raw) && raw.IndexOf(RetainerSell_HqGlyphChar) >= 0;
@@ -402,7 +445,7 @@ internal sealed unsafe class UiReader
     public string GetRetainerSellItemNameDisplay(bool stripHqGlyph = true)
     {
         var raw = ReadRetainerSellItemNameRaw();
-        var cleaned = NormalizeItemName(raw);
+        var cleaned = SanitizeRetainerSellItemName(raw);
 
         if (stripHqGlyph)
             cleaned = cleaned.Replace(RetainerSell_HqGlyphChar.ToString(), string.Empty).Trim();
@@ -421,9 +464,10 @@ internal sealed unsafe class UiReader
     public int? ReadRetainerSellAskingPrice()
         => ParseGil(ReadRetainerSellAskingPriceText());
 
-    // =========================================================
-    // RetainerSellList: readers + parsing
-    // =========================================================
+    #endregion
+
+    #region RetainerSellList (listed count)
+
     public string? ReadRetainerSellListCountText()
         => ReadAddonTextNode("RetainerSellList", NodePaths.RetainerSellList_CountNodeId);
 
@@ -435,7 +479,7 @@ internal sealed unsafe class UiReader
         var raw = ReadRetainerSellListCountText();
         if (string.IsNullOrWhiteSpace(raw)) return (null, null);
 
-        // Parse "N/20" (or whatever max becomes later)
+        // Parse "N/20" (max may change later).
         int left = 0, right = 0;
         bool anyLeft = false, anyRight = false;
         bool onRight = false;
@@ -461,33 +505,11 @@ internal sealed unsafe class UiReader
 
         return (anyLeft ? left : null, anyRight ? right : null);
     }
-    /// <summary>
-    /// Clicks InventoryGrid slot to open RetainerSell (new listing path).
-    /// Equivalent to `/pcall InventoryGrid true 0 slot container`.
-    /// </summary>
-    public bool TryOpenRetainerSellFromInventory(int container, int slot)
-    {
-        var idx = FindVisibleAddonIndex("InventoryGrid", 10);
-        if (idx < 0)
-            return false;
 
-        var addon = _gui.GetAddonByName("InventoryGrid", idx);
-        if (addon.IsNull)
-            return false;
+    #endregion
 
-        var unit = (AtkUnitBase*)addon.Address;
-        if (unit == null || !unit->IsVisible)
-            return false;
+    #region Parsing helpers
 
-        // Callback signature observed in SND / AutoRetainer:
-        Callback.Fire(unit, updateState: true, 15, container, slot);
-        return true;
-    }
-
-
-    // =========================================================
-    // Parsing helpers
-    // =========================================================
     public static int? ParseGil(string? s)
     {
         if (string.IsNullOrWhiteSpace(s)) return null;
@@ -530,9 +552,10 @@ internal sealed unsafe class UiReader
         return any ? value : null;
     }
 
-    // =========================================================
-    // Debug helpers
-    // =========================================================
+    #endregion
+
+    #region Debug helpers
+
     public void DumpAddonNodeList(string addonName, Action<string> log)
     {
         var addon = _gui.GetAddonByName(addonName, 1);
@@ -575,20 +598,9 @@ internal sealed unsafe class UiReader
             if (ch < 0x20 || ch > 0x7E)
                 sb.Append($"U+{(int)ch:X4} ");
         }
+
         return sb.Length == 0 ? "<none>" : sb.ToString().Trim();
     }
 
-    private int FindVisibleAddonIndex(string name, int max = 5)
-    {
-        for (int i = 1; i <= max; i++)
-        {
-            var a = _gui.GetAddonByName(name, i);
-            if (a.IsNull) continue;
-
-            var u = (AtkUnitBase*)a.Address;
-            if (u != null && u->IsVisible)
-                return i;
-        }
-        return -1;
-    }
+    #endregion
 }

@@ -2,44 +2,49 @@ namespace RetainerRepricer.Ui;
 
 internal static class NodePaths
 {
-    // =========================================================
-    // ItemSearchResult (Market board) addon
-    // =========================================================
-    // NodeId for the main listing list component inside ItemSearchResult.
+    #region ItemSearchResult (market board)
+
+    // Main listing list component inside ItemSearchResult.
     public const int ItemSearchResult_ListNodeId = 26;
 
-    // Error/status message text node (empty when no error; shows "No items found." / "Please wait...")
+    // Status/error message text node.
+    // Empty when normal; shows strings like "No items found." / "Please wait and try your search again".
     public const int ItemSearchResult_ErrorMessageNodeId = 5;
 
-    // ItemSearchResult row renderer nodes (AtkComponentListItemRenderer)
+    // Row renderer nodes (AtkComponentListItemRenderer).
     public const ushort HqIconNodeId = 3;
     public const ushort UnitPriceNodeId = 5;
     public const ushort QuantityNodeId = 6;
     public const ushort TotalPriceNodeId = 8;
     public const ushort SellerNodeId = 10;
 
-    // =========================================================
-    // RetainerList addon
-    // =========================================================
-    // NodeId for the list component inside RetainerList.
+    #endregion
+
+    #region RetainerList
+
+    // List component inside RetainerList.
     public const ushort RetainerListNodeId = 27;
 
-    // RetainerList row renderer nodes (AtkComponentListItemRenderer)
+    // Row renderer nodes (AtkComponentListItemRenderer).
     public const ushort RetainerNameNodeId = 3;
 
-    // =========================================================
-    // RetainerSellList addon
-    // =========================================================
-    // "N/20" style count text
+    #endregion
+
+    #region RetainerSellList
+
+    // "N/20" style count text node.
     public const int RetainerSellList_CountNodeId = 19;
 
-    // =========================================================
-    // RetainerSell addon
-    // =========================================================
-    // Item name text (contains HQ glyph when HQ)
+    #endregion
+
+    #region RetainerSell
+
+    // Item name text (contains HQ glyph when HQ).
     public const int RetainerSell_ItemNameNodeId = 7;
 
-    // Asking price is a NumericInput component node with a child text node.
+    // Asking price is a NumericInput component with a child text node.
     public const int RetainerSell_AskingPriceNumericNodeId = 10; // NumericInput component node
     public const ushort RetainerSell_AskingPriceTextNodeId = 5;  // child text node inside component
+
+    #endregion
 }
