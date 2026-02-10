@@ -22,6 +22,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static ICommandManager CommandManager { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
     [PluginService] internal static IGameGui GameGui { get; private set; } = null!;
+    [PluginService] internal static IChatGui ChatGui { get; private set; } = null!;
     [PluginService] internal static IFramework Framework { get; private set; } = null!;
 
     // =========================================================
@@ -163,7 +164,7 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "toggle | stop | config | count | talk (debug) | hqdump (debug) | mbdump (debug) | mbnodelist (debug) | rldump (debug)"
+            HelpMessage = "help | start | stop | config"
         });
 
         pi.UiBuilder.Draw += WindowSystem.Draw;
@@ -198,12 +199,15 @@ public sealed class Plugin : IDalamudPlugin
     private unsafe void OnCommand(string command, string args)
     {
         var a = (args ?? string.Empty).Trim().ToLowerInvariant();
-        Log.Information($"[CMD] raw args='{args}' parsed='{a}'");
 
         switch (a)
         {
-            case "config":
-                ToggleConfigUi();
+            case "":
+                PrintHelp();
+                return;
+
+            case "start":
+                StartRun();
                 return;
 
             case "stop":
@@ -211,37 +215,23 @@ public sealed class Plugin : IDalamudPlugin
                     StopRun();
                 return;
 
-            case "talk":
-                Log.Information("[TalkTest] entered /repricer talk");
-                {
-                    var ok = ClickTalkECommons();
-                    Log.Information(ok ? "[TalkTest] Sent (ECommons)" : "[TalkTest] Failed (ECommons)");
-                    return;
-                }
-
-            case "hqdump":
-                {
-                    var priceText = _ui.ReadRetainerSellAskingPriceText();
-                    var asking = _ui.ReadRetainerSellAskingPrice();
-                    Log.Information($"[RS] askingPrice raw='{priceText}' parsed={asking?.ToString() ?? "null"}");
-
-                    var rawName = _ui.ReadRetainerSellItemNameRaw();
-                    var cleaned = _ui.NormalizeItemName(rawName);
-                    var isHq = _ui.RetainerSellNameContainsHqGlyph(rawName);
-
-                    Log.Information($"[HQ] raw='{rawName}'");
-                    Log.Information($"[HQ] cleaned='{cleaned}'");
-                    Log.Information($"[HQ] containsHqGlyph={isHq} (glyph U+{(int)Ui.UiReader.RetainerSell_HqGlyphChar:X4})");
-
-                    Log.Information($"[HQ] nonAscii={Ui.UiReader.DumpNonAsciiCodepoints(rawName)}");
-                    Log.Information($"[HQ] hasE03C={rawName?.IndexOf(Ui.UiReader.RetainerSell_HqGlyphChar) >= 0}");
-
-                    return;
-                }
-
-            case "mbnodelist":
-                _ui.DumpAddonNodeList("ItemSearchResult", s => Log.Information(s));
+            case "config":
+                ToggleConfigUi();
                 return;
+
+            case "count":
+                {
+                    var raw = _ui.ReadRetainerSellListCountText();
+                    var count = _ui.ReadRetainerSellListListedCount();
+                    if (count == null)
+                    {
+                        ChatGui.Print("[RetainerRepricer] Open RetainerSellList first.");
+                        return;
+                    }
+
+                    ChatGui.Print($"[RetainerRepricer] Listed = {count} (raw='{raw}')");
+                    return;
+                }
 
             case "mbdump":
                 DumpMarketRows();
@@ -251,25 +241,16 @@ public sealed class Plugin : IDalamudPlugin
                 DumpRetainerRows();
                 return;
 
-            case "count":
-                {
-                    var raw = _ui.ReadRetainerSellListCountText();
-                    var count = _ui.ReadRetainerSellListListedCount();
-                    if (count == null)
-                    {
-                        Log.Warning("[Count] Listed count returned null (open RetainerSellList first).");
-                        return;
-                    }
-
-                    Log.Information($"[Count] Listed = {count} (raw='{raw}')");
-                    return;
-                }
+            case "help":
+                DumpRetainerRows();
+                return;
 
             default:
-                ToggleConfigUi();
+                PrintHelp();
                 return;
         }
     }
+
 
     // =========================================================
     // UI navigation (ECommons AddonMaster wrappers)
@@ -749,6 +730,73 @@ public sealed class Plugin : IDalamudPlugin
         TickRun();
         _lastFrameworkTickUtc = now;
     }
+    private unsafe void StartRun()
+    {
+        if (IsRunning)
+        {
+            Log.Warning("[RR] Already running.");
+            return;
+        }
+
+        if (!IsAddonVisible("RetainerList"))
+        {
+            Log.Warning("[RR] Cannot start: RetainerList is not visible. Open a summoning bell first.");
+            return;
+        }
+
+        RebuildMyRetainersSet();
+
+        _runOrder.Clear();
+        _runPos = -1;
+
+        _sellListCountCaptured = false;
+        _listedCountThisRetainer = 0;
+        _slotIndexToOpen = 0;
+
+        _sellQueue.Clear();
+        _sellQueuePos = 0;
+        _sellCapacityThisRetainer = 0;
+        _soldThisRetainer = 0;
+
+        _processingListedItem = true;
+        _currentSellItemId = 0;
+        _hasPendingSellSlot = false;
+
+        var list = _ui.GetRetainerList();
+        if (list == null)
+        {
+            Log.Warning("[RR] RetainerList not readable.");
+            return;
+        }
+
+        var count = list->GetItemCount();
+        for (int i = 0; i < count; i++)
+        {
+            var r = list->GetItemRenderer(i);
+            if (r == null) continue;
+
+            var name = _ui.ReadRendererText(r, Ui.NodePaths.RetainerNameNodeId);
+            if (string.IsNullOrWhiteSpace(name)) continue;
+
+            name = name.Trim('\'', ' ');
+
+            if (Configuration.IsRetainerEnabled(name))
+                _runOrder.Add(i);
+        }
+
+        if (_runOrder.Count == 0)
+        {
+            Log.Warning("[RR] No enabled retainers found.");
+            return;
+        }
+
+        IsRunning = true;
+        _phase = RunPhase.NeedOpen;
+        _lastActionUtc = DateTime.MinValue;
+
+        Log.Information($"[RR] Started. Enabled retainers: {string.Join(",", _runOrder)}");
+    }
+
 
     // =========================================================
     // Run State Machine Tick
@@ -761,6 +809,7 @@ public sealed class Plugin : IDalamudPlugin
         if ((now - _lastActionUtc).TotalSeconds < ActionIntervalSeconds)
             return;
 
+        // Snapshot addon visibility once per tick (cheaper + consistent)
         var retainerListVisible = IsAddonVisible("RetainerList");
         var talkVisible = IsAddonVisible("Talk");
         var selectStringVisible = IsAddonVisible("SelectString");
@@ -770,8 +819,34 @@ public sealed class Plugin : IDalamudPlugin
         var itemHistoryOpen = IsAddonOpen("ItemHistory");
         var contextMenuVisible = IsAddonVisible("ContextMenu");
 
+        // ---------------------------------------------------------
+        // Local: SelectString "ready gate" (Option A)
+        // Require: addon visible + EntryCount > 2 (Sell items is index 2)
+        // ---------------------------------------------------------
+        bool IsSelectStringReady()
+        {
+            var addon = GameGui.GetAddonByName("SelectString", 1);
+            if (addon.IsNull) return false;
+
+            var unit = (AtkUnitBase*)addon.Address;
+            if (unit == null || !unit->IsVisible) return false;
+
+            try
+            {
+                var ss = new AddonMaster.SelectString(addon.Address);
+                return ss.EntryCount > 2;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         switch (_phase)
         {
+            // =========================================================
+            // Retainer navigation
+            // =========================================================
             case RunPhase.NeedOpen:
                 {
                     if (!retainerListVisible) return;
@@ -797,6 +872,8 @@ public sealed class Plugin : IDalamudPlugin
                             _sellQueue.Add(e.ItemId);
                     }
                     _sellQueuePos = 0;
+
+                    // capacity counters (must exist in your class)
                     _sellCapacityThisRetainer = 0;
                     _soldThisRetainer = 0;
 
@@ -816,8 +893,17 @@ public sealed class Plugin : IDalamudPlugin
 
             case RunPhase.WaitingTalk:
                 {
+                    // HARDENING #1:
+                    // If another plugin auto-closes Talk and SelectString is already up, skip Talk logic.
                     if (selectStringVisible)
                     {
+                        // Ready gate: don't click until entries are populated
+                        if (!IsSelectStringReady())
+                        {
+                            _lastActionUtc = now;
+                            return;
+                        }
+
                         Log.Information($"[RR] SelectString opened for row {_runOrder[_runPos]}; choosing Sell items.");
                         ClickSelectStringSellItems();
 
@@ -836,7 +922,7 @@ public sealed class Plugin : IDalamudPlugin
                         return;
                     }
 
-                    Log.Information($"[RR] Talk closed for row {_runOrder[_runPos]}; waiting for SelectString.");
+                    // Talk isn't visible; advance to SelectString wait
                     _phase = RunPhase.WaitingSelectString;
                     _lastActionUtc = now;
                     return;
@@ -844,6 +930,27 @@ public sealed class Plugin : IDalamudPlugin
 
             case RunPhase.WaitingSelectString:
                 {
+                    // HARDENING #1 continued:
+                    // Prefer SelectString if it appears; some plugins may close Talk early.
+                    if (selectStringVisible)
+                    {
+                        // Option A ready gate:
+                        // If SelectString exists but isn't populated yet, wait.
+                        if (!IsSelectStringReady())
+                        {
+                            _lastActionUtc = now;
+                            return;
+                        }
+
+                        Log.Information($"[RR] SelectString opened for row {_runOrder[_runPos]}; choosing Sell items.");
+                        ClickSelectStringSellItems();
+
+                        _phase = RunPhase.WaitingRetainerSellList;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    // If Talk appears "late", handle it, but still allow SelectString to win next tick.
                     if (talkVisible)
                     {
                         Log.Information($"[RR] Talk open (late) for row {_runOrder[_runPos]}; clicking Talk advance.");
@@ -853,17 +960,11 @@ public sealed class Plugin : IDalamudPlugin
                         return;
                     }
 
-                    if (!selectStringVisible) return;
-
-                    Log.Information($"[RR] SelectString opened for row {_runOrder[_runPos]}; choosing Sell items.");
-                    ClickSelectStringSellItems();
-
-                    _phase = RunPhase.WaitingRetainerSellList;
+                    // Nothing to do yet
                     _lastActionUtc = now;
                     return;
                 }
 
-            // First entry into RetainerSellList for the current retainer
             case RunPhase.WaitingRetainerSellList:
                 {
                     if (!retainerSellListVisible) return;
@@ -885,7 +986,7 @@ public sealed class Plugin : IDalamudPlugin
                         Log.Information($"[RR] Entered RetainerSellList. Listed={_listedCountThisRetainer} (raw='{raw}'); SellCapacity={_sellCapacityThisRetainer}");
                     }
 
-                    // CHANGE: Reprice first; selling happens only after repricing completes.
+                    // Reprice first; selling happens only after repricing completes.
                     _phase = (_listedCountThisRetainer <= 0) ? RunPhase.Sell_FindNextItemInInventory : RunPhase.OpeningSellItem;
                     _lastActionUtc = now;
                     return;
@@ -902,7 +1003,7 @@ public sealed class Plugin : IDalamudPlugin
 
                     if (_slotIndexToOpen >= _listedCountThisRetainer)
                     {
-                        // CHANGE: after repricing, proceed to selling phase (capacity-bounded), not exit.
+                        // after repricing -> selling phase
                         _phase = RunPhase.Sell_FindNextItemInInventory;
                         _lastActionUtc = now;
                         return;
@@ -940,7 +1041,7 @@ public sealed class Plugin : IDalamudPlugin
                 }
 
             // =========================================================
-            // Repricing pipeline (unchanged)
+            // Repricing pipeline
             // =========================================================
             case RunPhase.CaptureSellContext:
                 {
@@ -966,6 +1067,17 @@ public sealed class Plugin : IDalamudPlugin
 
                     _isrThrottleRetried = false;
                     _isrThrottleUntilUtc = DateTime.MinValue;
+
+                    // HARDENING #2:
+                    // If ItemSearchResult was already opened by another plugin,
+                    // don't click Compare Prices again; just proceed to ISR gate.
+                    if (marketOpen)
+                    {
+                        Log.Information("[RR] ItemSearchResult already open (external plugin). Skipping ComparePrices click.");
+                        _phase = RunPhase.WaitingItemSearchResult;
+                        _lastActionUtc = now;
+                        return;
+                    }
 
                     var addon = GameGui.GetAddonByName("RetainerSell", 1);
                     if (addon.IsNull) return;
@@ -1006,6 +1118,7 @@ public sealed class Plugin : IDalamudPlugin
 
                         if (!_isrThrottleRetried)
                         {
+                            // Even if ISR was opened externally, ComparePrices is safe to re-click once.
                             var sellAddon = GameGui.GetAddonByName("RetainerSell", 1);
                             if (sellAddon.IsNull) return;
 
@@ -1219,7 +1332,6 @@ public sealed class Plugin : IDalamudPlugin
                     return;
                 }
 
-            // Exit RetainerSell (do NOT go back to RetainerList yet)
             case RunPhase.CleanupAfterItem:
                 {
                     CloseMarketWindows();
@@ -1232,7 +1344,6 @@ public sealed class Plugin : IDalamudPlugin
                     return;
                 }
 
-            // Synchronize on being back in RetainerSellList before moving on
             case RunPhase.WaitingRetainerSellListAfterItem:
                 {
                     if (!retainerSellListVisible) return;
@@ -1241,7 +1352,7 @@ public sealed class Plugin : IDalamudPlugin
                     // If we just processed a NEW listing, count it toward capacity and continue selling (if capacity remains)
                     if (!_processingListedItem)
                     {
-                        _processingListedItem = true; // reset default
+                        _processingListedItem = true;
                         _hasPendingSellSlot = false;
                         _currentSellItemId = 0;
 
@@ -1258,7 +1369,6 @@ public sealed class Plugin : IDalamudPlugin
 
                     if (_slotIndexToOpen >= _listedCountThisRetainer)
                     {
-                        // finished repricing -> proceed to selling
                         _phase = RunPhase.Sell_FindNextItemInInventory;
                         _lastActionUtc = now;
                         return;
@@ -1300,7 +1410,6 @@ public sealed class Plugin : IDalamudPlugin
                         return;
                     }
 
-                    // Walk sell queue and find first item that exists in player inventory.
                     while (_sellQueuePos < _sellQueue.Count)
                     {
                         var itemId = _sellQueue[_sellQueuePos];
@@ -1324,7 +1433,6 @@ public sealed class Plugin : IDalamudPlugin
                         Log.Information($"[RR] Sell candidate not found in inventory: itemId={itemId}");
                     }
 
-                    // No sellable items found in inventory -> done
                     Log.Information("[RR] Sell complete: no SellList items found in inventory.");
                     _phase = RunPhase.ExitToRetainerList;
                     _lastActionUtc = now;
@@ -1350,7 +1458,6 @@ public sealed class Plugin : IDalamudPlugin
                         return;
                     }
 
-                    // Mark as NEW listing (not repricing an existing listed row)
                     _processingListedItem = false;
 
                     var ok = TryOpenRetainerSellFromInventory(_pendingSellSlot);
@@ -1378,11 +1485,10 @@ public sealed class Plugin : IDalamudPlugin
                 }
 
             // =========================================================
-            // Auto unwind: close one layer per tick until RetainerList is the only visible screen
+            // Exit unwind
             // =========================================================
             case RunPhase.ExitToRetainerList:
                 {
-                    // Priority 1: market windows
                     if (marketOpen || itemHistoryOpen)
                     {
                         Log.Information("[RR] Exit: closing market windows.");
@@ -1391,7 +1497,6 @@ public sealed class Plugin : IDalamudPlugin
                         return;
                     }
 
-                    // Priority 2: context menu overlays
                     if (contextMenuVisible)
                     {
                         Log.Information("[RR] Exit: dismissing ContextMenu.");
@@ -1400,7 +1505,6 @@ public sealed class Plugin : IDalamudPlugin
                         return;
                     }
 
-                    // Priority 3: RetainerSell
                     if (retainerSellVisible)
                     {
                         Log.Information("[RR] Exit: closing RetainerSell.");
@@ -1409,25 +1513,22 @@ public sealed class Plugin : IDalamudPlugin
                         return;
                     }
 
-                    // Priority 4: RetainerSellList
                     if (retainerSellListVisible)
                     {
                         Log.Information("[RR] Exit: closing RetainerSellList.");
-                        CloseAddonIfOpen("RetainerSellList"); // (-1)
+                        CloseAddonIfOpen("RetainerSellList");
                         _lastActionUtc = now;
                         return;
                     }
 
-                    // Priority 5: SelectString
                     if (selectStringVisible)
                     {
                         Log.Information("[RR] Exit: closing SelectString.");
-                        CloseAddonIfOpen("SelectString"); // (-1)
+                        CloseAddonIfOpen("SelectString");
                         _lastActionUtc = now;
                         return;
                     }
 
-                    // Priority 6: Talk
                     if (talkVisible)
                     {
                         Log.Information("[RR] Exit: advancing/closing Talk.");
@@ -1436,7 +1537,6 @@ public sealed class Plugin : IDalamudPlugin
                         return;
                     }
 
-                    // Base condition: back at RetainerList
                     if (retainerListVisible)
                     {
                         Log.Information("[RR] Exit complete: back on RetainerList; continuing to next retainer.");
@@ -1445,7 +1545,6 @@ public sealed class Plugin : IDalamudPlugin
                         return;
                     }
 
-                    // Otherwise: nothing to do yet (timing gap). Keep looping.
                     _lastActionUtc = now;
                     return;
                 }
@@ -1453,6 +1552,14 @@ public sealed class Plugin : IDalamudPlugin
             default:
                 return;
         }
+    }
+
+    private void PrintHelp()
+    {
+        ChatGui.Print("[RetainerRepricer]");
+        ChatGui.Print("/repricer start   - Start repricing & selling from Retainer List");
+        ChatGui.Print("/repricer stop    - Stop current run");
+        ChatGui.Print("/repricer config  - Open configuration window");
     }
 
     // =========================================================
