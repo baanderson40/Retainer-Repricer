@@ -9,6 +9,7 @@ using ECommons.UIHelpers.AddonMasterImplementations;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using RetainerRepricer.Windows;
 using System;
+using System.Collections;
 using System.Collections.Generic;
 
 namespace RetainerRepricer;
@@ -29,12 +30,12 @@ public sealed class Plugin : IDalamudPlugin
     // Constants / Fields
     // =========================================================
     private const string CommandName = "/repricer";
-    private const double ActionIntervalSeconds = 0.25;     // pacing between actions (safe while testing)
+    private const double ActionIntervalSeconds = .15;     // pacing between actions (safe while testing)
     private const double RetainerSyncIntervalSeconds = 2.0;
     private const int UndercutAmount = 1;
 
     // Throttle handling (ItemSearchResult: "Please wait and try your search again")
-    private const double ItemSearchResultThrottleBackoffSeconds = 5.0;
+    private const double ItemSearchResultThrottleBackoffSeconds = 1.0;
 
     public Configuration Configuration { get; }
     public readonly WindowSystem WindowSystem = new("RetainerRepricer");
@@ -89,6 +90,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private DateTime _lastActionUtc = DateTime.MinValue;
 
+
     // Per-retainer item loop state
     private bool _sellListCountCaptured;
     private int _listedCountThisRetainer;
@@ -127,12 +129,30 @@ public sealed class Plugin : IDalamudPlugin
     private bool _isrThrottleRetried;
     private DateTime _isrThrottleUntilUtc = DateTime.MinValue;
 
+    // Market-query pacing (prevents ISR "Please wait..." by spacing Compare Prices calls)
+    private const double MbBaseIntervalSeconds = 0.6;     // baseline spacing between ComparePrices calls
+    private const double MbIntervalMinSeconds = 0.15;     // don't go faster than this
+    private const double MbIntervalMaxSeconds = 1.20;     // don't go slower than this
+    private const double MbJitterMaxSeconds = 0.1;     // 0–80ms jitter to avoid phase-lock
+
+    private double _mbIntervalSec = MbBaseIntervalSeconds; // adaptive (changes during run)
+    private DateTime _lastMbQueryUtc = DateTime.MinValue;  // last time we fired ComparePrices
+
+    // ----------------------------------------------------------
+    // ISR settle gate (prevents false "No items found" early-exit)
+    // ----------------------------------------------------------
+    private DateTime _isrOpenedUtc = DateTime.MinValue;
+    private int _isrNoItemsConfirm = 0;
+
+    // Tune: 0.25–0.60. Start at 0.40 if you're seeing early "No items found".
+    private const double IsrNoItemsSettleSeconds = 0.40;
+
     // Retainer name sync -> Configuration
     private DateTime _lastRetainerSyncUtc = DateTime.MinValue;
 
     // Framework tick
     private DateTime _lastFrameworkTickUtc = DateTime.MinValue;
-    private const double FrameworkTickIntervalSeconds = 0.10; // outer throttle; TickRun has its own pacing too
+    private const double FrameworkTickIntervalSeconds = 0.0; // outer throttle; TickRun has its own pacing too
 
     // =========================================================
     // Lifecycle
@@ -666,6 +686,10 @@ public sealed class Plugin : IDalamudPlugin
         _currentSellItemId = 0;
         _hasPendingSellSlot = false;
 
+        // reset market pacing for this run
+        _mbIntervalSec = MbBaseIntervalSeconds;
+        _lastMbQueryUtc = DateTime.MinValue;
+
         var count = list->GetItemCount();
         for (int i = 0; i < count; i++)
         {
@@ -761,6 +785,10 @@ public sealed class Plugin : IDalamudPlugin
         _processingListedItem = true;
         _currentSellItemId = 0;
         _hasPendingSellSlot = false;
+
+        // reset market pacing for this run
+        _mbIntervalSec = MbBaseIntervalSeconds;
+        _lastMbQueryUtc = DateTime.MinValue;
 
         var list = _ui.GetRetainerList();
         if (list == null)
@@ -922,6 +950,10 @@ public sealed class Plugin : IDalamudPlugin
                     _processingListedItem = true;
                     _currentSellItemId = 0;
                     _hasPendingSellSlot = false;
+
+                    // reset market pacing per retainer (keeps one retainer's throttling from poisoning the next)
+                    _mbIntervalSec = MbBaseIntervalSeconds;
+                    _lastMbQueryUtc = DateTime.MinValue;
 
                     var row = _runOrder[_runPos];
                     Log.Information($"[RR] Opening retainer row {row} (pos {_runPos + 1}/{_runOrder.Count})");
@@ -1134,6 +1166,11 @@ public sealed class Plugin : IDalamudPlugin
                     if (marketOpen)
                     {
                         Log.Information("[RR] ItemSearchResult already open (external plugin). Skipping ComparePrices click.");
+
+                        // NEW: reset ISR settle gate
+                        _isrOpenedUtc = DateTime.MinValue;
+                        _isrNoItemsConfirm = 0;
+
                         _phase = RunPhase.WaitingItemSearchResult;
                         _lastActionUtc = now;
                         return;
@@ -1142,9 +1179,23 @@ public sealed class Plugin : IDalamudPlugin
                     var addon = GameGui.GetAddonByName("RetainerSell", 1);
                     if (addon.IsNull) return;
 
+                    // MB pacing gate: space out ComparePrices to avoid ISR server throttle
+                    var jitter = Random.Shared.NextDouble() * MbJitterMaxSeconds;
+                    if (_lastMbQueryUtc != DateTime.MinValue &&
+                        (now - _lastMbQueryUtc).TotalSeconds < (_mbIntervalSec + jitter))
+                    {
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    _lastMbQueryUtc = now;
                     new AddonMaster.RetainerSell(addon.Address).ComparePrices();
 
-                    Log.Information("[RR] RetainerSell.ComparePrices() clicked.");
+                    // NEW: reset ISR settle gate on fresh open
+                    _isrOpenedUtc = DateTime.MinValue;
+                    _isrNoItemsConfirm = 0;
+
+                    Log.Information($"[RR] ComparePrices() clicked (mbInterval={_mbIntervalSec:0.00}s).");
                     _phase = RunPhase.WaitingItemSearchResult;
                     _lastActionUtc = now;
                     return;
@@ -1156,23 +1207,66 @@ public sealed class Plugin : IDalamudPlugin
 
                     var status = _ui.GetItemSearchResultStatus(out var msg);
 
+                    // NEW: latch ISR open time once we see it open
+                    if (_isrOpenedUtc == DateTime.MinValue)
+                        _isrOpenedUtc = now;
+
                     if (status == Ui.UiReader.ItemSearchResultStatus.NoItemsFound)
                     {
-                        Log.Information($"[RR] ISR: '{msg}' -> no competing listings; skip repricing.");
+                        // NEW: don't trust "No items found" immediately; it can show before rows populate
+                        var age = (now - _isrOpenedUtc).TotalSeconds;
+                        if (age < IsrNoItemsSettleSeconds)
+                        {
+                            _lastActionUtc = now;
+                            return;
+                        }
+
+                        // NEW: confirm across 2 ticks to avoid flicker
+                        _isrNoItemsConfirm++;
+                        if (_isrNoItemsConfirm < 2)
+                        {
+                            _lastActionUtc = now;
+                            return;
+                        }
+
+                        // Optional: sanity check rows are truly empty
+                        var listCheck = _ui.GetMarketList();
+                        var rows = listCheck != null ? listCheck->GetItemCount() : 0;
+                        if (rows > 0)
+                        {
+                            Log.Information($"[RR] ISR said no items but rows={rows}; ignoring message.");
+                            _isrNoItemsConfirm = 0;
+                            _phase = RunPhase.ReadMarketAndApplyPrice;
+                            _lastActionUtc = now;
+                            return;
+                        }
+
+                        Log.Information($"[RR] ISR: '{msg}' -> settled no competing listings; skip repricing.");
                         _phase = RunPhase.CleanupAfterItem;
                         _lastActionUtc = now;
                         return;
+                    }
+                    else
+                    {
+                        // NEW: reset confirmation counter when status changes
+                        _isrNoItemsConfirm = 0;
                     }
 
                     if (status == Ui.UiReader.ItemSearchResultStatus.PleaseWaitRetry)
                     {
                         if (now < _isrThrottleUntilUtc)
+                        {
+                            _lastActionUtc = now;
                             return;
+                        }
 
                         if (!_isrThrottleRetried && _isrThrottleUntilUtc == DateTime.MinValue)
                         {
+                            // adapt: if we hit server throttle, space out future ComparePrices calls
+                            _mbIntervalSec = Math.Clamp(_mbIntervalSec + 0.08, MbIntervalMinSeconds, MbIntervalMaxSeconds);
+
                             _isrThrottleUntilUtc = now.AddSeconds(ItemSearchResultThrottleBackoffSeconds);
-                            Log.Warning("[RR] ISR throttle: 'Please wait...' -> backing off 5s then retry once.");
+                            Log.Warning("[RR] ISR throttle: 'Please wait...' -> backing off 1s then retry once.");
                             return;
                         }
 
@@ -1181,6 +1275,7 @@ public sealed class Plugin : IDalamudPlugin
                             var sellAddon = GameGui.GetAddonByName("RetainerSell", 1);
                             if (sellAddon.IsNull) return;
 
+                            _lastMbQueryUtc = now; // keep retry aligned with MB pacing accounting
                             new AddonMaster.RetainerSell(sellAddon.Address).ComparePrices();
                             _isrThrottleRetried = true;
                             _isrThrottleUntilUtc = DateTime.MinValue;
@@ -1220,10 +1315,35 @@ public sealed class Plugin : IDalamudPlugin
                         return;
                     }
 
+                    // NEW: renderer readiness gate (row exists, but nodes may not be built yet)
+                    var r0 = list->GetItemRenderer(0);
+                    if (r0 == null || r0->UldManager.NodeList == null || r0->UldManager.NodeListCount <= 0)
+                    {
+                        Log.Information("[RR] ISR not ready: row0 renderer nodes not ready");
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    // Optional (strong): ensure UnitPrice parses (prevents empty text nodes)
+                    var unitRaw = _ui.ReadRendererText(r0, Ui.NodePaths.UnitPriceNodeId);
+                    if (Ui.UiReader.ParseGil(unitRaw) is null)
+                    {
+                        Log.Information("[RR] ISR not ready: row0 unit price not parsable yet");
+                        _lastActionUtc = now;
+                        return;
+                    }
+
                     Log.Information($"[RR] ItemSearchResult ready (rows={count}).");
+                    // NEW: ISR is ready; wipe any pending "No items found" confirmations
+                    _isrNoItemsConfirm = 0;
+
+                    // adapt: success -> cautiously speed up
+                    _mbIntervalSec = Math.Clamp(_mbIntervalSec - 0.02, MbIntervalMinSeconds, MbIntervalMaxSeconds);
+
                     _phase = RunPhase.ReadMarketAndApplyPrice;
                     _lastActionUtc = now;
                     return;
+
                 }
 
             case RunPhase.ReadMarketAndApplyPrice:
@@ -1233,13 +1353,47 @@ public sealed class Plugin : IDalamudPlugin
 
                     var status = _ui.GetItemSearchResultStatus(out var msg);
 
+                    // NEW: latch ISR open time if we somehow got here without it
+                    if (_isrOpenedUtc == DateTime.MinValue)
+                        _isrOpenedUtc = now;
+
                     if (status == Ui.UiReader.ItemSearchResultStatus.NoItemsFound)
                     {
-                        Log.Information($"[RR] ISR: '{msg}' -> no competing listings; skip repricing.");
-                        _phase = RunPhase.CleanupAfterItem;
-                        _lastActionUtc = now;
-                        return;
+                        var age = (now - _isrOpenedUtc).TotalSeconds;
+                        if (age < IsrNoItemsSettleSeconds)
+                        {
+                            _lastActionUtc = now;
+                            return;
+                        }
+
+                        _isrNoItemsConfirm++;
+                        if (_isrNoItemsConfirm < 2)
+                        {
+                            _lastActionUtc = now;
+                            return;
+                        }
+
+                        var listCheck = _ui.GetMarketList();
+                        var rows = listCheck != null ? listCheck->GetItemCount() : 0;
+                        if (rows > 0)
+                        {
+                            Log.Information($"[RR] ISR said no items but rows={rows}; ignoring message.");
+                            _isrNoItemsConfirm = 0;
+                            // continue normal flow (don’t early return)
+                        }
+                        else
+                        {
+                            Log.Information($"[RR] ISR: '{msg}' -> settled no competing listings; skip repricing.");
+                            _phase = RunPhase.CleanupAfterItem;
+                            _lastActionUtc = now;
+                            return;
+                        }
                     }
+                    else
+                    {
+                        _isrNoItemsConfirm = 0;
+                    }
+
 
                     if (status == Ui.UiReader.ItemSearchResultStatus.PleaseWaitRetry)
                     {
