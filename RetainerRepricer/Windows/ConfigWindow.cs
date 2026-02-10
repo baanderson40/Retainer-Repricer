@@ -180,7 +180,7 @@ public sealed class ConfigWindow : Window, IDisposable
     }
 
     // =========================================================
-    // Overlay settings
+    // Plugin settings
     // =========================================================
     private void DrawPluginSettings()
     {
@@ -199,9 +199,29 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         if (!_cfg.PluginEnabled)
+        {
             ImGui.TextDisabled("Plugin is disabled: automation + overlay + context menu are off. Config remains available.");
+            return;
+        }
+
+        ImGui.Spacing();
+        ImGui.TextUnformatted("Run behavior");
+
+        // NOTE: This requires a bool on Configuration, e.g.:
+        // public bool CloseRetainerListAddon { get; set; } = true;
+        var closeRetainerList = _cfg.CloseRetainerListAddon;
+        if (ImGui.Checkbox("Close Retainer List when finished", ref closeRetainerList))
+        {
+            _cfg.CloseRetainerListAddon = closeRetainerList;
+            SaveCfg();
+        }
+
+        ImGui.TextDisabled("When enabled, the plugin will close the RetainerList addon at the end of a run. When disabled, it leaves it open.");
     }
 
+    // =========================================================
+    // Overlay settings
+    // =========================================================
     private void DrawOverlaySettings()
     {
         ImGui.TextUnformatted("Overlay");

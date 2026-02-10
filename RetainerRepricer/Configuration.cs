@@ -12,7 +12,6 @@ public sealed class Configuration : IPluginConfiguration
     // =========================================================
     // Dalamud config versioning
     // =========================================================
-    // PASTE: replace your Version line with this
     public int Version { get; set; } = 2;
 
     [NonSerialized]
@@ -24,10 +23,15 @@ public sealed class Configuration : IPluginConfiguration
     // =========================================================
     // Master enable/disable
     // =========================================================
-    // PASTE: add this block right after Initialize(...)
     // When false: no running, no context menu injection, no overlay drawing.
     // Config window still works.
     public bool PluginEnabled { get; set; } = true;
+
+    // =========================================================
+    // Run behavior
+    // =========================================================
+    // NEW: controls whether the plugin closes the RetainerList addon at end of run.
+    public bool CloseRetainerListAddon { get; set; } = true;
 
     // =========================================================
     // Retainer enable/disable flags
@@ -44,7 +48,6 @@ public sealed class Configuration : IPluginConfiguration
     // =========================================================
     // Overlay settings (visual only)
     // =========================================================
-    // PASTE: replace your existing Overlay settings block with this
     public bool OverlayEnabled { get; set; } = true;
     public float OverlayOffsetX { get; set; } = 0f;
     public float OverlayOffsetY { get; set; } = 0f;
