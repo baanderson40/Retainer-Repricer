@@ -1,5 +1,6 @@
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Windowing;
+using FFXIVClientStructs.FFXIV.Common.Lua;
 using System;
 using System.Linq;
 
@@ -81,6 +82,13 @@ public sealed class ConfigWindow : Window, IDisposable
     {
         ImGui.TextUnformatted("Items to Sell");
 
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+        {
+            ImGui.SetTooltip(
+                "Listed items will be put up for sale on any enabled retainer."
+            );
+        }
+
         DrawSellListSearch();
 
         var list = _config.SellList;
@@ -110,8 +118,7 @@ public sealed class ConfigWindow : Window, IDisposable
     private void DrawSettingsTab()
     {
         DrawPluginSettings();
-        ImGui.Separator();
-        DrawOverlaySettings();
+        DrawOverlayOffsetSettings();
     }
 
     #endregion
@@ -186,30 +193,70 @@ public sealed class ConfigWindow : Window, IDisposable
     {
         if (!ImGui.BeginTable(
                 "##sell_list_table",
-                2,
-                ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.BordersV))
+                3,
+                ImGuiTableFlags.RowBg |
+                ImGuiTableFlags.BordersInnerH |
+                ImGuiTableFlags.BordersV |
+                ImGuiTableFlags.SizingStretchProp))
             return;
 
         ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.WidthStretch);
+        ImGui.TableSetupColumn("Min in Inv", ImGuiTableColumnFlags.WidthFixed, 110f);
         ImGui.TableSetupColumn("##remove", ImGuiTableColumnFlags.WidthFixed, 80f);
         ImGui.TableHeadersRow();
 
         uint? removeId = null;
+        bool anyChanged = false;
 
         foreach (var e in rows)
         {
             ImGui.TableNextRow();
 
+            // Use a stable ID scope per row so InputInt doesn’t collide.
+            ImGui.PushID(unchecked((int)e.ItemId));
+
+            // Column 0: Item name
             ImGui.TableSetColumnIndex(0);
             var displayName = string.IsNullOrWhiteSpace(e.Name) ? $"(Unknown) [{e.ItemId}]" : e.Name;
             ImGui.TextUnformatted(displayName);
 
+            // Column 1: Min inventory editor
             ImGui.TableSetColumnIndex(1);
+
+            var s = e.MinCountToSell.ToString();
+            ImGui.SetNextItemWidth(-1);
+
+            if (ImGui.InputText($"##minsell_{e.ItemId}", ref s, 8, ImGuiInputTextFlags.CharsDecimal))
+            {
+                if (int.TryParse(s, out var parsed))
+                {
+                    if (parsed < 1) parsed = 1;
+                    if (parsed > 999999) parsed = 999999;
+
+                    if (parsed != e.MinCountToSell)
+                    {
+                        e.MinCountToSell = parsed;
+                        SaveConfig();
+                    }
+                }
+            }
+
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                ImGui.SetTooltip("Item will be listed only when your inventory count is at least this number.");
+
+            // Column 2: Remove button
+            ImGui.TableSetColumnIndex(2);
             if (ImGui.Button($"Remove##sell_{e.ItemId}"))
                 removeId = e.ItemId;
+
+            ImGui.PopID();
         }
 
         ImGui.EndTable();
+
+        // Save once for any edits (not per keystroke in multiple rows).
+        if (anyChanged)
+            SaveConfig();
 
         if (removeId.HasValue)
         {
@@ -220,87 +267,18 @@ public sealed class ConfigWindow : Window, IDisposable
 
     #endregion
 
-    #region Plugin settings tab
-
-    private void DrawPluginSettings()
-    {
-        ImGui.TextUnformatted("Plugin");
-
-        var enabled = _config.PluginEnabled;
-        if (ImGui.Checkbox("Enable plugin functionality", ref enabled))
-        {
-            _config.PluginEnabled = enabled;
-
-            // If we disable the plugin, kill any active run immediately.
-            if (!enabled && _plugin.IsRunning)
-                _plugin.StopRun();
-
-            SaveConfig();
-        }
-
-        if (!_config.PluginEnabled)
-        {
-            ImGui.TextDisabled("Plugin is disabled: automation + overlay + context menu are off. Config remains available.");
-            return;
-        }
-
-        ImGui.Spacing();
-        ImGui.TextUnformatted("Run behavior");
-
-        var closeRetainerList = _config.CloseRetainerListAddon;
-        if (ImGui.Checkbox("Close Retainer List when finished", ref closeRetainerList))
-        {
-            _config.CloseRetainerListAddon = closeRetainerList;
-            SaveConfig();
-        }
-
-        ImGui.TextDisabled("When enabled, the plugin closes RetainerList at the end of a run. When disabled, it leaves it open.");
-    }
-
-    #endregion
-
-    #region Overlay settings tab
-
-    private void DrawOverlaySettings()
-    {
-        ImGui.TextUnformatted("Overlay");
-
-        // Overlay toggle is separate from PluginEnabled, but PluginEnabled still gates display.
-        var overlayEnabled = _config.OverlayEnabled;
-        if (ImGui.Checkbox("Enable overlay window", ref overlayEnabled))
-        {
-            _config.OverlayEnabled = overlayEnabled;
-            SaveConfig();
-        }
-
-        ImGui.Separator();
-        ImGui.TextUnformatted("Overlay anchor offset");
-
-        // Save-on-change for sliders, but only write to disk once the drag finishes.
-        var ox = _config.OverlayOffsetX;
-        if (ImGui.SliderFloat("Offset X", ref ox, -200f, 200f, "%.0f"))
-        {
-            _config.OverlayOffsetX = ox;
-            if (ImGui.IsItemDeactivatedAfterEdit())
-                SaveConfig();
-        }
-
-        var oy = _config.OverlayOffsetY;
-        if (ImGui.SliderFloat("Offset Y", ref oy, -200f, 200f, "%.0f"))
-        {
-            _config.OverlayOffsetY = oy;
-            if (ImGui.IsItemDeactivatedAfterEdit())
-                SaveConfig();
-        }
-    }
-
-    #endregion
-
     #region Retainers tab
 
     private void DrawRetainerEnableList()
     {
-        ImGui.TextUnformatted("Retainers");
+        ImGui.TextUnformatted("Manage retainers");
+
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip(
+                "Enable repricing and selling per retainer."
+            );
+        }
 
         var names = _config.RetainersEnabled.Keys
             .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
@@ -311,6 +289,8 @@ public sealed class ConfigWindow : Window, IDisposable
             ImGui.TextUnformatted("Open the summoning bell retainer list, then reopen this config.");
             return;
         }
+
+        ImGui.Spacing();
 
         DrawRetainerBulkButtons(names);
 
@@ -348,6 +328,91 @@ public sealed class ConfigWindow : Window, IDisposable
         {
             _config.RetainersEnabled[name] = enabled;
             SaveConfig();
+        }
+    }
+
+    #endregion
+
+    #region Plugin settings tab
+
+    private void DrawPluginSettings()
+    {
+        var enabled = _config.PluginEnabled;
+        if (ImGui.Checkbox("Enable plugin functionality", ref enabled))
+        {
+            _config.PluginEnabled = enabled;
+
+            // If we disable the plugin, kill any active run immediately.
+            if (!enabled && _plugin.IsRunning)
+                _plugin.StopRun();
+
+            SaveConfig();
+        }
+
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip(
+                "Master switch for the plugin.\n" +
+                "Disabling this stops any active run and disables automation, overlay, and context menu features."
+            );
+        }
+
+        ImGui.Spacing();
+
+        var closeRetainerList = _config.CloseRetainerListAddon;
+        if (ImGui.Checkbox("Close Retainer List when finished", ref closeRetainerList))
+        {
+            _config.CloseRetainerListAddon = closeRetainerList;
+            SaveConfig();
+        }
+
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+        {
+            ImGui.SetTooltip(
+                "When enabled, the plugin closes RetainerList at the end of a run.\n" +
+                "When disabled, it leaves it open."
+            );
+        }
+
+        ImGui.Spacing();
+
+        // Overlay toggle is separate from PluginEnabled, but PluginEnabled still gates display.
+        var overlayEnabled = _config.OverlayEnabled;
+        if (ImGui.Checkbox("Enable overlay window", ref overlayEnabled))
+        {
+            _config.OverlayEnabled = overlayEnabled;
+            SaveConfig();
+        }
+
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+        {
+            ImGui.SetTooltip(
+                "When enabled, an overlay will be added to the retainer list."
+            );
+        }
+
+        ImGui.Spacing();
+    }
+
+    private void DrawOverlayOffsetSettings()
+    {
+        ImGui.TextUnformatted("Overlay anchor offset");
+
+        // Save-on-change for sliders, but only write to disk once the drag finishes.
+        var ox = _config.OverlayOffsetX;
+        if (ImGui.SliderFloat("Offset X", ref ox, -200f, 200f, "%.0f"))
+        {
+            _config.OverlayOffsetX = ox;
+            if (ImGui.IsItemDeactivatedAfterEdit())
+                SaveConfig();
+        }
+
+        var oy = _config.OverlayOffsetY;
+        if (ImGui.SliderFloat("Offset Y", ref oy, -200f, 200f, "%.0f"))
+        {
+            _config.OverlayOffsetY = oy;
+            if (ImGui.IsItemDeactivatedAfterEdit())
+                SaveConfig();
         }
     }
 

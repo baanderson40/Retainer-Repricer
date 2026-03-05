@@ -67,6 +67,7 @@ public sealed class Configuration : IPluginConfiguration
     {
         public uint ItemId { get; set; }
         public string Name { get; set; } = string.Empty;
+        public int MinCountToSell { get; set; } = 1;
     }
 
     public Dictionary<uint, SellListEntry> SellList { get; set; } = new();
@@ -83,6 +84,7 @@ public sealed class Configuration : IPluginConfiguration
         {
             ItemId = itemId,
             Name = (name ?? string.Empty).Trim(),
+            MinCountToSell = 1,
         };
 
         return true;

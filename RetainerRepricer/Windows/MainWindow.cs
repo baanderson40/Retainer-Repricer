@@ -95,18 +95,19 @@ public sealed unsafe class MainWindow : Window, IDisposable
         return null;
     }
 
-    private static bool AnyFlowAddonVisible()
+    private bool AnyFlowAddonVisible()
     {
         // "Flow" windows where the Stop button should be available.
         if (IsAddonVisible("RetainerList")) return true;
-        if (IsAddonVisible("RetainerSellList")) return true;
-        if (IsAddonVisible("RetainerSell")) return true;
-        if (IsAddonVisible("SelectString")) return true;
-        if (IsAddonVisible("Talk")) return true;
-
-        // Market windows can linger even if Sell is the active focus.
-        if (IsAddonOpen("ItemSearchResult")) return true;
-        if (IsAddonOpen("ItemHistory")) return true;
+        if (_plugin.IsRunning)
+        {
+            if (IsAddonVisible("RetainerSellList")) return true;
+            if (IsAddonVisible("RetainerSell")) return true;
+            if (IsAddonVisible("SelectString")) return true;
+            if (IsAddonVisible("Talk")) return true;
+            if (IsAddonOpen("ItemSearchResult")) return true;
+            if (IsAddonOpen("ItemHistory")) return true;
+        }
 
         return false;
     }

@@ -284,10 +284,11 @@ internal sealed unsafe class UiReader
 
     #region Inventory (new listings)
 
-    public bool TryFindItemInInventory(uint itemId, out int container, out int slot)
+    public bool TryFindItemInInventory(uint itemId, out int container, out int slot, out int totalCount)
     {
         container = 0;
         slot = 0;
+        totalCount = 0;
 
         if (itemId == 0)
             return false;
@@ -295,6 +296,8 @@ internal sealed unsafe class UiReader
         var inv = InventoryManager.Instance();
         if (inv == null)
             return false;
+
+        bool found = false;
 
         foreach (var type in SellScanContainers)
         {
@@ -309,13 +312,20 @@ internal sealed unsafe class UiReader
                 if (s->ItemId != itemId) continue;
                 if (s->Quantity <= 0) continue;
 
-                container = (int)type;
-                slot = i;
-                return true;
+                totalCount += (int)s->Quantity;
+                if (totalCount >= 999999)
+                    totalCount = 999999;
+
+                if (!found)
+                {
+                    container = (int)type;
+                    slot = i;
+                    found = true;
+                }
             }
         }
 
-        return false;
+        return found;
     }
 
     public bool TryOpenRetainerSellFromInventory(int container, int slot)

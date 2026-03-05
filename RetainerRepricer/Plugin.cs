@@ -5,7 +5,9 @@ using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using ECommons;
 using ECommons.Automation;
+using ECommons.Configuration;
 using ECommons.UIHelpers.AddonMasterImplementations;
+using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using RetainerRepricer.Windows;
 using System;
@@ -13,7 +15,7 @@ using System.Collections.Generic;
 
 namespace RetainerRepricer;
 
-public sealed class Plugin : IDalamudPlugin
+public unsafe sealed class Plugin : IDalamudPlugin
 {
     #region Dalamud services
 
@@ -32,7 +34,7 @@ public sealed class Plugin : IDalamudPlugin
     private const int UndercutAmount = 1;
 
     // General pacing between UI actions. Keep conservative while iterating on UI stability.
-    private const double ActionIntervalSeconds = 0.14;
+    private const double ActionIntervalSeconds = 0.15;
 
     private const double RetainerSyncIntervalSeconds = 2.0;
 
@@ -40,16 +42,17 @@ public sealed class Plugin : IDalamudPlugin
     private const double ItemSearchResultThrottleBackoffSeconds = 1.0;
 
     // Market query pacing (keeps Compare Prices calls from tripping server-side throttles)
-    private const double MbBaseIntervalSeconds = 0.60;
-    private const double MbIntervalMinSeconds = 0.15;
-    private const double MbIntervalMaxSeconds = 1.20;
+    private const double MbBaseIntervalSeconds = 1.5;
+    private const double MbIntervalMinSeconds = 1.0;
+    private const double MbIntervalMaxSeconds = 2.25;
     private const double MbJitterMaxSeconds = 0.10;
 
     // ISR settle gate: early "No items found" can flash before rows populate.
-    private const double IsrNoItemsSettleSeconds = 0.40;
+    private const double IsrNoItemsSettleSeconds = 0.5;
 
     // Framework tick throttle (outer gate). TickRun has its own pacing too.
     private const double FrameworkTickIntervalSeconds = 0.075;
+
 
     #endregion
 
@@ -748,13 +751,16 @@ public sealed class Plugin : IDalamudPlugin
     #region Inventory selling helpers
 
     /// <summary>
-    /// Finds an itemId in player inventory and returns (container, slot).
+    /// Scans bags (Inventory1-4) once. Returns:
+    /// - totalCount across all stacks found
+    /// - first sellable slotRef (container, slot) if any
     /// </summary>
-    private bool TryFindItemInInventory(uint itemId, out InventorySlotRef slotRef)
+    private bool TryFindItemInInventory(uint itemId, out InventorySlotRef slotRef, out int totalCount)
     {
         slotRef = default;
+        totalCount = 0;
 
-        if (_uiReader.TryFindItemInInventory(itemId, out var container, out var slot))
+        if (_uiReader.TryFindItemInInventory(itemId, out var container, out var slot, out totalCount))
         {
             slotRef = new InventorySlotRef { Container = container, Slot = slot };
             return true;
@@ -1634,22 +1640,36 @@ public sealed class Plugin : IDalamudPlugin
                         var itemId = _sellQueue[_sellQueuePos];
                         _sellQueuePos++;
 
-                        if (itemId == 0) continue;
+                        if (itemId == 0)
+                            continue;
 
-                        if (TryFindItemInInventory(itemId, out var slotRef))
+                        // threshold: sell only if total inventory count >= this value
+                        var threshold = 1;
+                        if (Configuration.SellList.TryGetValue(itemId, out var entry))
+                            threshold = Math.Max(1, entry.MinCountToSell);
+
+                        if (!TryFindItemInInventory(itemId, out var slotRef, out var totalCount))
                         {
-                            _currentSellItemId = itemId;
-                            _pendingSellSlot = slotRef;
-                            _hasPendingSellSlot = true;
-
-                            Log.Debug($"[RR] Sell candidate: itemId={itemId} container={slotRef.Container} slot={slotRef.Slot} (cap {_soldThisRetainer}/{_sellCapacityThisRetainer})");
-
-                            _runPhase = RunPhase.Sell_OpenRetainerSellFromInventory;
-                            _lastActionUtc = now;
-                            return;
+                            Log.Verbose($"[RR] Sell candidate not in inventory: itemId={itemId}");
+                            continue;
                         }
 
-                        Log.Verbose($"[RR] Sell candidate not in inventory: itemId={itemId}");
+                        if (totalCount < threshold)
+                        {
+                            Log.Verbose($"[RR] Sell candidate skipped: itemId={itemId} count={totalCount} < threshold={threshold}");
+                            continue;
+                        }
+
+                        _currentSellItemId = itemId;
+                        _pendingSellSlot = slotRef;
+                        _hasPendingSellSlot = true;
+
+                        Log.Debug($"[RR] Sell candidate: itemId={itemId} count={totalCount} threshold={threshold} container={slotRef.Container} slot={slotRef.Slot} (cap {_soldThisRetainer}/{_sellCapacityThisRetainer})");
+
+                        _runPhase = RunPhase.Sell_OpenRetainerSellFromInventory;
+                        _lastActionUtc = now;
+                        return;
+
                     }
 
                     Log.Information("[RR] Sell complete: none of the SellList items were found in inventory.");

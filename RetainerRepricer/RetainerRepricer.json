@@ -2,7 +2,7 @@
   "Name": "Retainer Repricer",
   "Author": "baanderson40",
   "Punchline": "Retainer market repricing.",
-  "Description": "Provides a manual Start/Stop repricing overlay anchored to the Retainer List. Command: /repricer",
+  "Description": "Automates retainer item listing and repricing by cycling through retainers, reading market prices, and updating listings safely. Includes inventory context menu integration for adding items to an auto-sell list.",
   "ApplicableVersion": "any",
   "RepoUrl": "https://github.com/baanderson40/Retainer-Repricer",
   "Tags": [
