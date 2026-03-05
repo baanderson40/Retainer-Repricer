@@ -62,36 +62,64 @@ public sealed class Configuration : IPluginConfiguration
 
     #region Sell list
 
+    // HQ glyph suffix (matches in-game suffix style).
+    public const char HqGlyphChar = '\uE03C';
+
     [Serializable]
     public sealed class SellListEntry
     {
+        // Base (Lumina) item id (NQ row id).
         public uint ItemId { get; set; }
+
+        // Quality key for this SellList entry.
+        public bool IsHq { get; set; }
+
+        // Display name (we will bake HQ glyph in as suffix for HQ entries).
         public string Name { get; set; } = string.Empty;
+
+        // Per-quality threshold (count only that quality).
         public int MinCountToSell { get; set; } = 1;
     }
 
-    public Dictionary<uint, SellListEntry> SellList { get; set; } = new();
+    // Key = (baseItemId << 1) | (isHq ? 1 : 0)
+    private static ulong MakeSellKey(uint baseItemId, bool isHq)
+        => ((ulong)baseItemId << 1) | (isHq ? 1UL : 0UL);
 
-    public bool HasSellItem(uint itemId)
-        => SellList.ContainsKey(itemId);
+    // Stored as a single dictionary so HQ/NQ don’t collide.
+    public Dictionary<ulong, SellListEntry> SellList { get; set; } = new();
 
-    public bool TryAddSellItem(uint itemId, string name)
+    // Convenience: display name builder (HQ suffix).
+    private static string BuildDisplayName(string name, bool isHq)
     {
-        if (itemId == 0) return false;
-        if (SellList.ContainsKey(itemId)) return false;
+        var n = (name ?? string.Empty).Trim();
+        if (isHq)
+            return (n + " " + HqGlyphChar).Trim(); // suffix (matches game convention)
+        return n;
+    }
 
-        SellList[itemId] = new SellListEntry
+    public bool HasSellItem(uint baseItemId, bool isHq)
+        => SellList.ContainsKey(MakeSellKey(baseItemId, isHq));
+
+    public bool TryAddSellItem(uint baseItemId, bool isHq, string name)
+    {
+        if (baseItemId == 0) return false;
+
+        var key = MakeSellKey(baseItemId, isHq);
+        if (SellList.ContainsKey(key)) return false;
+
+        SellList[key] = new SellListEntry
         {
-            ItemId = itemId,
-            Name = (name ?? string.Empty).Trim(),
+            ItemId = baseItemId,
+            IsHq = isHq,
+            Name = BuildDisplayName(name, isHq),
             MinCountToSell = 1,
         };
 
         return true;
     }
 
-    public bool RemoveSellItem(uint itemId)
-        => SellList.Remove(itemId);
+    public bool RemoveSellItem(uint baseItemId, bool isHq)
+        => SellList.Remove(MakeSellKey(baseItemId, isHq));
 
     public void ClearSellList()
         => SellList.Clear();
@@ -99,7 +127,8 @@ public sealed class Configuration : IPluginConfiguration
     public IEnumerable<SellListEntry> GetSellListSorted()
         => SellList.Values
             .OrderBy(e => string.IsNullOrWhiteSpace(e.Name) ? "zzz" : e.Name, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(e => e.ItemId);
+            .ThenBy(e => e.ItemId)
+            .ThenBy(e => e.IsHq ? 1 : 0);
 
     #endregion
 }

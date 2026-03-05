@@ -129,7 +129,15 @@ public unsafe sealed class Plugin : IDalamudPlugin
 
     #region Selling (new listings) state
 
-    private readonly List<uint> _sellQueue = new(); // SellList itemIds (per-retainer pass)
+    private struct SellCandidate
+    {
+        public uint ItemId;        // base id
+        public bool IsHq;          // quality
+        public int MinCountToSell; // per-quality threshold
+        public string Name;        // optional (debug)
+    }
+
+    private readonly List<SellCandidate> _sellQueue = new(); // per-retainer pass
     private int _sellQueuePos;
 
     // Capacity limiting: retainer can hold 20 listings.
@@ -755,12 +763,12 @@ public unsafe sealed class Plugin : IDalamudPlugin
     /// - totalCount across all stacks found
     /// - first sellable slotRef (container, slot) if any
     /// </summary>
-    private bool TryFindItemInInventory(uint itemId, out InventorySlotRef slotRef, out int totalCount)
+    private bool TryFindItemInInventory(uint baseItemId, bool isHq, out InventorySlotRef slotRef, out int totalCount)
     {
         slotRef = default;
         totalCount = 0;
 
-        if (_uiReader.TryFindItemInInventory(itemId, out var container, out var slot, out totalCount))
+        if (_uiReader.TryFindItemInInventory(baseItemId, isHq, out var container, out var slot, out totalCount))
         {
             slotRef = new InventorySlotRef { Container = container, Slot = slot };
             return true;
@@ -967,8 +975,15 @@ public unsafe sealed class Plugin : IDalamudPlugin
                     _sellQueue.Clear();
                     foreach (var e in Configuration.GetSellListSorted())
                     {
-                        if (e.ItemId != 0)
-                            _sellQueue.Add(e.ItemId);
+                        if (e.ItemId == 0) continue;
+
+                        _sellQueue.Add(new SellCandidate
+                        {
+                            ItemId = e.ItemId,
+                            IsHq = e.IsHq,
+                            MinCountToSell = Math.Max(1, e.MinCountToSell),
+                            Name = e.Name ?? string.Empty,
+                        });
                     }
                     _sellQueuePos = 0;
 
@@ -1637,34 +1652,31 @@ public unsafe sealed class Plugin : IDalamudPlugin
 
                     while (_sellQueuePos < _sellQueue.Count)
                     {
-                        var itemId = _sellQueue[_sellQueuePos];
+                        var c = _sellQueue[_sellQueuePos];
                         _sellQueuePos++;
 
-                        if (itemId == 0)
+                        if (c.ItemId == 0)
                             continue;
 
-                        // threshold: sell only if total inventory count >= this value
-                        var threshold = 1;
-                        if (Configuration.SellList.TryGetValue(itemId, out var entry))
-                            threshold = Math.Max(1, entry.MinCountToSell);
+                        var threshold = Math.Max(1, c.MinCountToSell);
 
-                        if (!TryFindItemInInventory(itemId, out var slotRef, out var totalCount))
+                        if (!TryFindItemInInventory(c.ItemId, c.IsHq, out var slotRef, out var totalCount))
                         {
-                            Log.Verbose($"[RR] Sell candidate not in inventory: itemId={itemId}");
+                            Log.Verbose($"[RR] Sell candidate not in inventory: itemId={c.ItemId} hq={c.IsHq}");
                             continue;
                         }
 
                         if (totalCount < threshold)
                         {
-                            Log.Verbose($"[RR] Sell candidate skipped: itemId={itemId} count={totalCount} < threshold={threshold}");
+                            Log.Verbose($"[RR] Sell candidate skipped: itemId={c.ItemId} hq={c.IsHq} count={totalCount} < threshold={threshold}");
                             continue;
                         }
 
-                        _currentSellItemId = itemId;
+                        _currentSellItemId = c.ItemId;
                         _pendingSellSlot = slotRef;
                         _hasPendingSellSlot = true;
 
-                        Log.Debug($"[RR] Sell candidate: itemId={itemId} count={totalCount} threshold={threshold} container={slotRef.Container} slot={slotRef.Slot} (cap {_soldThisRetainer}/{_sellCapacityThisRetainer})");
+                        Log.Debug($"[RR] Sell candidate: itemId={c.ItemId} hq={c.IsHq} count={totalCount} threshold={threshold} container={slotRef.Container} slot={slotRef.Slot} (cap {_soldThisRetainer}/{_sellCapacityThisRetainer})");
 
                         _runPhase = RunPhase.Sell_OpenRetainerSellFromInventory;
                         _lastActionUtc = now;

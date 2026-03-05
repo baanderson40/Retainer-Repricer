@@ -64,8 +64,9 @@ internal sealed class ContextMenuManager : IDisposable
         var itemId = inv.TargetItem.Value.BaseItemId;
         if (itemId == 0)
             return;
+        var isHq = inv.TargetItem.Value.IsHq;
 
-        var isInSellList = _config.HasSellItem(itemId);
+        var isInSellList = _config.HasSellItem(itemId, isHq);
 
         // Pull Lumina once (name + tradable/marketable gate).
         var itemRow = Svc.Data.GetExcelSheet<Item>()?.GetRowOrDefault(itemId);
@@ -93,7 +94,7 @@ internal sealed class ContextMenuManager : IDisposable
 
                 OnClicked = _ =>
                 {
-                    if (_config.RemoveSellItem(itemId))
+                    if (_config.RemoveSellItem(itemId, isHq))
                         _config.Save();
                 }
             });
@@ -136,7 +137,7 @@ internal sealed class ContextMenuManager : IDisposable
             OnClicked = _ =>
             {
                 // Prefer Lumina name if available; empty is fine.
-                if (_config.TryAddSellItem(itemId, itemName))
+                if (_config.TryAddSellItem(itemId, isHq, itemName))
                     _config.Save();
             }
         });

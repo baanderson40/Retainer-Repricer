@@ -201,19 +201,18 @@ public sealed class ConfigWindow : Window, IDisposable
             return;
 
         ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.WidthStretch);
-        ImGui.TableSetupColumn("Min in Inv", ImGuiTableColumnFlags.WidthFixed, 110f);
-        ImGui.TableSetupColumn("##remove", ImGuiTableColumnFlags.WidthFixed, 80f);
+        ImGui.TableSetupColumn("Sell Amount", ImGuiTableColumnFlags.WidthFixed, 80f);
+        ImGui.TableSetupColumn("##remove", ImGuiTableColumnFlags.WidthFixed, 60f);
         ImGui.TableHeadersRow();
 
-        uint? removeId = null;
-        bool anyChanged = false;
+        (uint itemId, bool isHq)? removeKey = null;
 
         foreach (var e in rows)
         {
             ImGui.TableNextRow();
 
             // Use a stable ID scope per row so InputInt doesn’t collide.
-            ImGui.PushID(unchecked((int)e.ItemId));
+            ImGui.PushID($"{e.ItemId}:{(e.IsHq ? 1 : 0)}");
 
             // Column 0: Item name
             ImGui.TableSetColumnIndex(0);
@@ -231,7 +230,7 @@ public sealed class ConfigWindow : Window, IDisposable
                 if (int.TryParse(s, out var parsed))
                 {
                     if (parsed < 1) parsed = 1;
-                    if (parsed > 999999) parsed = 999999;
+                    if (parsed > 999) parsed = 999;
 
                     if (parsed != e.MinCountToSell)
                     {
@@ -246,21 +245,17 @@ public sealed class ConfigWindow : Window, IDisposable
 
             // Column 2: Remove button
             ImGui.TableSetColumnIndex(2);
-            if (ImGui.Button($"Remove##sell_{e.ItemId}"))
-                removeId = e.ItemId;
+            if (ImGui.Button($"Remove##sell_{e.ItemId}_{(e.IsHq ? 1 : 0)}"))
+                removeKey = (e.ItemId, e.IsHq);
 
             ImGui.PopID();
         }
 
         ImGui.EndTable();
 
-        // Save once for any edits (not per keystroke in multiple rows).
-        if (anyChanged)
-            SaveConfig();
-
-        if (removeId.HasValue)
+        if (removeKey.HasValue)
         {
-            _config.RemoveSellItem(removeId.Value);
+            _config.RemoveSellItem(removeKey.Value.itemId, removeKey.Value.isHq);
             SaveConfig();
         }
     }

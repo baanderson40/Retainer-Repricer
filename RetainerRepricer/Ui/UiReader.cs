@@ -284,13 +284,13 @@ internal sealed unsafe class UiReader
 
     #region Inventory (new listings)
 
-    public bool TryFindItemInInventory(uint itemId, out int container, out int slot, out int totalCount)
+    public bool TryFindItemInInventory(uint baseItemId, bool isHq, out int container, out int slot, out int totalCount)
     {
         container = 0;
         slot = 0;
         totalCount = 0;
 
-        if (itemId == 0)
+        if (baseItemId == 0)
             return false;
 
         var inv = InventoryManager.Instance();
@@ -309,8 +309,15 @@ internal sealed unsafe class UiReader
             {
                 var s = cont->GetInventorySlot(i);
                 if (s == null) continue;
-                if (s->ItemId != itemId) continue;
                 if (s->Quantity <= 0) continue;
+
+                // Base item match (must compare BASE id, not the full ItemId which differs for HQ).
+                var slotBaseId = s->GetBaseItemId();
+                if (slotBaseId != baseItemId) continue;
+
+                // Quality match
+                var slotIsHq = IsSlotHq(s);
+                if (slotIsHq != isHq) continue;
 
                 totalCount += (int)s->Quantity;
                 if (totalCount >= 999999)
@@ -326,6 +333,11 @@ internal sealed unsafe class UiReader
         }
 
         return found;
+    }
+
+    private static bool IsSlotHq(FFXIVClientStructs.FFXIV.Client.Game.InventoryItem* s)
+    {
+        return s->IsHighQuality();
     }
 
     public bool TryOpenRetainerSellFromInventory(int container, int slot)
