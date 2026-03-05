@@ -44,15 +44,20 @@ public unsafe sealed class Plugin : IDalamudPlugin
     // Market query pacing (keeps Compare Prices calls from tripping server-side throttles)
     private const double MbBaseIntervalSeconds = 1.5;
     private const double MbIntervalMinSeconds = 1.0;
-    private const double MbIntervalMaxSeconds = 2.25;
+    private const double MbIntervalMaxSeconds = 2.0;
     private const double MbJitterMaxSeconds = 0.10;
 
     // ISR settle gate: early "No items found" can flash before rows populate.
     private const double IsrNoItemsSettleSeconds = 0.5;
 
+    // ISR HQ filter timing
+    private const double IsrHqFilterInitialDelaySeconds = 1.25;   // Seconds to wait after ISR opens before attempting the HQ-filter fallback.
+    private const double IsrHqFilterUiDebounceSeconds = 0.20;     // Seconds the HQ filter UI must remain visible before clicking toggle/accept (UI settle/animation debounce).
+    private const double IsrHqFilterOpenRetrySeconds = 0.30;      // Seconds between attempts to open the ItemSearchFilter window if it didn’t appear.
+    private const double IsrHqFilterPostOpenSeconds = 0.15;       // Seconds to wait after requesting the filter window before interacting with it.
+
     // Framework tick throttle (outer gate). TickRun has its own pacing too.
     private const double FrameworkTickIntervalSeconds = 0.075;
-
 
     #endregion
 
@@ -177,6 +182,18 @@ public unsafe sealed class Plugin : IDalamudPlugin
     // ISR settle gate (prevents trusting "No items found" too early)
     private DateTime _isrOpenedUtc = DateTime.MinValue;
     private int _isrNoItemsConfirm;
+
+    // HQ filtering for ItemSearchResult (avoids virtualized rows issue)
+    private bool _isrNeedApplyHqFilter;
+    private bool _isrHqFilterApplied;
+    private DateTime _isrHqFilterRequestedUtc = DateTime.MinValue;
+    private DateTime _isrHqFilterVisibleUtc = DateTime.MinValue;
+
+    // Only apply HQ filter as a fallback if HQ isn't visible in the first page
+    private bool _isrHqFilterFallbackTried;
+
+    // HQ filter timing gate: don't try to open/toggle filter until this time
+    private DateTime _isrAllowFilterAfterUtc = DateTime.MinValue;
 
     // Retainer name sync -> Configuration
     private DateTime _lastRetainerSyncUtc = DateTime.MinValue;
@@ -482,6 +499,50 @@ public unsafe sealed class Plugin : IDalamudPlugin
         Log.Verbose("[CTX] Dismiss callbacks fired");
         return true;
     }
+    private unsafe bool FireItemSearchResultOpenFilter()
+    {
+        var addon = GameGui.GetAddonByName("ItemSearchResult", 1);
+        if (addon.IsNull) return false;
+
+        var unit = (AtkUnitBase*)addon.Address;
+        if (unit == null || !unit->IsVisible) return false;
+
+        // Per your finding: ItemSearchResult callback 1 opens ItemSearchFilter
+        Callback.Fire(unit, updateState: true, 1);
+
+        Log.Verbose("[ISR] Open filter (callback 1)");
+        return true;
+    }
+
+    private unsafe bool FireItemSearchFilterToggleHq()
+    {
+        var addon = GameGui.GetAddonByName("ItemSearchFilter", 1);
+        if (addon.IsNull) return false;
+
+        var unit = (AtkUnitBase*)addon.Address;
+        if (unit == null || !unit->IsVisible) return false;
+
+        // Per your finding: ItemSearchFilter 1,1 toggles HQ
+        Callback.Fire(unit, updateState: true, 1, 1);
+
+        Log.Verbose("[ISF] Toggle HQ (callback 1,1)");
+        return true;
+    }
+
+    private unsafe bool FireItemSearchFilterAccept()
+    {
+        var addon = GameGui.GetAddonByName("ItemSearchFilter", 1);
+        if (addon.IsNull) return false;
+
+        var unit = (AtkUnitBase*)addon.Address;
+        if (unit == null || !unit->IsVisible) return false;
+
+        // Per your finding: ItemSearchFilter 0 accepts
+        Callback.Fire(unit, updateState: true, 0);
+
+        Log.Verbose("[ISF] Accept filter (callback 0)");
+        return true;
+    }
 
     #endregion
 
@@ -533,7 +594,7 @@ public unsafe sealed class Plugin : IDalamudPlugin
         var now = DateTime.UtcNow;
         if ((now - _lastRetainerSyncUtc).TotalSeconds < RetainerSyncIntervalSeconds)
             return;
-
+  
         SyncRetainersIntoConfig(ReadRetainerNames());
         _lastRetainerSyncUtc = now;
     }
@@ -693,6 +754,12 @@ public unsafe sealed class Plugin : IDalamudPlugin
 
         _isrThrottleRetried = false;
         _isrThrottleUntilUtc = DateTime.MinValue;
+        _isrNeedApplyHqFilter = false;
+        _isrAllowFilterAfterUtc = DateTime.MinValue;
+        _isrHqFilterApplied = false;
+        _isrHqFilterRequestedUtc = DateTime.MinValue;
+        _isrHqFilterFallbackTried = false;
+        _isrHqFilterVisibleUtc = DateTime.MinValue;
 
         _stagedDesiredPrice = null;
         _stagedReferenceSeller = string.Empty;
@@ -830,7 +897,8 @@ public unsafe sealed class Plugin : IDalamudPlugin
 
         if (_currentIsHq)
         {
-            for (int i = 0; i < count; i++)
+            var max = Math.Min(count, 10);
+            for (int i = 0; i < max; i++)
             {
                 if (!TryReadMarketRow(i, out var price, out var seller, out var isHq)) continue;
                 if (!isHq) continue;
@@ -841,7 +909,7 @@ public unsafe sealed class Plugin : IDalamudPlugin
                 return true;
             }
 
-            Log.Information("[RR] HQ item but no HQ rows found; skipping repricing.");
+            Log.Information("[RR] HQ item but no HQ rows found in first page.");
             return false;
         }
 
@@ -852,6 +920,24 @@ public unsafe sealed class Plugin : IDalamudPlugin
         lowestPrice = p0;
         lowestSeller = s0;
         return true;
+    }
+    private unsafe bool IsAnyHqVisibleInFirstPage()
+    {
+        var list = _uiReader.GetMarketList();
+        if (list == null) return false;
+
+        var count = list->GetItemCount();
+        if (count <= 0) return false;
+
+        var max = Math.Min(count, 10);
+        for (int i = 0; i < max; i++)
+        {
+            // Reuse existing row-read path so we don't trust unpopulated nodes
+            if (!TryReadMarketRow(i, out _, out _, out var isHq)) continue;
+            if (isHq) return true;
+        }
+
+        return false;
     }
 
     #endregion
@@ -1210,6 +1296,13 @@ public unsafe sealed class Plugin : IDalamudPlugin
                         _isrOpenedUtc = DateTime.MinValue;
                         _isrNoItemsConfirm = 0;
 
+                        _isrNeedApplyHqFilter = false; // fallback only; don't filter immediately
+                        _isrHqFilterApplied = false;
+                        _isrHqFilterRequestedUtc = DateTime.MinValue;
+                        _isrHqFilterFallbackTried = false;
+                        _isrAllowFilterAfterUtc = DateTime.MinValue;
+                        _isrHqFilterVisibleUtc = DateTime.MinValue;
+
                         _runPhase = RunPhase.WaitingItemSearchResult;
                         _lastActionUtc = now;
                         return;
@@ -1234,6 +1327,13 @@ public unsafe sealed class Plugin : IDalamudPlugin
                     _isrOpenedUtc = DateTime.MinValue;
                     _isrNoItemsConfirm = 0;
 
+                    _isrNeedApplyHqFilter = false; // fallback only; don't filter immediately
+                    _isrHqFilterApplied = false;
+                    _isrHqFilterRequestedUtc = DateTime.MinValue;
+                    _isrHqFilterFallbackTried = false;
+                    _isrAllowFilterAfterUtc = DateTime.MinValue;
+                    _isrHqFilterVisibleUtc = DateTime.MinValue;
+
                     Log.Debug($"[RR] ComparePrices clicked (interval={_mbIntervalSec:0.00}s).");
                     _runPhase = RunPhase.WaitingItemSearchResult;
                     _lastActionUtc = now;
@@ -1243,6 +1343,70 @@ public unsafe sealed class Plugin : IDalamudPlugin
             case RunPhase.WaitingItemSearchResult:
                 {
                     if (!marketOpen) return;
+
+                    // If HQ item: apply the HQ filter so HQ rows are rendered immediately.
+                    // This avoids list virtualization where only 10 visible rows have populated text.
+                    if (_isrNeedApplyHqFilter && !_isrHqFilterApplied)
+                    {
+                        // Respect global filter timing gate
+                        if (_isrAllowFilterAfterUtc != DateTime.MinValue && now < _isrAllowFilterAfterUtc)
+                        {
+                            _lastActionUtc = now;
+                            return;
+                        }
+
+                        var filterVisible = IsAddonVisible("ItemSearchFilter");
+                        if (!filterVisible)
+                            _isrHqFilterVisibleUtc = DateTime.MinValue;
+
+                        // If filter UI is visible, toggle HQ and accept
+                        if (filterVisible)
+                        {
+                            if (_isrHqFilterVisibleUtc == DateTime.MinValue)
+                            {
+                                _isrHqFilterVisibleUtc = now;
+                                _lastActionUtc = now;
+                                return;
+                            }
+
+                            if ((now - _isrHqFilterVisibleUtc).TotalSeconds < IsrHqFilterUiDebounceSeconds)
+                            {
+                                _lastActionUtc = now;
+                                return;
+                            }
+
+                            FireItemSearchFilterToggleHq();
+                            FireItemSearchFilterAccept();
+
+                            _isrHqFilterApplied = true;
+                            _isrNeedApplyHqFilter = false;
+
+                            // reset ISR tracking so rows repopulate cleanly
+                            _isrNoItemsConfirm = 0;
+                            _isrOpenedUtc = now;
+
+                            Log.Debug("[RR] HQ filter applied; waiting for ISR to repopulate.");
+                            _lastActionUtc = now;
+                            return;
+                        }
+
+                        // Filter window not open yet → request it
+                        if (_isrHqFilterRequestedUtc == DateTime.MinValue ||
+                            (now - _isrHqFilterRequestedUtc).TotalSeconds >= IsrHqFilterOpenRetrySeconds)
+                        {
+                            FireItemSearchResultOpenFilter();
+                            _isrHqFilterRequestedUtc = now;
+
+                            // brief pause to allow the filter window to appear
+                            _isrAllowFilterAfterUtc = now.AddSeconds(IsrHqFilterPostOpenSeconds);
+
+                            _lastActionUtc = now;
+                            return;
+                        }
+
+                        _lastActionUtc = now;
+                        return;
+                    }
 
                     var status = _uiReader.GetItemSearchResultStatus(out var msg);
 
@@ -1290,6 +1454,16 @@ public unsafe sealed class Plugin : IDalamudPlugin
 
                     if (status == Ui.UiReader.ItemSearchResultStatus.PleaseWaitRetry)
                     {
+                        // If we're in the middle of applying the HQ filter, do NOT retry ComparePrices.
+                        // Filtering triggers a repopulation and can temporarily surface "Please wait".
+                        if (_isrNeedApplyHqFilter && !_isrHqFilterApplied)
+                        {
+                            Log.Verbose("[RR] ISR throttle while applying HQ filter; waiting (no ComparePrices retry).");
+                            _isrThrottleUntilUtc = now.AddSeconds(ItemSearchResultThrottleBackoffSeconds);
+                            _lastActionUtc = now;
+                            return;
+                        }
+
                         if (now < _isrThrottleUntilUtc)
                         {
                             Log.Verbose("[RR] ISR throttle backoff window active.");
@@ -1370,7 +1544,6 @@ public unsafe sealed class Plugin : IDalamudPlugin
                     }
 
                     Log.Debug($"[RR] ItemSearchResult ready (rows={count}).");
-
                     _mbIntervalSec = Math.Clamp(_mbIntervalSec - 0.02, MbIntervalMinSeconds, MbIntervalMaxSeconds);
 
                     _runPhase = RunPhase.ReadMarketAndApplyPrice;
@@ -1425,6 +1598,9 @@ public unsafe sealed class Plugin : IDalamudPlugin
 
                     if (status == Ui.UiReader.ItemSearchResultStatus.PleaseWaitRetry)
                     {
+                        // Optional: backoff a little so we don't hammer the gate
+                        _isrThrottleUntilUtc = now.AddSeconds(ItemSearchResultThrottleBackoffSeconds);
+
                         Log.Debug("[RR] ISR throttle surfaced during read; returning to ISR gate.");
                         _runPhase = RunPhase.WaitingItemSearchResult;
                         _lastActionUtc = now;
@@ -1441,6 +1617,38 @@ public unsafe sealed class Plugin : IDalamudPlugin
 
                     if (!TryPickReferenceListing(out var lowestPrice, out var lowestSeller))
                     {
+                        // If this is an HQ item and we didn't see HQ in the first page,
+                        // try applying the HQ filter ONCE as a fallback to avoid list virtualization.
+                        if (_currentIsHq && !_isrHqFilterFallbackTried)
+                        {
+                            if (IsAnyHqVisibleInFirstPage())
+                            {
+                                Log.Debug("[RR] HQ became visible in first page; retrying pick without filtering.");
+                                _lastActionUtc = now;
+                                return; // next tick TryPickReferenceListing will succeed
+                            }
+
+                            Log.Information("[RR] HQ not visible in first page; applying HQ filter fallback once.");
+
+                            _isrHqFilterFallbackTried = true;
+
+                            // Arm the filter state machine
+                            _isrNeedApplyHqFilter = true;
+                            _isrHqFilterApplied = false;
+                            _isrHqFilterRequestedUtc = DateTime.MinValue;
+
+                            // delay before attempting HQ filter so ISR can settle
+                            _isrAllowFilterAfterUtc = now.AddSeconds(IsrHqFilterInitialDelaySeconds);
+
+                            _isrNoItemsConfirm = 0;
+                            _isrOpenedUtc = now;
+
+                            _runPhase = RunPhase.WaitingItemSearchResult;
+                            _lastActionUtc = now;
+                            return;
+                        }
+
+                        // If fallback already tried (or NQ item), skip.
                         _runPhase = RunPhase.CleanupAfterItem;
                         _lastActionUtc = now;
                         return;
@@ -1579,6 +1787,14 @@ public unsafe sealed class Plugin : IDalamudPlugin
                     CloseRetainerSellIfOpen();
 
                     Log.Verbose("[RR] Cleanup complete (market closed, exited RetainerSell).");
+
+                    _isrNeedApplyHqFilter = false;
+                    _isrHqFilterApplied = false;
+                    _isrHqFilterRequestedUtc = DateTime.MinValue;
+                    _isrHqFilterFallbackTried = false;
+                    _isrAllowFilterAfterUtc = DateTime.MinValue;
+                    _isrHqFilterVisibleUtc = DateTime.MinValue;
+                    _isrNoItemsConfirm = 0;
 
                     _runPhase = RunPhase.WaitingRetainerSellListAfterItem;
                     _lastActionUtc = now;
