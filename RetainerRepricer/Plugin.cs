@@ -6,12 +6,16 @@ using Dalamud.Plugin.Services;
 using ECommons;
 using ECommons.Automation;
 using ECommons.Configuration;
+using ECommons.GameHelpers;
 using ECommons.UIHelpers.AddonMasterImplementations;
 using FFXIVClientStructs.FFXIV.Client.Game;
+using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using FFXIVClientStructs.FFXIV.Component.GUI;
+using RetainerRepricer.Services;
 using RetainerRepricer.Windows;
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 
 namespace RetainerRepricer;
 
@@ -32,6 +36,8 @@ public unsafe sealed class Plugin : IDalamudPlugin
 
     private const string CommandName = "/repricer";
     private const int UndercutAmount = 1;
+    private const string UniversalisFloorSeller = "[UniversalisFloor]";
+    private const float MarketValidationThreshold = 2.0f;  // Can be made configurable later
 
     // General pacing between UI actions. Keep conservative while iterating on UI stability.
     private const double ActionIntervalSeconds = 0.15;
@@ -67,6 +73,8 @@ public unsafe sealed class Plugin : IDalamudPlugin
     public readonly WindowSystem WindowSystem = new("RetainerRepricer");
 
     internal bool IsRunning;
+
+    private readonly UniversalisApiClient _universalisClient;
 
     #endregion
 
@@ -157,6 +165,15 @@ public unsafe sealed class Plugin : IDalamudPlugin
 
     #endregion
 
+    #region Universalis gate state
+
+    private Task<decimal?>? _universalisGateTask;
+    private UniversalisGateKey? _universalisGateKey;
+    private decimal? _universalisGateAverage;
+    private int? _universalisPriceFloor;
+
+    #endregion
+
     #region Market reference + staging
 
     // Store retainer names as a set for fast lookup when checking "mine" sellers.
@@ -228,6 +245,8 @@ public unsafe sealed class Plugin : IDalamudPlugin
         Configuration = pi.GetPluginConfig() as Configuration ?? new Configuration();
         Configuration.Initialize(pi);
 
+        _universalisClient = new UniversalisApiClient(log);
+
         ConfigWindow = new ConfigWindow(this);
         MainWindow = new MainWindow(this);
         ContextMenu = new ContextMenuManager(Configuration);
@@ -264,6 +283,8 @@ public unsafe sealed class Plugin : IDalamudPlugin
         ContextMenu.Dispose();
 
         CommandManager.RemoveHandler(CommandName);
+
+        _universalisClient.Dispose();
 
         ECommonsMain.Dispose();
     }
@@ -318,6 +339,10 @@ public unsafe sealed class Plugin : IDalamudPlugin
                 DumpRetainerRows();
                 return;
 
+            case "testgate":
+                TestUniversalisGate();
+                return;
+
             default:
                 PrintHelp();
                 return;
@@ -330,6 +355,153 @@ public unsafe sealed class Plugin : IDalamudPlugin
         ChatGui.Print("/repricer start   - Start repricing & selling from Retainer List");
         ChatGui.Print("/repricer stop    - Stop current run");
         ChatGui.Print("/repricer config  - Open configuration window");
+    }
+
+    private void TestUniversalisGate()
+    {
+        if (!IsAddonOpen("ItemSearchResult"))
+        {
+            Log.Information("[RR][TestGate] ItemSearchResult is not open. Open market board listings first.");
+            ChatGui.Print("[RetainerRepricer] Open ItemSearchResult first (/mbdump to verify).");
+            return;
+        }
+
+        if (!TryGetCurrentMarketItemId(out var itemId))
+        {
+            Log.Warning("[RR][TestGate] Could not resolve current item id.");
+            return;
+        }
+
+        var region = GetWorldDcRegionKey();
+        if (string.IsNullOrWhiteSpace(region))
+        {
+            Log.Warning("[RR][TestGate] Could not resolve world/DC region.");
+            return;
+        }
+
+        if (!Configuration.EnableUndercutPreventionGate)
+        {
+            Log.Information("[RR][TestGate] Gate is disabled in config. Using legacy behavior.");
+        }
+        else if (!Configuration.UseUniversalisApi)
+        {
+            Log.Information("[RR][TestGate] Universalis API is disabled in config. Using legacy behavior.");
+        }
+
+        var baseUrl = string.IsNullOrWhiteSpace(Configuration.UniversalisApiBaseUrl)
+            ? "https://universalis.app/api/v2/aggregated"
+            : Configuration.UniversalisApiBaseUrl.Trim();
+
+        Log.Information($"[RR][TestGate] Fetching Universalis data for item {itemId}, region='{region}', HQ={_currentIsHq}");
+
+        decimal avg;
+        try
+        {
+            var result = _universalisClient.GetAveragePriceAsync(baseUrl, region, itemId, _currentIsHq);
+            avg = result != null ? (result.Result ?? 0) : 0;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "[RR][TestGate] Universalis API call failed.");
+            avg = 0;
+        }
+
+        if (avg <= 0)
+        {
+            Log.Information("[RR][TestGate] Universalis returned no data (or gate disabled). Using legacy row logic.");
+            avg = 0;
+        }
+
+        // Market validation: compare API average to current market average
+        var (marketAvg, marketCount) = TryGetMarketAverage();
+        if (marketCount > 0 && avg > 0)
+        {
+            var threshold = marketAvg * (decimal)MarketValidationThreshold;
+            if (avg > threshold)
+            {
+                Log.Information($"[RR][TestGate] API avg {avg:N0} > market avg {marketAvg:N0} * {MarketValidationThreshold:F1} = {threshold:N0}; using market avg instead.");
+                avg = marketAvg;
+            }
+        }
+
+        var floor = ComputeUniversalisFloor(avg, Configuration.UndercutPreventionPercent);
+        var percentDisplay = Configuration.UndercutPreventionPercent * 100f;
+
+        Log.Information($"[RR][TestGate] === Universalis Results ===");
+        Log.Information($"[RR][TestGate] Item ID: {itemId}");
+        Log.Information($"[RR][TestGate] Region: {region}");
+        Log.Information($"[RR][TestGate] API Average: {(avg > 0 ? avg.ToString("N0") : "N/A")}");
+        Log.Information($"[RR][TestGate] Market Average ({marketCount} listings): {(marketAvg > 0 ? marketAvg.ToString("N0") : "N/A")}");
+        Log.Information($"[RR][TestGate] Config Percent: {percentDisplay:0}%");
+        Log.Information($"[RR][TestGate] Floor Price: {(floor > 0 ? floor.ToString("N0") : "N/A")}");
+        Log.Information($"[RR][TestGate] ========================");
+
+        var list = _uiReader.GetMarketList();
+        if (list == null)
+        {
+            Log.Warning("[RR][TestGate] Could not get market list.");
+            return;
+        }
+
+        var count = list->GetItemCount();
+        if (count <= 0)
+        {
+            Log.Information("[RR][TestGate] No listings in market.");
+            return;
+        }
+
+        var maxRows = Math.Min(count, 10);
+        var selectedRow = -1;
+        var selectedPrice = 0;
+        var usedFloor = false;
+
+        for (int i = 0; i < maxRows; i++)
+        {
+            if (!TryReadMarketRow(i, out var price, out var seller, out var isHq))
+                continue;
+
+            bool passes = floor <= 0 || price >= floor;
+            var status = passes ? "PASS" : "SKIP (below floor)";
+
+            Log.Information($"[RR][TestGate] Row {i}: price={price:N0} hq={isHq} seller='{seller}' => {status}");
+
+            if (selectedRow < 0 && passes)
+            {
+                selectedRow = i;
+                selectedPrice = price;
+            }
+        }
+
+        if (selectedRow < 0 && floor > 0)
+        {
+            selectedRow = -1;
+            selectedPrice = floor;
+            usedFloor = true;
+            Log.Information($"[RR][TestGate] No rows passed floor. Using floor price: {floor:N0}");
+        }
+        else if (selectedRow < 0)
+        {
+            if (TryReadMarketRow(0, out var p0, out var s0, out _))
+            {
+                selectedRow = 0;
+                selectedPrice = p0;
+                Log.Information($"[RR][TestGate] No floor set, using row 0: {p0:N0}");
+            }
+            else
+            {
+                Log.Information("[RR][TestGate] Could not read any market rows.");
+                return;
+            }
+        }
+
+        var undercutPrice = Math.Max(1, selectedPrice - 1);
+        Log.Information($"[RR][TestGate] === Final Decision ===");
+        Log.Information($"[RR][TestGate] Selected Row: {(selectedRow >= 0 ? selectedRow.ToString() : "FLOOR")}");
+        Log.Information($"[RR][TestGate] Selected Price: {selectedPrice:N0}");
+        Log.Information($"[RR][TestGate] Undercut Price: {undercutPrice:N0}");
+        Log.Information($"[RR][TestGate] ========================");
+
+        ChatGui.Print($"[RetainerRepricer] TestGate complete - check log for details.");
     }
 
     #endregion
@@ -722,11 +894,15 @@ public unsafe sealed class Plugin : IDalamudPlugin
         _currentSellItemId = 0;
         _hasPendingSellSlot = false;
 
+        ResetUniversalisGateState();
+
         Log.Information("[RR] Stopped.");
     }
 
     private void ResetRunState()
     {
+        ResetUniversalisGateState();
+
         RebuildMyRetainersSet();
 
         _retainerRowOrder.Clear();
@@ -768,6 +944,198 @@ public unsafe sealed class Plugin : IDalamudPlugin
 
         _lastRetainerSyncUtc = DateTime.MinValue;
     }
+
+    #endregion
+
+    #region Universalis gate helpers
+
+    private void ResetUniversalisGateState()
+    {
+        _universalisGateTask = null;
+        _universalisGateKey = null;
+        _universalisGateAverage = null;
+        _universalisPriceFloor = null;
+    }
+
+    private unsafe bool TryGetCurrentMarketItemId(out uint itemId)
+    {
+        itemId = 0;
+
+        var agentModule = AgentModule.Instance();
+        if (agentModule == null)
+            return false;
+
+        var agent = agentModule->GetAgentByInternalId(AgentId.ItemSearch);
+        if (agent == null)
+            return false;
+
+        var itemSearch = (AgentItemSearch*)agent;
+        if (itemSearch == null)
+            return false;
+
+        var id = itemSearch->ResultItemId;
+        if (id == 0)
+            return false;
+
+        itemId = id;
+        return true;
+    }
+
+    private string? GetWorldDcRegionKey()
+    {
+        if (!Player.Available)
+            return null;
+
+        var worldName = Player.CurrentWorldName;
+        if (!string.IsNullOrWhiteSpace(worldName))
+            return worldName;
+
+        var dcName = Player.CurrentDataCenterName;
+        if (!string.IsNullOrWhiteSpace(dcName))
+            return dcName;
+
+        return null;
+    }
+
+    private UniversalisGateStatus UpdateUniversalisGate(out int floorPrice)
+    {
+        floorPrice = 0;
+
+        if (!Configuration.EnableUndercutPreventionGate || !Configuration.UseUniversalisApi)
+            return UniversalisGateStatus.Disabled;
+
+        var baseUrl = string.IsNullOrWhiteSpace(Configuration.UniversalisApiBaseUrl)
+            ? "https://universalis.app/api/v2/aggregated"
+            : Configuration.UniversalisApiBaseUrl.Trim();
+
+        if (!TryGetCurrentMarketItemId(out var itemId))
+        {
+            Log.Warning("[RR][Gate] Unable to resolve current item id for Universalis lookup; skipping item.");
+            return UniversalisGateStatus.Failed;
+        }
+
+        var region = GetWorldDcRegionKey();
+        if (string.IsNullOrWhiteSpace(region))
+        {
+            Log.Warning("[RR][Gate] Unable to resolve world/DC region; skipping item.");
+            return UniversalisGateStatus.Failed;
+        }
+
+        var key = new UniversalisGateKey(itemId, _currentIsHq, region, baseUrl);
+        if (_universalisGateKey is not { } existing || existing != key)
+        {
+            _universalisGateKey = key;
+            _universalisGateAverage = null;
+            _universalisGateTask = _universalisClient.GetAveragePriceAsync(baseUrl, region, itemId, _currentIsHq);
+            Log.Debug($"[RR][Gate] Requesting Universalis average for item {itemId} (region='{region}', HQ={_currentIsHq}).");
+        }
+
+        if (_universalisGateAverage is { } avg)
+        {
+            floorPrice = ComputeUniversalisFloor(avg, Configuration.UndercutPreventionPercent);
+            return UniversalisGateStatus.Ready;
+        }
+
+        var task = _universalisGateTask;
+        if (task == null)
+            return UniversalisGateStatus.Failed;
+
+        if (!task.IsCompleted)
+            return UniversalisGateStatus.Pending;
+
+        decimal? averageResult;
+        try
+        {
+            averageResult = task.Result;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "[RR][Gate] Universalis request failed; skipping item.");
+            _universalisGateTask = null;
+            return UniversalisGateStatus.Failed;
+        }
+
+        _universalisGateTask = null;
+
+        if (averageResult is null || averageResult <= 0)
+        {
+            Log.Warning($"[RR][Gate] Universalis returned no data for item {itemId} (region='{region}', HQ={_currentIsHq}); skipping item.");
+            return UniversalisGateStatus.Failed;
+        }
+
+        _universalisGateAverage = averageResult;
+
+        // Market validation: compare API average to current market average
+        var (marketAvg, marketCount) = TryGetMarketAverage();
+        if (marketCount > 0)
+        {
+            var threshold = marketAvg * (decimal)MarketValidationThreshold;
+            if (averageResult.Value > threshold)
+            {
+                Log.Information($"[RR][Gate] API avg {averageResult.Value:N0} > market avg {marketAvg:N0} * {MarketValidationThreshold:F1} = {threshold:N0}; using market avg instead.");
+                _universalisGateAverage = marketAvg;
+                averageResult = marketAvg;
+            }
+        }
+
+        floorPrice = ComputeUniversalisFloor(averageResult.Value, Configuration.UndercutPreventionPercent);
+        Log.Debug($"[RR][Gate] Universalis average={averageResult.Value:0} floor={floorPrice} for item {itemId} (region='{region}', HQ={_currentIsHq}).");
+        return UniversalisGateStatus.Ready;
+    }
+
+    private (decimal Average, int Count) TryGetMarketAverage()
+    {
+        var list = _uiReader.GetMarketList();
+        if (list == null)
+            return (0, 0);
+
+        var count = list->GetItemCount();
+        if (count <= 0)
+            return (0, 0);
+
+        decimal sum = 0;
+        var validCount = 0;
+        var maxRows = Math.Min(count, 10);
+
+        for (int i = 0; i < maxRows; i++)
+        {
+            if (!TryReadMarketRow(i, out var price, out _, out var isHq))
+                continue;
+
+            // Filter by HQ/NQ to match current item
+            if (isHq != _currentIsHq)
+                continue;
+
+            sum += price;
+            validCount++;
+        }
+
+        if (validCount == 0)
+            return (0, 0);
+
+        return (sum / validCount, validCount);
+    }
+
+    private static int ComputeUniversalisFloor(decimal averagePrice, float configuredPercent)
+    {
+        if (averagePrice <= 0)
+            return 0;
+
+        var percent = Math.Clamp(configuredPercent, 0.1f, 0.9f);
+        var multiplier = (decimal)percent;
+        var raw = (int)Math.Floor(averagePrice * multiplier);
+        return raw < 1 ? 1 : raw;
+    }
+
+    private enum UniversalisGateStatus
+    {
+        Disabled,
+        Pending,
+        Ready,
+        Failed,
+    }
+
+    private readonly record struct UniversalisGateKey(uint ItemId, bool IsHq, string Region, string BaseUrl);
 
     #endregion
 
@@ -895,6 +1263,8 @@ public unsafe sealed class Plugin : IDalamudPlugin
         var count = list->GetItemCount();
         if (count <= 0) return false;
 
+        var gateFloor = _universalisPriceFloor;
+
         if (_currentIsHq)
         {
             var max = Math.Min(count, 10);
@@ -903,9 +1273,23 @@ public unsafe sealed class Plugin : IDalamudPlugin
                 if (!TryReadMarketRow(i, out var price, out var seller, out var isHq)) continue;
                 if (!isHq) continue;
 
+                if (gateFloor.HasValue && price < gateFloor.Value)
+                {
+                    Log.Debug($"[RR][Gate] HQ row {i} price {price} below floor {gateFloor.Value}; skipping row.");
+                    continue;
+                }
+
                 Log.Debug($"[RR] Market HQ ref row={i} price={price} seller='{seller}'");
                 lowestPrice = price;
                 lowestSeller = seller;
+                return true;
+            }
+
+            if (gateFloor.HasValue)
+            {
+                Log.Information($"[RR][Gate] No HQ listings met the floor {gateFloor.Value}; using floor price.");
+                lowestPrice = gateFloor.Value;
+                lowestSeller = UniversalisFloorSeller;
                 return true;
             }
 
@@ -913,7 +1297,33 @@ public unsafe sealed class Plugin : IDalamudPlugin
             return false;
         }
 
-        // NQ: row 0 is the reference.
+        if (gateFloor.HasValue)
+        {
+            var max = Math.Min(count, 10);
+            for (int i = 0; i < max; i++)
+            {
+                if (!TryReadMarketRow(i, out var price, out var seller, out var isHq)) continue;
+                if (isHq) continue;
+
+                if (price < gateFloor.Value)
+                {
+                    Log.Debug($"[RR][Gate] NQ row {i} price {price} below floor {gateFloor.Value}; skipping row.");
+                    continue;
+                }
+
+                Log.Debug($"[RR] Market NQ gated ref row={i} price={price} seller='{seller}'");
+                lowestPrice = price;
+                lowestSeller = seller;
+                return true;
+            }
+
+            Log.Information($"[RR][Gate] No NQ listings met the floor {gateFloor.Value}; using floor price.");
+            lowestPrice = gateFloor.Value;
+            lowestSeller = UniversalisFloorSeller;
+            return true;
+        }
+
+        // NQ without gate: row 0 is the reference.
         if (!TryReadMarketRow(0, out var p0, out var s0, out _)) return false;
 
         Log.Debug($"[RR] Market NQ ref row0 price={p0} seller='{s0}'");
@@ -1275,6 +1685,8 @@ public unsafe sealed class Plugin : IDalamudPlugin
                         return;
                     }
 
+                    ResetUniversalisGateState();
+
                     Log.Information($"[RR] Sell capture: item='{name}' currentPrice={priceOpt.Value}");
 
                     _runPhase = RunPhase.OpenComparePrices;
@@ -1613,6 +2025,32 @@ public unsafe sealed class Plugin : IDalamudPlugin
                         _runPhase = RunPhase.CleanupAfterItem;
                         _lastActionUtc = now;
                         return;
+                    }
+
+                    if (Configuration.EnableUndercutPreventionGate && Configuration.UseUniversalisApi)
+                    {
+                        var gateStatus = UpdateUniversalisGate(out var floorPrice);
+                        if (gateStatus == UniversalisGateStatus.Pending)
+                        {
+                            _lastActionUtc = now;
+                            return;
+                        }
+
+                        if (gateStatus == UniversalisGateStatus.Failed)
+                        {
+                            Log.Information("[RR][Gate] Skipping repricing: Universalis gate failed for this item.");
+                            _runPhase = RunPhase.CleanupAfterItem;
+                            _lastActionUtc = now;
+                            return;
+                        }
+
+                        _universalisPriceFloor = gateStatus == UniversalisGateStatus.Ready
+                            ? floorPrice
+                            : null;
+                    }
+                    else
+                    {
+                        _universalisPriceFloor = null;
                     }
 
                     if (!TryPickReferenceListing(out var lowestPrice, out var lowestSeller))

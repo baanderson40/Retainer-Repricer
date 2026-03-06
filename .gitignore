@@ -2,4 +2,6 @@
 obj/
 bin/
 *.user
-**/git-push.bat
+AI_planning/
+AGENTS.md
+
