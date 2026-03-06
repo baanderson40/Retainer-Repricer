@@ -119,6 +119,7 @@ public sealed class ConfigWindow : Window, IDisposable
     {
         DrawPluginSettings();
         DrawOverlayOffsetSettings();
+        DrawPricingGateSettings();
     }
 
     #endregion
@@ -409,6 +410,79 @@ public sealed class ConfigWindow : Window, IDisposable
             if (ImGui.IsItemDeactivatedAfterEdit())
                 SaveConfig();
         }
+    }
+
+    private void DrawPricingGateSettings()
+    {
+        ImGui.Separator();
+        ImGui.Spacing();
+        ImGui.TextUnformatted("Intelligent pricing gate");
+
+        var gateEnabled = _config.EnableUndercutPreventionGate;
+        if (ImGui.Checkbox("Enable Universalis-backed price gate", ref gateEnabled))
+        {
+            _config.EnableUndercutPreventionGate = gateEnabled;
+            SaveConfig();
+        }
+
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+        {
+            ImGui.SetTooltip(
+                "Guards against severe undercuts by comparing market prices to Universalis averages."
+            );
+        }
+
+        ImGui.BeginDisabled(!gateEnabled);
+
+        var useUniversalis = _config.UseUniversalisApi;
+        if (ImGui.Checkbox("Fetch Universalis averages", ref useUniversalis))
+        {
+            _config.UseUniversalisApi = useUniversalis;
+            SaveConfig();
+        }
+
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+        {
+            ImGui.SetTooltip(
+                "Disable if you prefer to rely solely on in-game listings without Universalis data."
+            );
+        }
+
+        ImGui.BeginDisabled(!useUniversalis);
+
+        var endpoint = _config.UniversalisApiBaseUrl ?? string.Empty;
+        ImGui.SetNextItemWidth(-1);
+        if (ImGui.InputText("Universalis endpoint", ref endpoint, 256))
+        {
+            _config.UniversalisApiBaseUrl = string.IsNullOrWhiteSpace(endpoint)
+                ? "https://universalis.app/api/v2/aggregated"
+                : endpoint.Trim();
+            SaveConfig();
+        }
+
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+        {
+            ImGui.SetTooltip("Base URL for Universalis aggregated API calls.");
+        }
+
+        var percent = _config.UndercutPreventionPercent * 100f;
+        if (ImGui.SliderFloat("Minimum price floor", ref percent, 10f, 90f, "%.0f%%"))
+        {
+            var normalized = Math.Clamp(percent / 100f, 0.1f, 0.9f);
+            if (Math.Abs(normalized - _config.UndercutPreventionPercent) > 0.0001f)
+            {
+                _config.UndercutPreventionPercent = normalized;
+                SaveConfig();
+            }
+        }
+
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+        {
+            ImGui.SetTooltip("Listings below this percent of the Universalis average will be ignored.");
+        }
+
+        ImGui.EndDisabled();
+        ImGui.EndDisabled();
     }
 
     #endregion

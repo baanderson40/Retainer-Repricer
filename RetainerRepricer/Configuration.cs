@@ -11,7 +11,7 @@ public sealed class Configuration : IPluginConfiguration
 {
     #region Dalamud config versioning
 
-    public int Version { get; set; } = 2;
+    public int Version { get; set; } = 3;
 
     [NonSerialized]
     private IDalamudPluginInterface? _pluginInterface;
@@ -57,6 +57,15 @@ public sealed class Configuration : IPluginConfiguration
     public bool OverlayEnabled { get; set; } = true;
     public float OverlayOffsetX { get; set; } = 0f;
     public float OverlayOffsetY { get; set; } = 0f;
+
+    #endregion
+
+    #region Pricing gate
+
+    public bool EnableUndercutPreventionGate { get; set; } = true;
+    public bool UseUniversalisApi { get; set; } = true;
+    public string UniversalisApiBaseUrl { get; set; } = "https://universalis.app/api/v2/aggregated";
+    public float UndercutPreventionPercent { get; set; } = 0.5f;
 
     #endregion
 
