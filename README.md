@@ -1,68 +1,71 @@
 # Retainer Repricer
 
-Retainer Repricer is a fully automated Dalamud plugin for Final Fantasy XIV that manages retainer market activity end-to-end. It safely reprices existing listings and can optionally list new items from player inventory, all without manual UI interaction.
+Fully automated Dalamud plugin for Final Fantasy XIV that reprices and relists retainer market entries using deterministic UI automation.
 
 ---
 
-## What It Does
-
-- Automatically cycles through enabled retainers at a summoning bell  
-- Reprices all existing listings using live market data  
-- Optionally lists new items from player inventory after repricing current items
-- Handles all UI navigation, application, and cleanup deterministically  
-- Returns cleanly to the Retainer List after each retainer and on completion  
-
-Once started, the plugin runs unattended.
+## Key Features
+- Cycles every enabled retainer at a summoning bell with zero manual input.
+- Reprices existing listings using Universalis market data and applies a fixed 1-gil undercut to the validated lowest listing.
+- Optionally lists new inventory items through a configurable Sell List with HQ/NQ awareness.
+- Navigates, confirms, and closes all FFXIV UI panels safely, guaranteeing a clean return path.
+- Persists configuration immediately so stop/start cycles never lose selections.
 
 ---
 
-## Core Design
-
-- **Deterministic state machine**  
-  Advances only when the expected addon is visible *and ready*. No blind delays or timing assumptions.
-
-- **UI-safe automation**  
-  Uses AddonMaster where available and direct callbacks where required. All panels are closed explicitly and in order.
-
-- **Strict readiness gates**  
-  Addons must have populated data (not just visibility) before progressing, preventing skipped retainers or items.
-
-- **Market safety checks**  
-  Handles throttling, empty results, and unexpected messages gracefully. Prices are applied only after verification.
+## Requirements & Compatibility
+- Final Fantasy XIV retail client with Dalamud available through XIVLauncher.
+- Character retainers must already be unlocked and accessible at a summoning bell.
+- Access to Universalis API (public) for price retrieval; the plugin handles caching and rate limits internally.
 
 ---
 
-## Selling + Repricing Pipeline
-
-1. Enter retainer sell list  
-3. Reprice all existing listings slot-by-slot  
-2. (Optional) List new items from inventory based on a configured Sell List  
-4. Unwind UI back to Retainer List  
-5. Proceed to next retainer  
-
-New listings and repricing share the same pricing logic and safety checks.
+## Configuration
+- **Retainer Enablement:** Enable specific retainers from the main window; only checked retainers participate in automation.
+- **Sell List:** Use the inventory context-menu integration to add or remove items the plugin may list automatically when inventory has stock.
+- **Pricing Gate:** Toggle whether Universalis floor averages inform listings, set the percent threshold for skipping thin markets, and opt into Universalis fallback when the board is empty.
+- **Status Overlay:** Displays current state machine phase, latest action timestamp, and any throttling timer.
+- All settings persist instantly; no explicit save step is required.
 
 ---
 
-## Configuration & UX
-
-- Persistent Sell List with inventory context-menu integration  
-- Native-style context menu entries with proper icon prefixes  
-- Immediate config saves on add/remove actions  
-- Minimal overlay for start/stop and status   
-
----
-
-## Compatibility & Stability
-
-- Hardened for coexistence with other automation plugins  
-- Safe if other plugins auto-close or auto-open shared addons  
-- All logic is addon-visibility driven, not plugin-specific  
+## Operation Flow
+1. Stand at a summoning bell with retainer lost open and start the plugin.
+2. The state machine starts, interacts with talk windows, and selects the first enabled retainer.
+3. Within each enabled retainer:
+   - Reprice every slot in the sell list using live data.
+   - Optionally list new items queued in the Sell List.
+   - Confirm compare windows and market confirmations before proceeding.
+4. The plugin unwinds UI windows (Sell → Retainer → Talk) and advances to the next retainer.
+5. When all retainers are processed or the user stops the plugin, the state machine returns to Idle after closing any open addons.
 
 ---
 
-## Status
+## Architecture Highlights
+- **Deterministic State Machine:** `RunPhase` governs every action. Transitions occur only when addons are both visible and populated.
+- **Readiness Guards:** All pointer accesses check `addon.IsNull`, visibility, and node counts before use.
+- **UI Automation:** Uses AddonMaster wrappers and `Callback.Fire` for button presses; context menus are cleared before continuing.
+- **Timing Discipline:** Timestamp comparison fields (`ActionIntervalSeconds`, `MbBaseIntervalSeconds`, `FrameworkTickIntervalSeconds`) pace actions instead of `Thread.Sleep`.
+- **Data Source:** `UniversalisApiClient` handles HTTP requests with timeouts, caching, and cancellation so the UI thread remains responsive.
 
-- Feature-complete for automated selling and repricing  
-- Stable across retainers, items, and shared-addon environments 
-- No manual interaction is required at any stage of execution.
+---
+
+## Safety & Limitations
+- Designed for the Dalamud sandbox; other automation plugins can coexist as long as they do not hijack the same addons simultaneously.
+- Requires manual positioning at a summoning bell; the plugin does not auto-navigate the world.
+- Inventory order is not assumed—every listing step refreshes node data before making decisions.
+- HQ and NQ queues are processed separately to prevent cross-quality pricing errors.
+
+---
+
+## Troubleshooting & FAQ
+- **Nothing happens when I press Start:** Confirm at least one retainer is enabled and the character is engaged with a summoning bell.
+- **Plugin stops mid-retainer:** Check the Dalamud logs for `[RR]` or `[RL]` messages; most errors indicate a blocked addon (usually an unclosed context menu).
+- **Prices seem stale:** Universalis responses are cached per item; manually refresh by waiting for the next cycle or clearing the cache via the configuration window.
+- **Context menu entries missing:** Make sure Dalamud's inventory context menu integration is permitted and no conflicting plugins override it.
+- **Retainer slots skipped:** Ensure the Sell List matches actual inventory items and that HQ/NQ filters are set appropriately.
+
+---
+
+## License
+Retainer Repricer is distributed under the AGPL-3.0-or-later license. See `LICENSE.md` for full terms.
