@@ -72,6 +72,18 @@ public unsafe sealed partial class Plugin
 
     private RunPhase _runPhase = RunPhase.Idle;
 
+    internal enum RunMode
+    {
+        PriceAndSell,
+        PriceOnly,
+        SellOnly,
+    }
+
+    private RunMode _runMode = RunMode.PriceAndSell;
+
+    private bool ShouldReprice => _runMode != RunMode.SellOnly;
+    private bool ShouldSell => _runMode != RunMode.PriceOnly;
+
     private DateTime _lastActionUtc = DateTime.MinValue;
     private DateTime _lastFrameworkTickUtc = DateTime.MinValue;
 

@@ -41,6 +41,14 @@ Fully automated Dalamud plugin for Final Fantasy XIV that reprices and relists r
 
 ---
 
+## Commands
+- `/repricer` or `/rr` — show the same help output as `/repricer help`.
+- `/repricer start [mode]` — begin automation; omit `mode` to run both repricing and selling. Supported modes: `price` (reprice existing listings only) and `sell` (process Sell List inventory only).
+- `/repricer stop` — halt the current run and unwind open UI windows.
+- `/repricer config` or `/repricer c` — toggle the configuration window.
+
+---
+
 ## Architecture Highlights
 - **Deterministic State Machine:** `RunPhase` governs every action. Transitions occur only when addons are both visible and populated.
 - **Readiness Guards:** All pointer accesses check `addon.IsNull`, visibility, and node counts before use.

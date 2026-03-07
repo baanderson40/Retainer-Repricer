@@ -35,6 +35,12 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
     #region Constants
 
     private const string CommandName = "/repricer";
+    private const string CommandAlias = "/rr";
+    private const string CommandHelp = "help | start [price|sell] | stop | config";
+    private const string ChatTag = "Retainer Repricer";
+    private const ushort InfoTagColor = 34;
+    private const ushort ErrorTagColor = 14;
+    private const ushort SuccessTagColor = 45;
     private const int UndercutAmount = 1;
     private const float MarketValidationThreshold = 2.0f;  // Can be made configurable later
 
@@ -121,7 +127,12 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "help | start | stop | config"
+            HelpMessage = CommandHelp
+        });
+
+        CommandManager.AddHandler(CommandAlias, new CommandInfo(OnCommand)
+        {
+            HelpMessage = CommandHelp
         });
 
         pi.UiBuilder.Draw += WindowSystem.Draw;
@@ -147,6 +158,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         ContextMenu.Dispose();
 
         CommandManager.RemoveHandler(CommandName);
+        CommandManager.RemoveHandler(CommandAlias);
 
         _universalisClient.Dispose();
 
@@ -219,16 +231,17 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
     #region Start/stop helpers
 
-    internal unsafe void StartRunFromRetainerList()
+    internal unsafe bool StartRunFromRetainerList(RunMode mode = RunMode.PriceAndSell, bool notifyChatOnFailure = false)
     {
         var list = _uiReader.GetRetainerList();
         if (list == null)
         {
-            Log.Warning("[RR] Can't start: RetainerList not open.");
-            return;
+            NotifyStartFailed("RetainerList not open. Summon retainers first.", notifyChatOnFailure);
+            return false;
         }
 
         ResetRunState();
+        _runMode = mode;
 
         var count = list->GetItemCount();
         for (int i = 0; i < count; i++)
@@ -247,39 +260,41 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
         if (_retainerRowOrder.Count == 0)
         {
-            Log.Warning("[RR] No enabled retainers found.");
+            NotifyStartFailed("No enabled retainers found in the list.", notifyChatOnFailure);
             StopRun();
-            return;
+            return false;
         }
 
         IsRunning = true;
         _runPhase = RunPhase.NeedOpen;
         _lastActionUtc = DateTime.MinValue;
 
-        Log.Information($"[RR] Start: enabled rows = {string.Join(",", _retainerRowOrder)}");
+        Log.Information($"[RR] Start ({DescribeRunMode(mode)}). Enabled rows = {string.Join(",", _retainerRowOrder)}");
+        return true;
     }
 
-    private unsafe void StartRun()
+    private unsafe bool StartRun(RunMode mode = RunMode.PriceAndSell, bool notifyChatOnFailure = false)
     {
         if (IsRunning)
         {
-            Log.Information("[RR] Start ignored: already running.");
-            return;
+            NotifyStartFailed("Already running.", notifyChatOnFailure);
+            return false;
         }
 
         if (!IsAddonVisible("RetainerList"))
         {
-            Log.Information("[RR] Cannot start: RetainerList is not visible. Open a summoning bell first.");
-            return;
+            NotifyStartFailed("Retainer List is not open. Use a summoning bell first.", notifyChatOnFailure);
+            return false;
         }
 
         ResetRunState();
+        _runMode = mode;
 
         var list = _uiReader.GetRetainerList();
         if (list == null)
         {
-            Log.Warning("[RR] RetainerList not readable.");
-            return;
+            NotifyStartFailed("Retainer List is not readable right now.", notifyChatOnFailure);
+            return false;
         }
 
         var count = list->GetItemCount();
@@ -299,21 +314,23 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
         if (_retainerRowOrder.Count == 0)
         {
-            Log.Information("[RR] No enabled retainers found.");
-            return;
+            NotifyStartFailed("No enabled retainers found in the list.", notifyChatOnFailure);
+            return false;
         }
 
         IsRunning = true;
         _runPhase = RunPhase.NeedOpen;
         _lastActionUtc = DateTime.MinValue;
 
-        Log.Information($"[RR] Started. Enabled retainers: {string.Join(",", _retainerRowOrder)}");
+        Log.Information($"[RR] Started ({DescribeRunMode(mode)}). Enabled retainers: {string.Join(",", _retainerRowOrder)}");
+        return true;
     }
 
     internal void StopRun()
     {
         IsRunning = false;
         _runPhase = RunPhase.Idle;
+        _runMode = RunMode.PriceAndSell;
 
         _retainerRowOrder.Clear();
         _retainerRowPos = -1;
@@ -381,6 +398,49 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
         _lastRetainerSyncUtc = DateTime.MinValue;
     }
+
+    private static string DescribeRunMode(RunMode mode)
+        => mode switch
+        {
+            RunMode.PriceOnly => "price-only",
+            RunMode.SellOnly => "sell-only",
+            _ => "price+sell",
+        };
+
+    private void NotifyStartFailed(string reason, bool notifyChat)
+    {
+        Log.Information($"[RR] Start blocked: {reason}");
+        if (notifyChat)
+            PrintError($"Cannot start: {reason}");
+    }
+
+    private void PrintChat(string message, ushort tagColor)
+    {
+        ChatGui.Print(message, ChatTag, tagColor);
+    }
+
+    private void PrintInfo(string message)
+    {
+        PrintChat(message, InfoTagColor);
+    }
+
+    private void PrintError(string message)
+    {
+        PrintChat(message, ErrorTagColor);
+    }
+
+    private void PrintSuccess(string message)
+    {
+        PrintChat(message, SuccessTagColor);
+    }
+
+    private string GetCompletionMessage()
+        => _runMode switch
+        {
+            RunMode.PriceOnly => "Repricing run complete.",
+            RunMode.SellOnly => "Sell-only run complete.",
+            _ => "Repricing and selling run complete.",
+        };
 
     #endregion
 

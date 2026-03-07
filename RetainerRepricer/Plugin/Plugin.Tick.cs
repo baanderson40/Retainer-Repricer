@@ -51,7 +51,6 @@ public unsafe sealed partial class Plugin
                     if (_retainerRowPos >= _retainerRowOrder.Count)
                     {
                         Log.Information("[RR] Finished: processed all enabled retainers.");
-                        ChatGui.Print("[RetainerRepricer] Repricing has finished.");
 
                         if (Configuration.CloseRetainerListAddon)
                         {
@@ -59,6 +58,7 @@ public unsafe sealed partial class Plugin
                             CloseAddonIfOpen("RetainerList");
                         }
 
+                        PrintSuccess(GetCompletionMessage());
                         StopRun();
                         return;
                     }
@@ -202,9 +202,21 @@ public unsafe sealed partial class Plugin
                         Log.Information($"[RR] Entered RetainerSellList. Listed={_listedCountThisRetainer}; new sells capacity={_sellCapacityThisRetainer}");
                     }
 
-                    _runPhase = (_listedCountThisRetainer <= 0)
-                        ? RunPhase.Sell_FindNextItemInInventory
-                        : RunPhase.OpeningSellItem;
+                    if (ShouldReprice && _listedCountThisRetainer > 0)
+                    {
+                        _runPhase = RunPhase.OpeningSellItem;
+                    }
+                    else if (ShouldSell)
+                    {
+                        if (!ShouldReprice)
+                            Log.Information("[RR] Repricing skipped (run mode = sell-only).");
+                        _runPhase = RunPhase.Sell_FindNextItemInInventory;
+                    }
+                    else
+                    {
+                        Log.Information("[RR] Skipping repricing/selling (run mode disables both phases).");
+                        _runPhase = RunPhase.ExitToRetainerList;
+                    }
 
                     _lastActionUtc = now;
                     return;
@@ -216,6 +228,15 @@ public unsafe sealed partial class Plugin
 
             case RunPhase.OpeningSellItem:
                 {
+                    if (!ShouldReprice)
+                    {
+                        _runPhase = ShouldSell
+                            ? RunPhase.Sell_FindNextItemInInventory
+                            : RunPhase.ExitToRetainerList;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
                     if (!retainerSellListVisible) return;
 
                     if (_slotIndexToOpen < 0) _slotIndexToOpen = 0;
@@ -969,6 +990,14 @@ public unsafe sealed partial class Plugin
 
             case RunPhase.Sell_FindNextItemInInventory:
                 {
+                    if (!ShouldSell)
+                    {
+                        Log.Information("[RR] Sell phase skipped (run mode = price-only).");
+                        _runPhase = RunPhase.ExitToRetainerList;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
                     if (!retainerSellListVisible) return;
 
                     if (_sellCapacityThisRetainer <= 0)

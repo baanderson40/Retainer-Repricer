@@ -9,9 +9,14 @@ public unsafe sealed partial class Plugin
 {
     private void OnCommand(string command, string args)
     {
-        var a = (args ?? string.Empty).Trim().ToLowerInvariant();
+        var tokens = string.IsNullOrWhiteSpace(args)
+            ? Array.Empty<string>()
+            : args.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-        switch (a)
+        var primary = tokens.Length > 0 ? tokens[0].ToLowerInvariant() : string.Empty;
+        var secondary = tokens.Length > 1 ? tokens[1].ToLowerInvariant() : string.Empty;
+
+        switch (primary)
         {
             case "":
             case "help":
@@ -19,42 +24,16 @@ public unsafe sealed partial class Plugin
                 return;
 
             case "start":
-                StartRun();
+                HandleStartCommand(secondary);
                 return;
 
             case "stop":
-                if (IsRunning)
-                    StopRun();
+                HandleStopCommand();
                 return;
 
             case "config":
+            case "c":
                 ToggleConfigUi();
-                return;
-
-            case "count":
-                {
-                    var raw = _uiReader.ReadRetainerSellListCountText();
-                    var count = _uiReader.ReadRetainerSellListListedCount();
-                    if (count == null)
-                    {
-                        ChatGui.Print("[RetainerRepricer] Open RetainerSellList first.");
-                        return;
-                    }
-
-                    ChatGui.Print($"[RetainerRepricer] Listed = {count} (raw='{raw}')");
-                    return;
-                }
-
-            case "mbdump":
-                DumpMarketRows();
-                return;
-
-            case "rldump":
-                DumpRetainerRows();
-                return;
-
-            case "testgate":
-                TestUniversalisGate();
                 return;
 
             default:
@@ -63,11 +42,48 @@ public unsafe sealed partial class Plugin
         }
     }
 
+    private void HandleStartCommand(string modeArg)
+    {
+        var (mode, recognized) = ResolveRunMode(modeArg);
+        if (!recognized && !string.IsNullOrEmpty(modeArg))
+        {
+            PrintError($"Unknown start mode '{modeArg}'. Using default (repricing + selling).");
+        }
+
+        _ = StartRun(mode, notifyChatOnFailure: true);
+    }
+
+    private void HandleStopCommand()
+    {
+        if (IsRunning)
+        {
+            StopRun();
+            return;
+        }
+
+        PrintError("Not currently running.");
+    }
+
+    private static (RunMode mode, bool recognized) ResolveRunMode(string arg)
+    {
+        if (string.IsNullOrWhiteSpace(arg))
+            return (RunMode.PriceAndSell, true);
+
+        return arg.ToLowerInvariant() switch
+        {
+            "price" => (RunMode.PriceOnly, true),
+            "sell" => (RunMode.SellOnly, true),
+            "both" => (RunMode.PriceAndSell, true),
+            _ => (RunMode.PriceAndSell, false)
+        };
+    }
+
     private void PrintHelp()
     {
-        ChatGui.Print("[RetainerRepricer]");
-        ChatGui.Print("/repricer start   - Start repricing & selling from Retainer List");
-        ChatGui.Print("/repricer stop    - Stop current run");
-        ChatGui.Print("/repricer config  - Open configuration window");
+        PrintInfo("/repricer, /rr - Show this help");
+        PrintInfo("/repricer start [mode] - Begin automation (omit mode to run both).");
+        PrintInfo("--Modes: price = reprice listings only, sell = Sell List only");
+        PrintInfo("/repricer stop - Stop the current run and unwind open UI");
+        PrintInfo("/repricer config | c - Open or close the configuration window");
     }
 }
