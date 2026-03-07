@@ -7,6 +7,9 @@ using System.Text;
 
 namespace RetainerRepricer.Ui;
 
+/// <summary>
+/// Thin helpers for reading Dalamud UI state without guessing at node timing.
+/// </summary>
 internal sealed unsafe class UiReader
 {
     #region Constants
@@ -202,6 +205,9 @@ internal sealed unsafe class UiReader
 
     #region Market board (ItemSearchResult)
 
+    /// <summary>
+    /// Returns the ItemSearchResult list component when it exists, even if the window is still animating in.
+    /// </summary>
     public AtkComponentList* GetMarketList()
     {
         // Don't require visible here; the list can be valid while the window animates in.
@@ -219,6 +225,9 @@ internal sealed unsafe class UiReader
         return comp != null ? (AtkComponentList*)comp : null;
     }
 
+    /// <summary>
+    /// Checks a market row renderer for the HQ icon flag instead of trusting text decorations.
+    /// </summary>
     public bool RowIsHq(AtkComponentListItemRenderer* renderer)
     {
         var n = GetRendererNodeById(renderer, NodePaths.HqIconNodeId);
@@ -249,6 +258,9 @@ internal sealed unsafe class UiReader
         return NormalizeStatusText(raw);
     }
 
+    /// <summary>
+    /// Normalizes the ItemSearchResult status string and classifies it into one of the well-known outcomes.
+    /// </summary>
     public ItemSearchResultStatus GetItemSearchResultStatus(out string message)
     {
         message = GetItemSearchResultErrorMessage();
@@ -284,6 +296,9 @@ internal sealed unsafe class UiReader
 
     #region Inventory (new listings)
 
+    /// <summary>
+    /// Does a single pass over the four bag containers and returns the first slot plus total count for that item/quality.
+    /// </summary>
     public bool TryFindItemInInventory(uint baseItemId, bool isHq, out int container, out int slot, out int totalCount)
     {
         container = 0;
@@ -340,6 +355,9 @@ internal sealed unsafe class UiReader
         return s->IsHighQuality();
     }
 
+    /// <summary>
+    /// Fires the InventoryGrid callback that opens RetainerSell for the given container/slot when the grid is visible.
+    /// </summary>
     public bool TryOpenRetainerSellFromInventory(int container, int slot)
     {
         // InventoryGrid has multiple indices depending on layout; grab the first visible one.
@@ -365,6 +383,9 @@ internal sealed unsafe class UiReader
 
     #region RetainerList
 
+    /// <summary>
+    /// Returns the visible RetainerList component so callers can count or read renderer text nodes.
+    /// </summary>
     public AtkComponentList* GetRetainerList()
     {
         var unit = GetVisibleUnitBase("RetainerList", 1);

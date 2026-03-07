@@ -9,6 +9,9 @@ using RetainerRepricer.Windows;
 
 namespace RetainerRepricer;
 
+/// <summary>
+/// Injects the sell-list actions into Dalamud context menus so items can be toggled without leaving the bell UI.
+/// </summary>
 internal sealed class ContextMenuManager : IDisposable
 {
     #region UI constants

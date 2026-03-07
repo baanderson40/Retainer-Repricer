@@ -6,6 +6,9 @@ using System.Linq;
 
 namespace RetainerRepricer.Windows;
 
+/// <summary>
+/// Presents configuration controls for enabled retainers, market settings, and sell list management.
+/// </summary>
 public sealed class ConfigWindow : Window, IDisposable
 {
     #region Fields (plugin + config)

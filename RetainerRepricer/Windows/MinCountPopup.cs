@@ -5,6 +5,9 @@ using System.Numerics;
 
 namespace RetainerRepricer.Windows;
 
+/// <summary>
+/// Simple pop-up that lets the user enter a per-item minimum count directly from the context menu.
+/// </summary>
 internal sealed class MinCountPopup : Window, IDisposable
 {
     private const string HqIcon = "\uE03C";

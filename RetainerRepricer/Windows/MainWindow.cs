@@ -8,6 +8,9 @@ using System.Numerics;
 
 namespace RetainerRepricer.Windows;
 
+/// <summary>
+/// Lightweight overlay that surfaces start/stop controls and the current run status next to the bell UI.
+/// </summary>
 public sealed unsafe class MainWindow : Window, IDisposable
 {
     #region Constants (overlay sizing / anchoring)

@@ -1,0 +1,352 @@
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+
+namespace RetainerRepricer;
+
+/// <summary>
+/// Holds the deterministic state machine definitions and related runtime state containers.
+/// </summary>
+public unsafe sealed partial class Plugin
+{
+    /// <summary>Phases the automation moves through while repricing and selling.</summary>
+    private enum RunPhase
+    {
+        /// <summary>Idle and not attached to the Retainer List.</summary>
+        Idle,
+
+        /// <summary>Waiting to click the next enabled retainer row inside RetainerList.</summary>
+        NeedOpen,
+
+        /// <summary>Talk dialog is expected; send the advance click until it closes.</summary>
+        WaitingTalk,
+
+        /// <summary>Waiting for SelectString to populate its entries so we can pick Sell Items.</summary>
+        WaitingSelectString,
+
+        /// <summary>RetainerSellList should be visible and readable before we proceed.</summary>
+        WaitingRetainerSellList,
+
+        /// <summary>Open the current RetainerSellList slot.</summary>
+        OpeningSellItem,
+
+        /// <summary>Wait for RetainerSell to appear and dismiss any ContextMenu that blocks it.</summary>
+        WaitingRetainerSell,
+
+        /// <summary>Read the active listing’s HQ flag and asking price.</summary>
+        CaptureSellContext,
+
+        /// <summary>Click Compare Prices (or observe that the market is already open).</summary>
+        OpenComparePrices,
+
+        /// <summary>ItemSearchResult must become visible, populated, and optionally HQ-filtered.</summary>
+        WaitingItemSearchResult,
+
+        /// <summary>Evaluate market data, apply Universalis gates, and decide on a desired price.</summary>
+        ReadMarketAndApplyPrice,
+
+        /// <summary>Fallback path when ItemSearchResult reports no items and we need Universalis data.</summary>
+        WaitingUniversalisNoItemsFallback,
+
+        /// <summary>Close market UI before firing the input callback that sets the new price.</summary>
+        CloseMarketThenApply,
+
+        /// <summary>Confirm the listing after the UI reflects the new asking price.</summary>
+        ConfirmAfterApply,
+
+        /// <summary>Scan the Sell List configuration for inventory candidates.</summary>
+        Sell_FindNextItemInInventory,
+
+        /// <summary>Click an inventory slot to open RetainerSell for a new listing.</summary>
+        Sell_OpenRetainerSellFromInventory,
+
+        /// <summary>Close RetainerSell/market windows before moving on.</summary>
+        CleanupAfterItem,
+
+        /// <summary>Wait to return to RetainerSellList so we can pick the next item.</summary>
+        WaitingRetainerSellListAfterItem,
+
+        /// <summary>Unwind any stray addons and return to RetainerList.</summary>
+        ExitToRetainerList,
+    }
+
+    private RunPhase _runPhase = RunPhase.Idle;
+
+    private DateTime _lastActionUtc = DateTime.MinValue;
+    private DateTime _lastFrameworkTickUtc = DateTime.MinValue;
+
+    private readonly RetainerCycleState _retainerCycle = new();
+    private readonly SellWorkflowState _sellState = new();
+    private readonly MarketContextState _marketState = new();
+    private readonly UniversalisGateState _universalisState = new();
+
+    private List<int> _retainerRowOrder => _retainerCycle.RowOrder;
+
+    private int _retainerRowPos
+    {
+        get => _retainerCycle.RowPos;
+        set => _retainerCycle.RowPos = value;
+    }
+
+    private DateTime _lastRetainerSyncUtc
+    {
+        get => _retainerCycle.LastRetainerSyncUtc;
+        set => _retainerCycle.LastRetainerSyncUtc = value;
+    }
+
+    private bool _sellListCountCaptured
+    {
+        get => _sellState.SellListCountCaptured;
+        set => _sellState.SellListCountCaptured = value;
+    }
+
+    private int _listedCountThisRetainer
+    {
+        get => _sellState.ListedCountThisRetainer;
+        set => _sellState.ListedCountThisRetainer = value;
+    }
+
+    private int _slotIndexToOpen
+    {
+        get => _sellState.SlotIndexToOpen;
+        set => _sellState.SlotIndexToOpen = value;
+    }
+
+    private List<SellCandidate> _sellQueue => _sellState.SellQueue;
+
+    private int _sellQueuePos
+    {
+        get => _sellState.SellQueuePos;
+        set => _sellState.SellQueuePos = value;
+    }
+
+    private int _sellCapacityThisRetainer
+    {
+        get => _sellState.SellCapacityThisRetainer;
+        set => _sellState.SellCapacityThisRetainer = value;
+    }
+
+    private int _soldThisRetainer
+    {
+        get => _sellState.SoldThisRetainer;
+        set => _sellState.SoldThisRetainer = value;
+    }
+
+    private bool _processingListedItem
+    {
+        get => _sellState.ProcessingListedItem;
+        set => _sellState.ProcessingListedItem = value;
+    }
+
+    private uint _currentSellItemId
+    {
+        get => _sellState.CurrentSellItemId;
+        set => _sellState.CurrentSellItemId = value;
+    }
+
+    private InventorySlotRef _pendingSellSlot
+    {
+        get => _sellState.PendingSellSlot;
+        set => _sellState.PendingSellSlot = value;
+    }
+
+    private bool _hasPendingSellSlot
+    {
+        get => _sellState.HasPendingSellSlot;
+        set => _sellState.HasPendingSellSlot = value;
+    }
+
+    private HashSet<string> _myRetainers => _marketState.MyRetainers;
+
+    private bool _currentIsHq
+    {
+        get => _marketState.CurrentIsHq;
+        set => _marketState.CurrentIsHq = value;
+    }
+
+    private int? _stagedDesiredPrice
+    {
+        get => _marketState.StagedDesiredPrice;
+        set => _marketState.StagedDesiredPrice = value;
+    }
+
+    private string _stagedReferenceSeller
+    {
+        get => _marketState.StagedReferenceSeller;
+        set => _marketState.StagedReferenceSeller = value;
+    }
+
+    private bool _stagedReferenceIsMine
+    {
+        get => _marketState.StagedReferenceIsMine;
+        set => _marketState.StagedReferenceIsMine = value;
+    }
+
+    private bool _hasAppliedStagedPrice
+    {
+        get => _marketState.HasAppliedStagedPrice;
+        set => _marketState.HasAppliedStagedPrice = value;
+    }
+
+    private bool _isrThrottleRetried
+    {
+        get => _marketState.IsrThrottleRetried;
+        set => _marketState.IsrThrottleRetried = value;
+    }
+
+    private DateTime _isrThrottleUntilUtc
+    {
+        get => _marketState.IsrThrottleUntilUtc;
+        set => _marketState.IsrThrottleUntilUtc = value;
+    }
+
+    private double _mbIntervalSec
+    {
+        get => _marketState.MbIntervalSeconds;
+        set => _marketState.MbIntervalSeconds = value;
+    }
+
+    private DateTime _lastMbQueryUtc
+    {
+        get => _marketState.LastMbQueryUtc;
+        set => _marketState.LastMbQueryUtc = value;
+    }
+
+    private DateTime _isrOpenedUtc
+    {
+        get => _marketState.IsrOpenedUtc;
+        set => _marketState.IsrOpenedUtc = value;
+    }
+
+    private int _isrNoItemsConfirm
+    {
+        get => _marketState.IsrNoItemsConfirm;
+        set => _marketState.IsrNoItemsConfirm = value;
+    }
+
+    private bool _isrNeedApplyHqFilter
+    {
+        get => _marketState.IsrNeedApplyHqFilter;
+        set => _marketState.IsrNeedApplyHqFilter = value;
+    }
+
+    private bool _isrHqFilterApplied
+    {
+        get => _marketState.IsrHqFilterApplied;
+        set => _marketState.IsrHqFilterApplied = value;
+    }
+
+    private DateTime _isrHqFilterRequestedUtc
+    {
+        get => _marketState.IsrHqFilterRequestedUtc;
+        set => _marketState.IsrHqFilterRequestedUtc = value;
+    }
+
+    private DateTime _isrHqFilterVisibleUtc
+    {
+        get => _marketState.IsrHqFilterVisibleUtc;
+        set => _marketState.IsrHqFilterVisibleUtc = value;
+    }
+
+    private bool _isrHqFilterFallbackTried
+    {
+        get => _marketState.IsrHqFilterFallbackTried;
+        set => _marketState.IsrHqFilterFallbackTried = value;
+    }
+
+    private DateTime _isrAllowFilterAfterUtc
+    {
+        get => _marketState.IsrAllowFilterAfterUtc;
+        set => _marketState.IsrAllowFilterAfterUtc = value;
+    }
+
+    private Task<decimal?>? _universalisGateTask
+    {
+        get => _universalisState.PendingTask;
+        set => _universalisState.PendingTask = value;
+    }
+
+    private UniversalisGateKey? _universalisGateKey
+    {
+        get => _universalisState.GateKey;
+        set => _universalisState.GateKey = value;
+    }
+
+    private decimal? _universalisGateAverage
+    {
+        get => _universalisState.AveragePrice;
+        set => _universalisState.AveragePrice = value;
+    }
+
+    private int? _universalisPriceFloor
+    {
+        get => _universalisState.PriceFloor;
+        set => _universalisState.PriceFloor = value;
+    }
+
+    private struct SellCandidate
+    {
+        public uint ItemId;
+        public bool IsHq;
+        public int MinCountToSell;
+        public string Name;
+    }
+
+    private struct InventorySlotRef
+    {
+        public int Container;
+        public int Slot;
+    }
+
+    private sealed class RetainerCycleState
+    {
+        public List<int> RowOrder { get; } = new();
+        public int RowPos { get; set; } = -1;
+        public DateTime LastRetainerSyncUtc { get; set; } = DateTime.MinValue;
+    }
+
+    private sealed class SellWorkflowState
+    {
+        public bool SellListCountCaptured { get; set; }
+        public int ListedCountThisRetainer { get; set; }
+        public int SlotIndexToOpen { get; set; }
+        public List<SellCandidate> SellQueue { get; } = new();
+        public int SellQueuePos { get; set; }
+        public int SellCapacityThisRetainer { get; set; }
+        public int SoldThisRetainer { get; set; }
+        public bool ProcessingListedItem { get; set; } = true;
+        public uint CurrentSellItemId { get; set; }
+        public InventorySlotRef PendingSellSlot { get; set; }
+        public bool HasPendingSellSlot { get; set; }
+    }
+
+    private sealed class MarketContextState
+    {
+        public HashSet<string> MyRetainers { get; } = new(StringComparer.Ordinal);
+        public bool CurrentIsHq { get; set; }
+        public int? StagedDesiredPrice { get; set; }
+        public string StagedReferenceSeller { get; set; } = string.Empty;
+        public bool StagedReferenceIsMine { get; set; }
+        public bool HasAppliedStagedPrice { get; set; }
+        public bool IsrThrottleRetried { get; set; }
+        public DateTime IsrThrottleUntilUtc { get; set; } = DateTime.MinValue;
+        public double MbIntervalSeconds { get; set; } = MbBaseIntervalSeconds;
+        public DateTime LastMbQueryUtc { get; set; } = DateTime.MinValue;
+        public DateTime IsrOpenedUtc { get; set; } = DateTime.MinValue;
+        public int IsrNoItemsConfirm { get; set; }
+        public bool IsrNeedApplyHqFilter { get; set; }
+        public bool IsrHqFilterApplied { get; set; }
+        public DateTime IsrHqFilterRequestedUtc { get; set; } = DateTime.MinValue;
+        public DateTime IsrHqFilterVisibleUtc { get; set; } = DateTime.MinValue;
+        public bool IsrHqFilterFallbackTried { get; set; }
+        public DateTime IsrAllowFilterAfterUtc { get; set; } = DateTime.MinValue;
+    }
+
+    private sealed class UniversalisGateState
+    {
+        public Task<decimal?>? PendingTask { get; set; }
+        public UniversalisGateKey? GateKey { get; set; }
+        public decimal? AveragePrice { get; set; }
+        public int? PriceFloor { get; set; }
+    }
+}
