@@ -30,7 +30,7 @@ Fully automated Dalamud plugin for Final Fantasy XIV that reprices and relists r
 ---
 
 ## Operation Flow
-1. Stand at a summoning bell with retainer lost open and start the plugin.
+1. Stand at a summoning bell with retainer list open and start the plugin.
 2. The state machine starts, interacts with talk windows, and selects the first enabled retainer.
 3. Within each enabled retainer:
    - Reprice every slot in the sell list using live data.
