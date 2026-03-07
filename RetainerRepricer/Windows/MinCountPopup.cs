@@ -16,6 +16,7 @@ internal sealed class MinCountPopup : Window, IDisposable
     private bool _pendingIsHq;
     private string _pendingItemName = string.Empty;
     private Action<uint, bool, int>? _pendingCallback;
+    private Vector2? _pendingAnchorPosition;
     private string _inputText = "1";
     private bool _initialPositionSet;
 
@@ -35,12 +36,18 @@ internal sealed class MinCountPopup : Window, IDisposable
         IsOpen = false;
     }
 
-    public void Show(uint itemId, bool isHq, string itemName, Action<uint, bool, int> onConfirm)
+    public void Show(
+        uint itemId,
+        bool isHq,
+        string itemName,
+        Action<uint, bool, int> onConfirm,
+        Vector2? anchorPosition = null)
     {
         _pendingItemId = itemId;
         _pendingIsHq = isHq;
         _pendingItemName = itemName;
         _pendingCallback = onConfirm;
+        _pendingAnchorPosition = anchorPosition;
         _inputText = "1";
         _initialPositionSet = false;
 
@@ -49,7 +56,7 @@ internal sealed class MinCountPopup : Window, IDisposable
 
     public override void Draw()
     {
-        EnsureInitialPosition();
+        ApplyPendingPosition();
 
         const float labelWidth = 80f;
         const float minValueWidth = 140f;
@@ -174,15 +181,46 @@ internal sealed class MinCountPopup : Window, IDisposable
             : _pendingItemName;
     }
 
-    private void EnsureInitialPosition()
+    private void ApplyPendingPosition()
     {
+        var viewport = ImGui.GetMainViewport();
+        var margin = new Vector2(4f, 4f);
+        var fallbackSize = Size ?? new Vector2(250, 140);
+
+        if (_pendingAnchorPosition.HasValue)
+        {
+            var windowSize = ImGui.GetWindowSize();
+            if (windowSize.X <= 0 || windowSize.Y <= 0)
+                windowSize = fallbackSize;
+
+            var halfSize = windowSize / 2f;
+            var cursorOffset = new Vector2(0f, 8f);
+            var anchor = _pendingAnchorPosition.Value - halfSize + cursorOffset;
+            var min = viewport.Pos + margin;
+            var max = viewport.Pos + viewport.Size - windowSize - margin;
+            var target = new Vector2(
+                Math.Clamp(anchor.X, min.X, Math.Max(min.X, max.X)),
+                Math.Clamp(anchor.Y, min.Y, Math.Max(min.Y, max.Y))
+            );
+
+            ImGui.SetWindowPos(target, ImGuiCond.Always);
+
+            _pendingAnchorPosition = null;
+            _initialPositionSet = true;
+            return;
+        }
+
         if (_initialPositionSet)
             return;
 
-        var center = ImGui.GetMainViewport().GetCenter();
-        var size = Size ?? new Vector2(250, 140);
-        Position = new Vector2(center.X - (size.X / 2), center.Y - (size.Y / 2));
-        PositionCondition = ImGuiCond.Once;
+        var currentSize = ImGui.GetWindowSize();
+        if (currentSize.X <= 0 || currentSize.Y <= 0)
+            currentSize = fallbackSize;
+
+        var center = viewport.GetCenter();
+        var centeredPosition = new Vector2(center.X - (currentSize.X / 2), center.Y - (currentSize.Y / 2));
+        ImGui.SetWindowPos(centeredPosition, ImGuiCond.Once);
+
         _initialPositionSet = true;
     }
 }

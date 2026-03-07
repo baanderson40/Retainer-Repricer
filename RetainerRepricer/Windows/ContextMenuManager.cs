@@ -1,3 +1,4 @@
+using Dalamud.Bindings.ImGui;
 using Dalamud.Game.Gui.ContextMenu;
 using Dalamud.Game.Text;
 using Dalamud.Game.Text.SeStringHandling;
@@ -143,11 +144,12 @@ internal sealed class ContextMenuManager : IDisposable
 
             OnClicked = _ =>
             {
+                var clickPosition = ImGui.GetMousePos();
                 _minCountPopup.Show(itemId, isHq, itemName, (id, hq, minCount) =>
                 {
                     if (_config.TryAddSellItemWithMinCount(id, hq, itemName, minCount))
                         _config.Save();
-                });
+                }, clickPosition);
             }
         });
     }
