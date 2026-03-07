@@ -5,6 +5,8 @@ using ECommons.DalamudServices;
 using Lumina.Excel.Sheets;
 using System;
 
+using RetainerRepricer.Windows;
+
 namespace RetainerRepricer;
 
 internal sealed class ContextMenuManager : IDisposable
@@ -28,14 +30,16 @@ internal sealed class ContextMenuManager : IDisposable
     #region Fields
 
     private readonly Configuration _config;
+    private readonly MinCountPopup _minCountPopup;
 
     #endregion
 
     #region Lifecycle
 
-    public ContextMenuManager(Configuration config)
+    public ContextMenuManager(Configuration config, MinCountPopup minCountPopup)
     {
         _config = config;
+        _minCountPopup = minCountPopup;
         Svc.ContextMenu.OnMenuOpened += OnMenuOpened;
     }
 
@@ -136,9 +140,11 @@ internal sealed class ContextMenuManager : IDisposable
 
             OnClicked = _ =>
             {
-                // Prefer Lumina name if available; empty is fine.
-                if (_config.TryAddSellItem(itemId, isHq, itemName))
-                    _config.Save();
+                _minCountPopup.Show(itemId, isHq, itemName, (id, hq, minCount) =>
+                {
+                    if (_config.TryAddSellItemWithMinCount(id, hq, itemName, minCount))
+                        _config.Save();
+                });
             }
         });
     }

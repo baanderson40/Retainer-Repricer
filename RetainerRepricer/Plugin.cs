@@ -82,6 +82,7 @@ public unsafe sealed class Plugin : IDalamudPlugin
 
     private ConfigWindow ConfigWindow { get; }
     private MainWindow MainWindow { get; }
+    private MinCountPopup MinCountPopup { get; }
     private ContextMenuManager ContextMenu { get; }
 
     private readonly Ui.UiReader _uiReader;
@@ -109,6 +110,7 @@ public unsafe sealed class Plugin : IDalamudPlugin
         OpenComparePrices,                     // click Compare Prices (opens ItemSearchResult)
         WaitingItemSearchResult,               // wait until ItemSearchResult is visible and rows are ready
         ReadMarketAndApplyPrice,               // pick reference listing -> stage desired price -> close market windows
+        WaitingUniversalisNoItemsFallback,      // async wait for Universalis API when market board returns "No items found"
         CloseMarketThenApply,                  // wait for market windows to close, then apply staged price
         ConfirmAfterApply,                     // confirm listing after UI reflects the new price
 
@@ -249,10 +251,12 @@ public unsafe sealed class Plugin : IDalamudPlugin
 
         ConfigWindow = new ConfigWindow(this);
         MainWindow = new MainWindow(this);
-        ContextMenu = new ContextMenuManager(Configuration);
+        MinCountPopup = new MinCountPopup();
+        ContextMenu = new ContextMenuManager(Configuration, MinCountPopup);
 
         WindowSystem.AddWindow(ConfigWindow);
         WindowSystem.AddWindow(MainWindow);
+        WindowSystem.AddWindow(MinCountPopup);
 
         _uiReader = new Ui.UiReader(GameGui);
 
@@ -280,6 +284,7 @@ public unsafe sealed class Plugin : IDalamudPlugin
 
         ConfigWindow.Dispose();
         MainWindow.Dispose();
+        MinCountPopup.Dispose();
         ContextMenu.Dispose();
 
         CommandManager.RemoveHandler(CommandName);
@@ -453,7 +458,6 @@ public unsafe sealed class Plugin : IDalamudPlugin
         var maxRows = Math.Min(count, 10);
         var selectedRow = -1;
         var selectedPrice = 0;
-        var usedFloor = false;
 
         for (int i = 0; i < maxRows; i++)
         {
@@ -476,7 +480,6 @@ public unsafe sealed class Plugin : IDalamudPlugin
         {
             selectedRow = -1;
             selectedPrice = floor;
-            usedFloor = true;
             Log.Information($"[RR][TestGate] No rows passed floor. Using floor price: {floor:N0}");
         }
         else if (selectedRow < 0)
@@ -1854,8 +1857,17 @@ public unsafe sealed class Plugin : IDalamudPlugin
                             return;
                         }
 
-                        Log.Information($"[RR] ISR: '{msg}' -> no competing listings; skipping repricing.");
-                        _runPhase = RunPhase.CleanupAfterItem;
+                        if (Configuration.UseUniversalisForEmptyMarket && Configuration.UseUniversalisApi)
+                        {
+                            Log.Information($"[RR] ISR: '{msg}' -> no competing listings; attempting Universalis fallback.");
+                            ResetUniversalisGateState();
+                            _runPhase = RunPhase.WaitingUniversalisNoItemsFallback;
+                        }
+                        else
+                        {
+                            Log.Information($"[RR] ISR: '{msg}' -> no competing listings; skipping repricing.");
+                            _runPhase = RunPhase.CleanupAfterItem;
+                        }
                         _lastActionUtc = now;
                         return;
                     }
@@ -2121,6 +2133,87 @@ public unsafe sealed class Plugin : IDalamudPlugin
                     CloseMarketWindows();
 
                     _runPhase = RunPhase.CloseMarketThenApply;
+                    _lastActionUtc = now;
+                    return;
+                }
+
+            case RunPhase.WaitingUniversalisNoItemsFallback:
+                {
+                    if (!marketOpen) return;
+
+                    if (!TryGetCurrentMarketItemId(out var itemId))
+                    {
+                        Log.Warning("[RR][NoItems] Unable to resolve current item id for Universalis lookup; skipping item.");
+                        _runPhase = RunPhase.CleanupAfterItem;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    var region = GetWorldDcRegionKey();
+                    if (string.IsNullOrWhiteSpace(region))
+                    {
+                        Log.Warning("[RR][NoItems] Unable to resolve world/DC region; skipping item.");
+                        _runPhase = RunPhase.CleanupAfterItem;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    var baseUrl = Configuration.UniversalisApiBaseUrl;
+                    var key = new UniversalisGateKey(itemId, _currentIsHq, region, baseUrl);
+
+                    if (_universalisGateKey != key)
+                    {
+                        _universalisGateKey = key;
+                        _universalisGateAverage = null;
+                        _universalisGateTask = _universalisClient.GetAveragePriceAsync(baseUrl, region, itemId, _currentIsHq);
+                        Log.Debug($"[RR][NoItems] Requesting Universalis average for item {itemId} (HQ={_currentIsHq}, region='{region}').");
+                    }
+
+                    var task = _universalisGateTask;
+                    if (task == null)
+                    {
+                        Log.Warning("[RR][NoItems] Universalis task was null; skipping item.");
+                        _runPhase = RunPhase.CleanupAfterItem;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    if (!task.IsCompleted)
+                    {
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    try
+                    {
+                        var result = task.Result;
+                        if (result.HasValue)
+                        {
+                            _universalisGateAverage = result.Value;
+                            var price = (int)Math.Floor(result.Value);
+                            if (price < 1) price = 1;
+
+                            _stagedDesiredPrice = price;
+                            _stagedReferenceSeller = "Universalis Average";
+                            _stagedReferenceIsMine = false;
+
+                            Log.Information($"[RR][NoItems] Using Universalis average {result.Value:0} -> {price} for item {itemId} (HQ={_currentIsHq}).");
+
+                            CloseMarketWindows();
+                            _runPhase = RunPhase.CloseMarketThenApply;
+                        }
+                        else
+                        {
+                            Log.Information($"[RR][NoItems] Universalis returned no data for item {itemId}; skipping.");
+                            _runPhase = RunPhase.CleanupAfterItem;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Error(ex, $"[RR][NoItems] Universalis request failed for item {itemId}; skipping.");
+                        _runPhase = RunPhase.CleanupAfterItem;
+                    }
+
                     _lastActionUtc = now;
                     return;
                 }

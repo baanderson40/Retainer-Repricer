@@ -67,6 +67,12 @@ public sealed class Configuration : IPluginConfiguration
     public string UniversalisApiBaseUrl { get; set; } = "https://universalis.app/api/v2/aggregated";
     public float UndercutPreventionPercent { get; set; } = 0.5f;
 
+    /// <summary>
+    /// When market board returns "No items found", use Universalis average sale price
+    /// to determine listing price instead of skipping the item.
+    /// </summary>
+    public bool UseUniversalisForEmptyMarket { get; set; } = true;
+
     #endregion
 
     #region Sell list
@@ -122,6 +128,26 @@ public sealed class Configuration : IPluginConfiguration
             IsHq = isHq,
             Name = BuildDisplayName(name, isHq),
             MinCountToSell = 1,
+        };
+
+        return true;
+    }
+
+    public bool TryAddSellItemWithMinCount(uint baseItemId, bool isHq, string name, int minCount)
+    {
+        if (baseItemId == 0) return false;
+
+        var key = MakeSellKey(baseItemId, isHq);
+        if (SellList.ContainsKey(key)) return false;
+
+        var clampedMinCount = Math.Clamp(minCount, 1, 999);
+
+        SellList[key] = new SellListEntry
+        {
+            ItemId = baseItemId,
+            IsHq = isHq,
+            Name = BuildDisplayName(name, isHq),
+            MinCountToSell = clampedMinCount,
         };
 
         return true;
