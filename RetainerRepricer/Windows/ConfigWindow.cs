@@ -395,7 +395,22 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawOverlayOffsetSettings()
     {
-        ImGui.TextUnformatted("Overlay anchor offset");
+        var showOffsets = _config.ShowOverlayOffsetControls;
+        if (ImGui.Checkbox("Adjust overlay anchor", ref showOffsets))
+        {
+            _config.ShowOverlayOffsetControls = showOffsets;
+            SaveConfig();
+        }
+
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+        {
+            ImGui.SetTooltip("Enable to fine-tune the overlay position relative to the retainer list.");
+        }
+
+        if (!showOffsets)
+            return;
+
+        ImGui.Indent();
 
         // Save-on-change for sliders, but only write to disk once the drag finishes.
         var ox = _config.OverlayOffsetX;
@@ -413,29 +428,19 @@ public sealed class ConfigWindow : Window, IDisposable
             if (ImGui.IsItemDeactivatedAfterEdit())
                 SaveConfig();
         }
+
+        ImGui.Unindent();
     }
 
     private void DrawPricingGateSettings()
     {
         ImGui.Separator();
         ImGui.Spacing();
-        ImGui.TextUnformatted("Intelligent pricing gate");
-
-        var gateEnabled = _config.EnableUndercutPreventionGate;
-        if (ImGui.Checkbox("Enable Universalis-backed price gate", ref gateEnabled))
+        ImGui.TextUnformatted("Universalis smart pricing");
+        if (ImGui.IsItemHovered())
         {
-            _config.EnableUndercutPreventionGate = gateEnabled;
-            SaveConfig();
+            ImGui.SetTooltip("Requires Universalis data to guard repricing and handle empty boards.");
         }
-
-        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-        {
-            ImGui.SetTooltip(
-                "Guards against severe undercuts by comparing market prices to Universalis averages."
-            );
-        }
-
-        ImGui.BeginDisabled(!gateEnabled);
 
         var useUniversalis = _config.UseUniversalisApi;
         if (ImGui.Checkbox("Fetch Universalis averages", ref useUniversalis))
@@ -447,45 +452,70 @@ public sealed class ConfigWindow : Window, IDisposable
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
         {
             ImGui.SetTooltip(
-                "Disable if you prefer to rely solely on in-game listings without Universalis data."
+                "Master switch for Universalis-backed pricing safeguards and empty-board fallbacks."
             );
         }
 
-        ImGui.BeginDisabled(!useUniversalis);
-
-        var endpoint = _config.UniversalisApiBaseUrl ?? string.Empty;
-        ImGui.SetNextItemWidth(-1);
-        if (ImGui.InputText("Universalis endpoint", ref endpoint, 256))
+        if (!useUniversalis)
         {
-            _config.UniversalisApiBaseUrl = string.IsNullOrWhiteSpace(endpoint)
-                ? "https://universalis.app/api/v2/aggregated"
-                : endpoint.Trim();
+            ImGui.TextDisabled("Enable Universalis averages to configure smart pricing options.");
+            return;
+        }
+
+        ImGui.Indent();
+
+        var gateEnabled = _config.EnableUndercutPreventionGate;
+        if (ImGui.Checkbox("Enable Universalis-backed price gate", ref gateEnabled))
+        {
+            _config.EnableUndercutPreventionGate = gateEnabled;
             SaveConfig();
         }
 
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
         {
-            ImGui.SetTooltip("Base URL for Universalis aggregated API calls.");
+            ImGui.SetTooltip(
+                "Compares in-game listings to Universalis averages and enforces the minimum price floor below."
+            );
         }
 
-        var percent = _config.UndercutPreventionPercent * 100f;
-        if (ImGui.SliderFloat("Minimum price floor", ref percent, 10f, 90f, "%.0f%%"))
+        if (gateEnabled)
         {
-            var normalized = Math.Clamp(percent / 100f, 0.1f, 0.9f);
-            if (Math.Abs(normalized - _config.UndercutPreventionPercent) > 0.0001f)
+            ImGui.Indent();
+
+            var percent = _config.UndercutPreventionPercent * 100f;
+            if (ImGui.SliderFloat("Floor %##universalis_floor_percent", ref percent, 10f, 90f, "%.0f"))
             {
-                _config.UndercutPreventionPercent = normalized;
-                SaveConfig();
+                var normalized = Math.Clamp(percent / 100f, 0.1f, 0.9f);
+                if (Math.Abs(normalized - _config.UndercutPreventionPercent) > 0.0001f)
+                {
+                    _config.UndercutPreventionPercent = normalized;
+                    SaveConfig();
+                }
             }
+
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            {
+                ImGui.SetTooltip("Listings below this percent of the Universalis average will be ignored.");
+            }
+
+            ImGui.Unindent();
+        }
+
+        var fallbackEnabled = _config.UseUniversalisForEmptyMarket;
+        if (ImGui.Checkbox("Use Universalis fallback for empty boards", ref fallbackEnabled))
+        {
+            _config.UseUniversalisForEmptyMarket = fallbackEnabled;
+            SaveConfig();
         }
 
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
         {
-            ImGui.SetTooltip("Listings below this percent of the Universalis average will be ignored.");
+            ImGui.SetTooltip(
+                "When enabled, listings with no in-game competition will use Universalis averages before skipping."
+            );
         }
 
-        ImGui.EndDisabled();
-        ImGui.EndDisabled();
+        ImGui.Unindent();
     }
 
     #endregion

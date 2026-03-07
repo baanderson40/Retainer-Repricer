@@ -36,7 +36,6 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
     private const string CommandName = "/repricer";
     private const int UndercutAmount = 1;
-    private const string UniversalisFloorSeller = "[UniversalisFloor]";
     private const float MarketValidationThreshold = 2.0f;  // Can be made configurable later
 
     // General pacing between UI actions. Keep conservative while iterating on UI stability.
@@ -535,7 +534,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
             {
                 Log.Information($"[RR][Gate] No HQ listings met the floor {gateFloor.Value}; using floor price.");
                 lowestPrice = gateFloor.Value;
-                lowestSeller = UniversalisFloorSeller;
+                lowestSeller = "[UniversalisFloor]";
                 return true;
             }
 
@@ -565,7 +564,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
             Log.Information($"[RR][Gate] No NQ listings met the floor {gateFloor.Value}; using floor price.");
             lowestPrice = gateFloor.Value;
-            lowestSeller = UniversalisFloorSeller;
+            lowestSeller = "[UniversalisFloor]";
             return true;
         }
 

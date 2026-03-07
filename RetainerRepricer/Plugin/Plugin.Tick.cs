@@ -3,6 +3,7 @@ using System;
 using ECommons.Automation;
 using ECommons.UIHelpers.AddonMasterImplementations;
 using FFXIVClientStructs.FFXIV.Component.GUI;
+using RetainerRepricer.Services;
 
 namespace RetainerRepricer;
 
@@ -755,7 +756,7 @@ public unsafe sealed partial class Plugin
                         return;
                     }
 
-                    var baseUrl = Configuration.UniversalisApiBaseUrl;
+                    var baseUrl = UniversalisApiClient.AggregatedBaseUrl;
                     var key = new UniversalisGateKey(itemId, _currentIsHq, region, baseUrl);
 
                     if (_universalisGateKey != key)

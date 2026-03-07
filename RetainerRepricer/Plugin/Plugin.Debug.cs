@@ -1,6 +1,7 @@
 using System;
 
 using FFXIVClientStructs.FFXIV.Component.GUI;
+using RetainerRepricer.Services;
 
 namespace RetainerRepricer;
 
@@ -40,9 +41,7 @@ public unsafe sealed partial class Plugin
             Log.Information("[RR][TestGate] Universalis API is disabled in config. Using legacy behavior.");
         }
 
-        var baseUrl = string.IsNullOrWhiteSpace(Configuration.UniversalisApiBaseUrl)
-            ? "https://universalis.app/api/v2/aggregated"
-            : Configuration.UniversalisApiBaseUrl.Trim();
+        var baseUrl = UniversalisApiClient.AggregatedBaseUrl;
 
         Log.Information($"[RR][TestGate] Fetching Universalis data for item {itemId}, region='{region}', HQ={_currentIsHq}");
 

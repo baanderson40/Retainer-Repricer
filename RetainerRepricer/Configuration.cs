@@ -11,6 +11,7 @@ public sealed class Configuration : IPluginConfiguration
 {
     #region Dalamud config versioning
 
+    // Dalamud serialization schema version; bump when config layout changes.
     public int Version { get; set; } = 3;
 
     [NonSerialized]
@@ -35,12 +36,14 @@ public sealed class Configuration : IPluginConfiguration
     #region Run behavior
 
     // If enabled, the plugin will close the RetainerList window when a full run finishes.
+    // Keeps UI tidy by exiting the retainer bell automatically after each run.
     public bool CloseRetainerListAddon { get; set; } = true;
 
     #endregion
 
     #region Retainer enable/disable
 
+    // Tracks per-retainer enablement (case-insensitive) synced from the RetainerList UI.
     public Dictionary<string, bool> RetainersEnabled { get; set; }
         = new(StringComparer.OrdinalIgnoreCase);
 
@@ -54,23 +57,29 @@ public sealed class Configuration : IPluginConfiguration
 
     #region Overlay (visual only)
 
+    // Controls overlay rendering on top of RetainerList plus stored offsets.
     public bool OverlayEnabled { get; set; } = true;
     public float OverlayOffsetX { get; set; } = 0f;
     public float OverlayOffsetY { get; set; } = 0f;
+    // Remembers whether the offset sliders are expanded in the config UI.
+    public bool ShowOverlayOffsetControls { get; set; } = false;
 
     #endregion
 
     #region Pricing gate
 
+    // Enables the Universalis-based price floor gate for repricing existing listings.
     public bool EnableUndercutPreventionGate { get; set; } = true;
+    // Allows HTTP calls to Universalis for both gate logic and empty-market fallback.
     public bool UseUniversalisApi { get; set; } = true;
-    public string UniversalisApiBaseUrl { get; set; } = "https://universalis.app/api/v2/aggregated";
+    // Percentage of Universalis average that becomes the minimum acceptable price floor (10–90%).
     public float UndercutPreventionPercent { get; set; } = 0.5f;
 
     /// <summary>
     /// When market board returns "No items found", use Universalis average sale price
     /// to determine listing price instead of skipping the item.
     /// </summary>
+    // When the market board shows no listings, fall back to Universalis averages instead of skipping.
     public bool UseUniversalisForEmptyMarket { get; set; } = true;
 
     #endregion
@@ -101,6 +110,7 @@ public sealed class Configuration : IPluginConfiguration
         => ((ulong)baseItemId << 1) | (isHq ? 1UL : 0UL);
 
     // Stored as a single dictionary so HQ/NQ don’t collide.
+    // Persisted sell list keyed by (itemId, HQ flag) for deterministic lookups.
     public Dictionary<ulong, SellListEntry> SellList { get; set; } = new();
 
     // Convenience: display name builder (HQ suffix).

@@ -2,6 +2,7 @@ using System;
 
 using ECommons.GameHelpers;
 using FFXIVClientStructs.FFXIV.Client.UI.Agent;
+using RetainerRepricer.Services;
 
 namespace RetainerRepricer;
 
@@ -65,9 +66,7 @@ public unsafe sealed partial class Plugin
         if (!Configuration.EnableUndercutPreventionGate || !Configuration.UseUniversalisApi)
             return UniversalisGateStatus.Disabled;
 
-        var baseUrl = string.IsNullOrWhiteSpace(Configuration.UniversalisApiBaseUrl)
-            ? "https://universalis.app/api/v2/aggregated"
-            : Configuration.UniversalisApiBaseUrl.Trim();
+        var baseUrl = UniversalisApiClient.AggregatedBaseUrl;
 
         if (!TryGetCurrentMarketItemId(out var itemId))
         {

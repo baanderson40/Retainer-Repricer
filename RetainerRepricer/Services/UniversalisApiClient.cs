@@ -11,6 +11,9 @@ namespace RetainerRepricer.Services;
 
 public sealed class UniversalisApiClient : IDisposable
 {
+    // Default aggregated endpoint used for deterministic Universalis lookups.
+    internal const string AggregatedBaseUrl = "https://universalis.app/api/v2/aggregated";
+
     private static readonly JsonSerializerOptions _jsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
