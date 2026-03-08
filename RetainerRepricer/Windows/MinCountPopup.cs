@@ -21,6 +21,7 @@ internal sealed class MinCountPopup : Window, IDisposable
     private string _priorityText = "1";
     private int _priorityMax = 1;
     private bool _initialPositionSet;
+    private bool _smartSortEnabled;
 
     public MinCountPopup()
         : base(
@@ -44,7 +45,8 @@ internal sealed class MinCountPopup : Window, IDisposable
         string itemName,
         Action<uint, bool, int, int> onConfirm,
         Vector2? anchorPosition = null,
-        int defaultPriority = 1)
+        int defaultPriority = 1,
+        bool smartSortEnabled = false)
     {
         _pendingItemId = itemId;
         _pendingIsHq = isHq;
@@ -55,6 +57,7 @@ internal sealed class MinCountPopup : Window, IDisposable
         _priorityMax = Math.Max(1, defaultPriority);
         _priorityText = _priorityMax.ToString();
         _initialPositionSet = false;
+        _smartSortEnabled = smartSortEnabled;
 
         IsOpen = true;
     }
@@ -201,16 +204,21 @@ internal sealed class MinCountPopup : Window, IDisposable
         ImGui.TextUnformatted("Priority");
 
         ImGui.SetCursorPos(new Vector2(valueStartX, cursor.Y));
+        ImGui.BeginDisabled(_smartSortEnabled);
         ImGui.SetNextItemWidth(valueWidth);
         if (ImGui.InputTextWithHint("##priority_input", _priorityMax.ToString(), ref _priorityText, 8, ImGuiInputTextFlags.CharsDecimal)
             && string.IsNullOrWhiteSpace(_priorityText))
         {
             _priorityText = _priorityMax.ToString();
         }
+        ImGui.EndDisabled();
 
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
         {
-            ImGui.SetTooltip("Lower numbers run first. Enter 1 to add at the top, or leave the default to append.");
+            var tooltip = _smartSortEnabled
+                ? "Priority is managed by smart sorting. The current order is shown for reference."
+                : "Lower numbers run first. Enter 1 to add at the top, or leave the default to append.";
+            ImGui.SetTooltip(tooltip);
         }
 
         var nextY = MathF.Max(ImGui.GetCursorPosY(), cursor.Y + ImGui.GetTextLineHeightWithSpacing());

@@ -95,14 +95,16 @@ public sealed class ConfigWindow : Window, IDisposable
         DrawSellListSearch();
 
         var list = _config.SellList;
-        if (list == null || list.Count == 0)
+        var listCount = list?.Count ?? 0;
+
+        DrawSellListActionRow(listCount);
+
+        if (list == null || listCount == 0)
         {
             ImGui.TextDisabled("No items in sell list.");
             _confirmClearSellList = false;
             return;
         }
-
-        DrawSellListClearButton();
 
         ImGui.Separator();
         ImGui.Spacing();
@@ -111,6 +113,24 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.TextDisabled($"{rows.Count} item(s)");
 
         DrawSellListTable(rows, list.Count);
+    }
+
+    private void DrawSellListActionRow(int totalItemCount)
+    {
+        ImGui.Spacing();
+
+        var startPos = ImGui.GetCursorPos();
+        DrawSellListClearButtonInline(totalItemCount > 0);
+        var afterClearY = ImGui.GetCursorPosY();
+
+        var buttonWidth = 100f;
+        var rightEdge = ImGui.GetWindowContentRegionMax().X;
+        var buttonX = Math.Max(ImGui.GetCursorPosX(), rightEdge - buttonWidth);
+
+        ImGui.SetCursorPos(new System.Numerics.Vector2(buttonX, startPos.Y));
+        var statusBottom = DrawSmartSortControlsInline(buttonWidth);
+
+        ImGui.SetCursorPosY(Math.Max(afterClearY, statusBottom));
     }
 
     private void DrawRetainersTab()
@@ -138,14 +158,21 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.Spacing();
     }
 
-    private void DrawSellListClearButton()
+    private void DrawSellListClearButtonInline(bool hasItems)
     {
+        if (!hasItems)
+        {
+            ImGui.BeginDisabled();
+            ImGui.Button("Clear list");
+            ImGui.EndDisabled();
+            return;
+        }
+
         // Two-step confirm to avoid fat-finger clears.
         if (!_confirmClearSellList)
         {
             if (ImGui.Button("Clear list"))
                 _confirmClearSellList = true;
-
             return;
         }
 
@@ -161,6 +188,51 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.SameLine();
         if (ImGui.Button("Cancel"))
             _confirmClearSellList = false;
+    }
+
+    private float DrawSmartSortControlsInline(float buttonWidth)
+    {
+        var cursorX = ImGui.GetCursorPosX();
+        var rightEdge = ImGui.GetWindowContentRegionMax().X;
+        var buttonX = Math.Max(cursorX, rightEdge - buttonWidth);
+
+        if (!_config.UseUniversalisApi)
+        {
+            ImGui.SetCursorPosX(buttonX);
+            ImGui.BeginDisabled();
+            ImGui.Button("Smart Sort", new System.Numerics.Vector2(buttonWidth, 0f));
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                ImGui.SetTooltip("Enable Universalis averages in Settings to access smart sorting.");
+            ImGui.EndDisabled();
+            return ImGui.GetCursorPosY();
+        }
+
+        var enabled = _plugin.SmartSortEnabled;
+        var sorting = _plugin.SmartSortIsSorting;
+
+        ImGui.SetCursorPosX(buttonX);
+        ImGui.BeginDisabled(!enabled || sorting);
+        if (ImGui.Button("Smart Sort", new System.Numerics.Vector2(buttonWidth, 0f)))
+            _ = _plugin.RequestSmartSortAsync("manual_button", force: true);
+        ImGui.EndDisabled();
+
+        var afterButtonY = ImGui.GetCursorPosY();
+
+        if (!enabled)
+        {
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                ImGui.SetTooltip("Enable smart sort in Settings to use this button.");
+            return ImGui.GetCursorPosY();
+        }
+
+        if (sorting)
+        {
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                ImGui.SetTooltip("Smart sort is currently running.");
+            return ImGui.GetCursorPosY();
+        }
+
+        return afterButtonY;
     }
 
     private System.Collections.Generic.List<Configuration.SellListEntry> BuildFilteredSellListRows()
@@ -193,6 +265,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawSellListTable(System.Collections.Generic.IReadOnlyList<Configuration.SellListEntry> rows, int totalItemCount)
     {
+        var smartSortActive = _plugin.SmartSortEnabled;
         if (!ImGui.BeginTable(
                 "##sell_list_table",
                 4,
@@ -223,16 +296,26 @@ public sealed class ConfigWindow : Window, IDisposable
             ImGui.TableSetColumnIndex(0);
             var priorityValue = e.SortOrder > 0 ? e.SortOrder : (rowIndex + 1);
             ImGui.SetNextItemWidth(-1);
+            if (smartSortActive)
+                ImGui.BeginDisabled();
+
             ImGui.InputInt(
                 $"##priority_{e.ItemId}_{(e.IsHq ? 1 : 0)}",
                 ref priorityValue,
                 0,
                 0);
 
+            if (smartSortActive)
+            {
+                ImGui.EndDisabled();
+                if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                    ImGui.SetTooltip("Priority is managed by Universalis smart sorting while enabled.");
+            }
+
             if (ImGui.IsItemDeactivatedAfterEdit())
             {
                 var clamped = Math.Clamp(priorityValue, 1, Math.Max(1, totalItemCount));
-                if (clamped != e.SortOrder)
+                if (!smartSortActive && clamped != e.SortOrder)
                     priorityChanges.Add((e.ItemId, e.IsHq, clamped));
             }
 
@@ -479,6 +562,7 @@ public sealed class ConfigWindow : Window, IDisposable
         {
             _config.UseUniversalisApi = useUniversalis;
             SaveConfig();
+            _plugin.NotifySmartSortSettingChanged();
         }
 
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
@@ -514,6 +598,7 @@ public sealed class ConfigWindow : Window, IDisposable
         {
             ImGui.Indent();
 
+            ImGui.PushItemWidth(200f);
             var percent = _config.UndercutPreventionPercent * 100f;
             if (ImGui.SliderFloat("Floor %##universalis_floor_percent", ref percent, 10f, 90f, "%.0f"))
             {
@@ -524,6 +609,7 @@ public sealed class ConfigWindow : Window, IDisposable
                     SaveConfig();
                 }
             }
+            ImGui.PopItemWidth();
 
             if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
             {
@@ -546,6 +632,69 @@ public sealed class ConfigWindow : Window, IDisposable
                 "When enabled, listings with no in-game competition will use Universalis averages before skipping."
             );
         }
+
+        DrawSmartSortSettings();
+
+        ImGui.Unindent();
+    }
+
+    private void DrawSmartSortSettings()
+    {
+        var smartSortEnabled = _config.EnableUniversalisSmartSort;
+        if (ImGui.Checkbox("Enable smart sell sorting", ref smartSortEnabled))
+        {
+            _config.EnableUniversalisSmartSort = smartSortEnabled;
+            SaveConfig();
+            _plugin.NotifySmartSortSettingChanged();
+        }
+
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+        {
+            ImGui.SetTooltip("Automatically reorder sell items using Universalis sale velocity and average price data.");
+        }
+
+        if (!smartSortEnabled)
+            return;
+
+        ImGui.Indent();
+
+        ImGui.PushItemWidth(200f);
+
+        var velocityWeight = _config.SmartSortVelocityWeight;
+        if (ImGui.SliderFloat("Velocity weight", ref velocityWeight, 0.2f, 0.9f, "%.2f"))
+        {
+            velocityWeight = Math.Clamp(velocityWeight, 0.2f, 0.9f);
+            _config.SmartSortVelocityWeight = velocityWeight;
+            _config.SmartSortPriceWeight = 1f - velocityWeight;
+            SaveConfig();
+        }
+
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+        {
+            ImGui.SetTooltip("Higher values favor fast-selling items; lower balances toward expensive items.");
+        }
+
+        var refreshMinutes = _config.SmartSortRefreshMinutes;
+        if (ImGui.SliderInt("Auto refresh", ref refreshMinutes, 5, 180))
+        {
+            refreshMinutes = Math.Clamp(refreshMinutes, 5, 180);
+            _config.SmartSortRefreshMinutes = refreshMinutes;
+            SaveConfig();
+        }
+
+        ImGui.PopItemWidth();
+
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+        {
+            ImGui.SetTooltip("Smart sort will automatically refresh after this many minutes when a run starts.");
+        }
+
+        var (vw, pw) = _config.GetSmartSortWeights();
+        ImGui.TextDisabled($"Active weights: velocity {vw:0.00}, price {pw:0.00}");
+
+        var lastRun = _config.GetSmartSortLastRunUtc();
+        var lastRunText = lastRun <= DateTime.MinValue ? "Never" : lastRun.ToLocalTime().ToString("g");
+        ImGui.TextDisabled($"Last smart sort: {lastRunText}");
 
         ImGui.Unindent();
     }

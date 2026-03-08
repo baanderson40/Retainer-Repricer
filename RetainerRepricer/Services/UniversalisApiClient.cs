@@ -1,6 +1,8 @@
 using Dalamud.Plugin.Services;
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
+using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -24,6 +26,7 @@ public sealed class UniversalisApiClient : IDisposable
     private readonly IPluginLog _log;
     private readonly bool _ownsClient;
     private bool _disposed;
+    private readonly ConcurrentDictionary<StatsCacheKey, StatsCacheEntry> _statsCache = new();
 
     public UniversalisApiClient(IPluginLog log, HttpClient? httpClient = null)
     {
@@ -42,8 +45,26 @@ public sealed class UniversalisApiClient : IDisposable
         bool isHighQuality,
         CancellationToken cancellationToken = default)
     {
+        var stats = await GetListingStatsAsync(baseUrl, worldDcRegion, itemId, isHighQuality, cacheDuration: TimeSpan.FromMinutes(1), cancellationToken).ConfigureAwait(false);
+        return stats?.AveragePrice;
+    }
+
+    public async Task<UniversalisListingStats?> GetListingStatsAsync(
+        string baseUrl,
+        string worldDcRegion,
+        uint itemId,
+        bool isHighQuality,
+        TimeSpan? cacheDuration = null,
+        CancellationToken cancellationToken = default)
+    {
         if (string.IsNullOrWhiteSpace(baseUrl) || string.IsNullOrWhiteSpace(worldDcRegion))
             return null;
+
+        var duration = cacheDuration.GetValueOrDefault(TimeSpan.FromMinutes(5));
+        var key = new StatsCacheKey(baseUrl.TrimEnd('/'), worldDcRegion, itemId, isHighQuality);
+
+        if (_statsCache.TryGetValue(key, out var cached) && cached.ExpiresUtc > DateTime.UtcNow)
+            return cached.Stats;
 
         var requestUri = BuildRequestUri(baseUrl, worldDcRegion, itemId);
 
@@ -61,10 +82,7 @@ public sealed class UniversalisApiClient : IDisposable
             await using var contentStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
             var payload = await JsonSerializer.DeserializeAsync<AggregatedResponse>(contentStream, _jsonOptions, cancellationToken).ConfigureAwait(false);
 
-            var result = payload?.Results is { Count: > 0 } list
-                ? list[0]
-                : null;
-
+            var result = payload?.Results?.FirstOrDefault();
             if (result == null)
             {
                 _log.Debug($"[Universalis] No results for item {itemId} (HQ={isHighQuality}).");
@@ -72,14 +90,28 @@ public sealed class UniversalisApiClient : IDisposable
             }
 
             var quality = isHighQuality ? result.Hq : result.Nq;
-            var bestPrice = quality?.AverageSalePrice?.GetBestPrice();
-
-            if (bestPrice is null)
+            if (quality == null)
             {
-                _log.Debug($"[Universalis] Missing average price for item {itemId} (HQ={isHighQuality}).");
+                _log.Debug($"[Universalis] Missing quality bucket for item {itemId} (HQ={isHighQuality}).");
+                return null;
             }
 
-            return bestPrice;
+            var avgPrice = quality.AverageSalePrice?.GetBestPrice();
+            var velocity = quality.DailySaleVelocity?.GetBestQuantity();
+            var lastUpload = result.GetLatestUploadUtc();
+
+            if (avgPrice is null && velocity is null)
+                return null;
+
+            var stats = new UniversalisListingStats(avgPrice, velocity, lastUpload);
+
+            _statsCache[key] = new StatsCacheEntry
+            {
+                Stats = stats,
+                ExpiresUtc = DateTime.UtcNow + duration,
+            };
+
+            return stats;
         }
         catch (OperationCanceledException)
         {
@@ -87,7 +119,7 @@ public sealed class UniversalisApiClient : IDisposable
         }
         catch (Exception ex)
         {
-            _log.Error(ex, $"[Universalis] Failed to fetch average price for item {itemId}.");
+            _log.Error(ex, $"[Universalis] Failed to fetch listing stats for item {itemId}.");
             return null;
         }
     }
@@ -125,12 +157,30 @@ public sealed class UniversalisApiClient : IDisposable
 
         [JsonPropertyName("hq")]
         public AggregatedQuality? Hq { get; set; }
+
+        [JsonPropertyName("worldUploadTimes")]
+        public List<AggregatedUploadTime> WorldUploadTimes { get; set; } = new();
+
+        public DateTime? GetLatestUploadUtc()
+        {
+            if (WorldUploadTimes == null || WorldUploadTimes.Count == 0)
+                return null;
+
+            var max = WorldUploadTimes.Max(t => t.Timestamp);
+            if (max <= 0)
+                return null;
+
+            return DateTimeOffset.FromUnixTimeMilliseconds(max).UtcDateTime;
+        }
     }
 
     private sealed class AggregatedQuality
     {
         [JsonPropertyName("averageSalePrice")]
         public AggregatedAverage? AverageSalePrice { get; set; }
+
+        [JsonPropertyName("dailySaleVelocity")]
+        public AggregatedVelocity? DailySaleVelocity { get; set; }
     }
 
     private sealed class AggregatedAverage
@@ -153,4 +203,44 @@ public sealed class UniversalisApiClient : IDisposable
         [JsonPropertyName("price")]
         public decimal? Price { get; set; }
     }
+
+    private sealed class AggregatedVelocity
+    {
+        [JsonPropertyName("world")]
+        public AggregatedVelocityValue? World { get; set; }
+
+        [JsonPropertyName("dc")]
+        public AggregatedVelocityValue? Dc { get; set; }
+
+        [JsonPropertyName("region")]
+        public AggregatedVelocityValue? Region { get; set; }
+
+        public double? GetBestQuantity()
+            => World?.Quantity ?? Dc?.Quantity ?? Region?.Quantity;
+    }
+
+    private sealed class AggregatedVelocityValue
+    {
+        [JsonPropertyName("quantity")]
+        public double? Quantity { get; set; }
+    }
+
+    private sealed class AggregatedUploadTime
+    {
+        [JsonPropertyName("worldId")]
+        public uint WorldId { get; set; }
+
+        [JsonPropertyName("timestamp")]
+        public long Timestamp { get; set; }
+    }
+
+    private readonly record struct StatsCacheKey(string BaseUrl, string Region, uint ItemId, bool IsHq);
+
+    private sealed class StatsCacheEntry
+    {
+        public UniversalisListingStats Stats { get; init; } = null!;
+        public DateTime ExpiresUtc { get; init; }
+    }
 }
+
+public sealed record UniversalisListingStats(decimal? AveragePrice, double? DailySaleVelocity, DateTime? LastUploadUtc);

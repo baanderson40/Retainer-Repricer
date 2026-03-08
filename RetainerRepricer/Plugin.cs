@@ -80,6 +80,9 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
     internal bool IsRunning;
 
     private readonly UniversalisApiClient _universalisClient;
+    private readonly SellListSmartSorter _smartSorter;
+    private Task<bool>? _pendingSmartSortTask;
+    private bool _smartSortKickoffDone;
 
     #endregion
 
@@ -113,11 +116,12 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         Configuration.Initialize(pi);
 
         _universalisClient = new UniversalisApiClient(log);
+        _smartSorter = new SellListSmartSorter(Configuration, _universalisClient, log, GetWorldDcRegionKey);
 
         ConfigWindow = new ConfigWindow(this);
         MainWindow = new MainWindow(this);
         MinCountPopup = new MinCountPopup();
-        ContextMenu = new ContextMenuManager(Configuration, MinCountPopup);
+        ContextMenu = new ContextMenuManager(this, Configuration, MinCountPopup);
 
         WindowSystem.AddWindow(ConfigWindow);
         WindowSystem.AddWindow(MainWindow);
@@ -161,6 +165,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         CommandManager.RemoveHandler(CommandAlias);
 
         _universalisClient.Dispose();
+        _smartSorter.Dispose();
 
         ECommonsMain.Dispose();
     }
@@ -341,6 +346,8 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
         _sellQueue.Clear();
         _sellQueuePos = 0;
+        _pendingSmartSortTask = null;
+        _smartSortKickoffDone = false;
         _sellCapacityThisRetainer = 0;
         _soldThisRetainer = 0;
 
@@ -368,6 +375,8 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
         _sellQueue.Clear();
         _sellQueuePos = 0;
+        _pendingSmartSortTask = null;
+        _smartSortKickoffDone = false;
         _sellCapacityThisRetainer = 0;
         _soldThisRetainer = 0;
 
@@ -661,6 +670,26 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
     public void ToggleConfigUi() => ConfigWindow.Toggle();
     private void OpenMainUi() => ToggleConfigUi();
+
+    internal bool SmartSortEnabled => _smartSorter.IsEnabled;
+    internal bool SmartSortIsSorting => _smartSorter.IsSorting;
+    internal DateTime SmartSortLastRunUtc => _smartSorter.LastSortUtc;
+    internal bool SmartSortRefreshDue => _smartSorter.IsRefreshDue();
+
+    internal Task<bool> RequestSmartSortAsync(string reason, bool force = false)
+    {
+        if (force)
+            return _smartSorter.ForceSortAsync(reason);
+
+        return _smartSorter.TrySortAsync(reason, force: false);
+    }
+
+    internal void NotifySmartSortSettingChanged()
+    {
+        // Reset pending state so a new run can force refresh immediately.
+        _pendingSmartSortTask = null;
+        _smartSortKickoffDone = false;
+    }
 
     #endregion
 }

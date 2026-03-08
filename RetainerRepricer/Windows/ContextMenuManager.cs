@@ -33,6 +33,7 @@ internal sealed class ContextMenuManager : IDisposable
 
     #region Fields
 
+    private readonly Plugin _plugin;
     private readonly Configuration _config;
     private readonly MinCountPopup _minCountPopup;
 
@@ -40,8 +41,9 @@ internal sealed class ContextMenuManager : IDisposable
 
     #region Lifecycle
 
-    public ContextMenuManager(Configuration config, MinCountPopup minCountPopup)
+    public ContextMenuManager(Plugin plugin, Configuration config, MinCountPopup minCountPopup)
     {
+        _plugin = plugin;
         _config = config;
         _minCountPopup = minCountPopup;
         Svc.ContextMenu.OnMenuOpened += OnMenuOpened;
@@ -142,15 +144,19 @@ internal sealed class ContextMenuManager : IDisposable
                 .AddUiForeground(AddLabel, PrefixColor)
                 .Build(),
 
-            OnClicked = _ =>
+            OnClicked = clickedArgs =>
             {
                 var clickPosition = ImGui.GetMousePos();
                 var defaultPriority = _config.GetAppendSortOrder();
                 _minCountPopup.Show(itemId, isHq, itemName, (id, hq, minCount, priority) =>
                 {
                     if (_config.TryAddSellItemWithMinCount(id, hq, itemName, minCount, priority))
+                    {
                         _config.Save();
-                }, clickPosition, defaultPriority);
+                        if (_plugin.SmartSortEnabled)
+                            _ = _plugin.RequestSmartSortAsync("item_added", force: true);
+                    }
+                }, clickPosition, defaultPriority, _plugin.SmartSortEnabled);
             }
         });
     }

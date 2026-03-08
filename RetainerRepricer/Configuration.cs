@@ -12,7 +12,7 @@ public sealed class Configuration : IPluginConfiguration
     #region Dalamud config versioning
 
     // Dalamud serialization schema version; bump when config layout changes.
-    public int Version { get; set; } = 4;
+    public int Version { get; set; } = 5;
 
     [NonSerialized]
     private IDalamudPluginInterface? _pluginInterface;
@@ -84,6 +84,31 @@ public sealed class Configuration : IPluginConfiguration
     /// </summary>
     // When the market board shows no listings, fall back to Universalis averages instead of skipping.
     public bool UseUniversalisForEmptyMarket { get; set; } = true;
+
+    // Smart sort controls (Universalis-backed sell order weighting)
+    public bool EnableUniversalisSmartSort { get; set; } = false;
+    public float SmartSortVelocityWeight { get; set; } = 0.555f;
+    public float SmartSortPriceWeight { get; set; } = 0.445f;
+    public int SmartSortRefreshMinutes { get; set; } = 30;
+    public long SmartSortLastRunTicks { get; set; } = 0;
+
+    public (float velocityWeight, float priceWeight) GetSmartSortWeights()
+    {
+        var v = SmartSortVelocityWeight;
+        var p = SmartSortPriceWeight;
+        if (v < 0f) v = 0f;
+        if (p < 0f) p = 0f;
+        var sum = v + p;
+        if (sum <= 0f)
+            return (0.555f, 0.445f);
+        return (v / sum, p / sum);
+    }
+
+    public DateTime GetSmartSortLastRunUtc()
+        => SmartSortLastRunTicks <= 0 ? DateTime.MinValue : new DateTime(SmartSortLastRunTicks, DateTimeKind.Utc);
+
+    public void SetSmartSortLastRunUtc(DateTime utc)
+        => SmartSortLastRunTicks = utc <= DateTime.MinValue ? 0 : utc.ToUniversalTime().Ticks;
 
     #endregion
 
@@ -293,6 +318,21 @@ public sealed class Configuration : IPluginConfiguration
         if (Version < 4)
         {
             Version = 4;
+            changed = true;
+        }
+
+        if (Version < 5)
+        {
+            Version = 5;
+            if (SmartSortVelocityWeight <= 0f && SmartSortPriceWeight <= 0f)
+            {
+                SmartSortVelocityWeight = 0.555f;
+                SmartSortPriceWeight = 0.445f;
+            }
+
+            if (SmartSortRefreshMinutes <= 0)
+                SmartSortRefreshMinutes = 30;
+
             changed = true;
         }
 
