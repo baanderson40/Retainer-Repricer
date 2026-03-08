@@ -12,13 +12,16 @@ public sealed class Configuration : IPluginConfiguration
     #region Dalamud config versioning
 
     // Dalamud serialization schema version; bump when config layout changes.
-    public int Version { get; set; } = 3;
+    public int Version { get; set; } = 4;
 
     [NonSerialized]
     private IDalamudPluginInterface? _pluginInterface;
 
     public void Initialize(IDalamudPluginInterface pi)
-        => _pluginInterface = pi;
+    {
+        _pluginInterface = pi;
+        RunMigrations();
+    }
 
     public void Save()
         => _pluginInterface?.SavePluginConfig(this);
@@ -103,6 +106,9 @@ public sealed class Configuration : IPluginConfiguration
 
         // Per-quality threshold (count only that quality).
         public int MinCountToSell { get; set; } = 1;
+
+        // Explicit ordering (1..N). Lower numbers run earlier.
+        public int SortOrder { get; set; }
     }
 
     // Key = (baseItemId << 1) | (isHq ? 1 : 0)
@@ -125,12 +131,14 @@ public sealed class Configuration : IPluginConfiguration
     public bool HasSellItem(uint baseItemId, bool isHq)
         => SellList.ContainsKey(MakeSellKey(baseItemId, isHq));
 
-    public bool TryAddSellItem(uint baseItemId, bool isHq, string name)
+    public bool TryAddSellItem(uint baseItemId, bool isHq, string name, int? priorityOverride = null)
     {
         if (baseItemId == 0) return false;
 
         var key = MakeSellKey(baseItemId, isHq);
         if (SellList.ContainsKey(key)) return false;
+
+        var nextOrder = GetNextSortOrder();
 
         SellList[key] = new SellListEntry
         {
@@ -138,12 +146,16 @@ public sealed class Configuration : IPluginConfiguration
             IsHq = isHq,
             Name = BuildDisplayName(name, isHq),
             MinCountToSell = 1,
+            SortOrder = nextOrder,
         };
+
+        if (priorityOverride.HasValue)
+            TrySetSellItemOrder(baseItemId, isHq, priorityOverride.Value);
 
         return true;
     }
 
-    public bool TryAddSellItemWithMinCount(uint baseItemId, bool isHq, string name, int minCount)
+    public bool TryAddSellItemWithMinCount(uint baseItemId, bool isHq, string name, int minCount, int? priorityOverride = null)
     {
         if (baseItemId == 0) return false;
 
@@ -151,6 +163,7 @@ public sealed class Configuration : IPluginConfiguration
         if (SellList.ContainsKey(key)) return false;
 
         var clampedMinCount = Math.Clamp(minCount, 1, 999);
+        var nextOrder = GetNextSortOrder();
 
         SellList[key] = new SellListEntry
         {
@@ -158,22 +171,137 @@ public sealed class Configuration : IPluginConfiguration
             IsHq = isHq,
             Name = BuildDisplayName(name, isHq),
             MinCountToSell = clampedMinCount,
+            SortOrder = nextOrder,
         };
+
+        if (priorityOverride.HasValue)
+            TrySetSellItemOrder(baseItemId, isHq, priorityOverride.Value);
 
         return true;
     }
 
     public bool RemoveSellItem(uint baseItemId, bool isHq)
-        => SellList.Remove(MakeSellKey(baseItemId, isHq));
+    {
+        var removed = SellList.Remove(MakeSellKey(baseItemId, isHq));
+        if (removed)
+            NormalizeSellListOrder(saveChanges: false);
+        return removed;
+    }
 
     public void ClearSellList()
         => SellList.Clear();
 
-    public IEnumerable<SellListEntry> GetSellListSorted()
-        => SellList.Values
-            .OrderBy(e => string.IsNullOrWhiteSpace(e.Name) ? "zzz" : e.Name, StringComparer.OrdinalIgnoreCase)
+    public IEnumerable<SellListEntry> GetSellListOrdered()
+    {
+        NormalizeSellListOrder(saveChanges: false);
+        return SellList.Values
+            .OrderBy(e => e.SortOrder <= 0 ? int.MaxValue : e.SortOrder)
+            .ThenBy(e => string.IsNullOrWhiteSpace(e.Name) ? "zzz" : e.Name, StringComparer.OrdinalIgnoreCase)
             .ThenBy(e => e.ItemId)
             .ThenBy(e => e.IsHq ? 1 : 0);
+    }
+
+    public bool TrySetSellItemOrder(uint baseItemId, bool isHq, int requestedOrder)
+    {
+        var key = MakeSellKey(baseItemId, isHq);
+        if (!SellList.TryGetValue(key, out var entry))
+            return false;
+
+        NormalizeSellListOrder(saveChanges: false);
+
+        var ordered = SellList.Values
+            .OrderBy(e => e.SortOrder <= 0 ? int.MaxValue : e.SortOrder)
+            .ThenBy(e => string.IsNullOrWhiteSpace(e.Name) ? "zzz" : e.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(e => e.ItemId)
+            .ThenBy(e => e.IsHq ? 1 : 0)
+            .ToList();
+
+        ordered.Remove(entry);
+
+        var maxPosition = ordered.Count + 1;
+        var clamped = Math.Clamp(requestedOrder, 1, maxPosition);
+        ordered.Insert(clamped - 1, entry);
+
+        var changed = false;
+        for (var i = 0; i < ordered.Count; i++)
+        {
+            var desired = i + 1;
+            if (ordered[i].SortOrder != desired)
+            {
+                ordered[i].SortOrder = desired;
+                changed = true;
+            }
+        }
+
+        return changed;
+    }
+
+    public bool NormalizeSellListOrder(bool saveChanges = true)
+    {
+        if (SellList.Count == 0)
+            return false;
+
+        var ordered = SellList.Values
+            .OrderBy(e => e.SortOrder <= 0 ? int.MaxValue : e.SortOrder)
+            .ThenBy(e => string.IsNullOrWhiteSpace(e.Name) ? "zzz" : e.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(e => e.ItemId)
+            .ThenBy(e => e.IsHq ? 1 : 0)
+            .ToList();
+
+        var changed = false;
+        for (var i = 0; i < ordered.Count; i++)
+        {
+            var desired = i + 1;
+            if (ordered[i].SortOrder != desired)
+            {
+                ordered[i].SortOrder = desired;
+                changed = true;
+            }
+        }
+
+        if (changed && saveChanges)
+            Save();
+
+        return changed;
+    }
+
+    public int GetAppendSortOrder()
+    {
+        NormalizeSellListOrder(saveChanges: false);
+        return SellList.Count + 1;
+    }
+
+    private int GetNextSortOrder()
+    {
+        NormalizeSellListOrder(saveChanges: false);
+
+        if (SellList.Count == 0)
+            return 1;
+
+        var maxOrder = SellList.Values
+            .Select(e => e.SortOrder)
+            .DefaultIfEmpty(0)
+            .Max();
+
+        return maxOrder < 1 ? SellList.Count + 1 : maxOrder + 1;
+    }
+
+    private void RunMigrations()
+    {
+        var changed = false;
+
+        if (Version < 4)
+        {
+            Version = 4;
+            changed = true;
+        }
+
+        if (NormalizeSellListOrder(saveChanges: false))
+            changed = true;
+
+        if (changed)
+            Save();
+    }
 
     #endregion
 }

@@ -110,7 +110,7 @@ public sealed class ConfigWindow : Window, IDisposable
         var rows = BuildFilteredSellListRows();
         ImGui.TextDisabled($"{rows.Count} item(s)");
 
-        DrawSellListTable(rows);
+        DrawSellListTable(rows, list.Count);
     }
 
     private void DrawRetainersTab()
@@ -165,7 +165,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private System.Collections.Generic.List<Configuration.SellListEntry> BuildFilteredSellListRows()
     {
-        var list = _config.SellList;
+        var ordered = _config.GetSellListOrdered();
 
         var filter = (_sellListSearch ?? string.Empty).Trim();
         var filterLower = filter.ToLowerInvariant();
@@ -177,7 +177,7 @@ public sealed class ConfigWindow : Window, IDisposable
         var filterIsId = hasFilter && LooksLikeId(filterLower);
         if (filterIsId) uint.TryParse(filterLower, out idFilter);
 
-        return list.Values
+        return ordered
             .Where(e =>
             {
                 if (!hasFilter) return true;
@@ -188,28 +188,29 @@ public sealed class ConfigWindow : Window, IDisposable
                 var name = e.Name ?? string.Empty;
                 return name.ToLowerInvariant().Contains(filterLower);
             })
-            .OrderBy(e => e.Name ?? string.Empty, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(e => e.ItemId)
             .ToList();
     }
 
-    private void DrawSellListTable(System.Collections.Generic.IReadOnlyList<Configuration.SellListEntry> rows)
+    private void DrawSellListTable(System.Collections.Generic.IReadOnlyList<Configuration.SellListEntry> rows, int totalItemCount)
     {
         if (!ImGui.BeginTable(
                 "##sell_list_table",
-                3,
+                4,
                 ImGuiTableFlags.RowBg |
                 ImGuiTableFlags.BordersInnerH |
                 ImGuiTableFlags.BordersV |
                 ImGuiTableFlags.SizingStretchProp))
             return;
 
+        ImGui.TableSetupColumn("Priority", ImGuiTableColumnFlags.WidthFixed, 60f);
         ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.WidthStretch);
-        ImGui.TableSetupColumn("Sell Amount", ImGuiTableColumnFlags.WidthFixed, 80f);
+        ImGui.TableSetupColumn("Min Inv", ImGuiTableColumnFlags.WidthFixed, 60f);
         ImGui.TableSetupColumn("##remove", ImGuiTableColumnFlags.WidthFixed, 60f);
         ImGui.TableHeadersRow();
 
         (uint itemId, bool isHq)? removeKey = null;
+        var priorityChanges = new System.Collections.Generic.List<(uint itemId, bool isHq, int newOrder)>();
+        var rowIndex = 0;
 
         foreach (var e in rows)
         {
@@ -218,18 +219,38 @@ public sealed class ConfigWindow : Window, IDisposable
             // Use a stable ID scope per row so InputInt doesn’t collide.
             ImGui.PushID($"{e.ItemId}:{(e.IsHq ? 1 : 0)}");
 
-            // Column 0: Item name
+            // Column 0: Priority input
             ImGui.TableSetColumnIndex(0);
+            var priorityValue = e.SortOrder > 0 ? e.SortOrder : (rowIndex + 1);
+            ImGui.SetNextItemWidth(-1);
+            ImGui.InputInt(
+                $"##priority_{e.ItemId}_{(e.IsHq ? 1 : 0)}",
+                ref priorityValue,
+                0,
+                0);
+
+            if (ImGui.IsItemDeactivatedAfterEdit())
+            {
+                var clamped = Math.Clamp(priorityValue, 1, Math.Max(1, totalItemCount));
+                if (clamped != e.SortOrder)
+                    priorityChanges.Add((e.ItemId, e.IsHq, clamped));
+            }
+
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                ImGui.SetTooltip("Lower numbers are processed first. Higher numbers move items later in the queue.");
+
+            // Column 0: Item name
+            ImGui.TableSetColumnIndex(1);
             var displayName = string.IsNullOrWhiteSpace(e.Name) ? $"(Unknown) [{e.ItemId}]" : e.Name;
             ImGui.TextUnformatted(displayName);
 
             // Column 1: Min inventory editor
-            ImGui.TableSetColumnIndex(1);
+            ImGui.TableSetColumnIndex(2);
 
             var s = e.MinCountToSell.ToString();
             ImGui.SetNextItemWidth(-1);
 
-            if (ImGui.InputText($"##minsell_{e.ItemId}", ref s, 8, ImGuiInputTextFlags.CharsDecimal))
+            if (ImGui.InputText($"##minsell_{e.ItemId}_{(e.IsHq ? 1 : 0)}", ref s, 8, ImGuiInputTextFlags.CharsDecimal))
             {
                 if (int.TryParse(s, out var parsed))
                 {
@@ -248,14 +269,25 @@ public sealed class ConfigWindow : Window, IDisposable
                 ImGui.SetTooltip("Item will be listed only when your inventory count is at least this number.");
 
             // Column 2: Remove button
-            ImGui.TableSetColumnIndex(2);
+            ImGui.TableSetColumnIndex(3);
             if (ImGui.Button($"Remove##sell_{e.ItemId}_{(e.IsHq ? 1 : 0)}"))
                 removeKey = (e.ItemId, e.IsHq);
 
             ImGui.PopID();
+            rowIndex++;
         }
 
         ImGui.EndTable();
+
+        if (priorityChanges.Count > 0)
+        {
+            var changed = false;
+            foreach (var change in priorityChanges)
+                changed |= _config.TrySetSellItemOrder(change.itemId, change.isHq, change.newOrder);
+
+            if (changed)
+                SaveConfig();
+        }
 
         if (removeKey.HasValue)
         {

@@ -145,11 +145,12 @@ internal sealed class ContextMenuManager : IDisposable
             OnClicked = _ =>
             {
                 var clickPosition = ImGui.GetMousePos();
-                _minCountPopup.Show(itemId, isHq, itemName, (id, hq, minCount) =>
+                var defaultPriority = _config.GetAppendSortOrder();
+                _minCountPopup.Show(itemId, isHq, itemName, (id, hq, minCount, priority) =>
                 {
-                    if (_config.TryAddSellItemWithMinCount(id, hq, itemName, minCount))
+                    if (_config.TryAddSellItemWithMinCount(id, hq, itemName, minCount, priority))
                         _config.Save();
-                }, clickPosition);
+                }, clickPosition, defaultPriority);
             }
         });
     }

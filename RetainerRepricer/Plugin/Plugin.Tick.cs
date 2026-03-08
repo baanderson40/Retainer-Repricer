@@ -70,7 +70,7 @@ public unsafe sealed partial class Plugin
 
                     // Build per-retainer sell queue (runs after repricing).
                     _sellQueue.Clear();
-                    foreach (var e in Configuration.GetSellListSorted())
+                    foreach (var e in Configuration.GetSellListOrdered())
                     {
                         if (e.ItemId == 0) continue;
 

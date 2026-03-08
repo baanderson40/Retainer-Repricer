@@ -15,9 +15,11 @@ internal sealed class MinCountPopup : Window, IDisposable
     private uint _pendingItemId;
     private bool _pendingIsHq;
     private string _pendingItemName = string.Empty;
-    private Action<uint, bool, int>? _pendingCallback;
+    private Action<uint, bool, int, int>? _pendingCallback;
     private Vector2? _pendingAnchorPosition;
     private string _inputText = "1";
+    private string _priorityText = "1";
+    private int _priorityMax = 1;
     private bool _initialPositionSet;
 
     public MinCountPopup()
@@ -26,11 +28,11 @@ internal sealed class MinCountPopup : Window, IDisposable
             ImGuiWindowFlags.AlwaysAutoResize
         )
     {
-        Size = new(250, 140);
+        Size = new(285, 160);
         SizeConstraints = new WindowSizeConstraints
         {
-            MinimumSize = new(200, 130),
-            MaximumSize = new(360, 200),
+            MinimumSize = new(200, 150),
+            MaximumSize = new(400, 260),
         };
         Flags = ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoCollapse;
         IsOpen = false;
@@ -40,8 +42,9 @@ internal sealed class MinCountPopup : Window, IDisposable
         uint itemId,
         bool isHq,
         string itemName,
-        Action<uint, bool, int> onConfirm,
-        Vector2? anchorPosition = null)
+        Action<uint, bool, int, int> onConfirm,
+        Vector2? anchorPosition = null,
+        int defaultPriority = 1)
     {
         _pendingItemId = itemId;
         _pendingIsHq = isHq;
@@ -49,6 +52,8 @@ internal sealed class MinCountPopup : Window, IDisposable
         _pendingCallback = onConfirm;
         _pendingAnchorPosition = anchorPosition;
         _inputText = "1";
+        _priorityMax = Math.Max(1, defaultPriority);
+        _priorityText = _priorityMax.ToString();
         _initialPositionSet = false;
 
         IsOpen = true;
@@ -58,8 +63,8 @@ internal sealed class MinCountPopup : Window, IDisposable
     {
         ApplyPendingPosition();
 
-        const float labelWidth = 80f;
-        const float minValueWidth = 140f;
+        const float labelWidth = 47f;
+        const float minValueWidth = 100f;
         var spacingY = ImGui.GetStyle().ItemSpacing.Y;
 
         var itemLabel = BuildItemLabel();
@@ -67,6 +72,8 @@ internal sealed class MinCountPopup : Window, IDisposable
         ImGui.Dummy(new Vector2(0, spacingY));
 
         DrawCenteredInputRow(labelWidth, minValueWidth);
+        ImGui.Dummy(new Vector2(0, spacingY));
+        DrawPriorityInputRow(labelWidth, minValueWidth);
 
         ImGui.Dummy(new Vector2(0, spacingY));
 
@@ -76,7 +83,7 @@ internal sealed class MinCountPopup : Window, IDisposable
     private void DrawCenteredButtons()
     {
         const float buttonWidth = 100f;
-        const float buttonSpacing = 12f;
+        const float buttonSpacing = 16f;
 
         var region = ImGui.GetContentRegionAvail().X;
         var totalButtonWidth = (buttonWidth * 2) + buttonSpacing;
@@ -100,7 +107,13 @@ internal sealed class MinCountPopup : Window, IDisposable
             }
 
             minCount = Math.Clamp(minCount, 1, 999);
-            _pendingCallback?.Invoke(_pendingItemId, _pendingIsHq, minCount);
+
+            if (!int.TryParse(_priorityText, out var priority))
+                priority = _priorityMax;
+
+            priority = Math.Clamp(priority, 1, _priorityMax);
+
+            _pendingCallback?.Invoke(_pendingItemId, _pendingIsHq, minCount, priority);
             IsOpen = false;
         }
 
@@ -152,7 +165,7 @@ internal sealed class MinCountPopup : Window, IDisposable
 
         ImGui.SetCursorPos(new Vector2(rowStartX, cursor.Y));
         ImGui.AlignTextToFramePadding();
-        ImGui.TextUnformatted("Min Count");
+        ImGui.TextUnformatted("Min Inv");
 
         ImGui.SetCursorPos(new Vector2(valueStartX, cursor.Y));
         ImGui.SetNextItemWidth(valueWidth);
@@ -165,6 +178,39 @@ internal sealed class MinCountPopup : Window, IDisposable
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
         {
             ImGui.SetTooltip("Items will be listed only when you have at least this many in your inventory.");
+        }
+
+        var nextY = MathF.Max(ImGui.GetCursorPosY(), cursor.Y + ImGui.GetTextLineHeightWithSpacing());
+        ImGui.SetCursorPos(new Vector2(cursor.X, nextY));
+    }
+
+    private void DrawPriorityInputRow(float labelWidth, float minValueWidth)
+    {
+        var spacingX = ImGui.GetStyle().ItemSpacing.X;
+        var region = ImGui.GetContentRegionAvail().X;
+        var valueWidth = MathF.Max(minValueWidth, region - labelWidth - spacingX);
+        var rowWidth = labelWidth + spacingX + valueWidth;
+        var rowStartOffset = MathF.Max(0f, (region - rowWidth) * 0.5f);
+
+        var cursor = ImGui.GetCursorPos();
+        var rowStartX = cursor.X + rowStartOffset;
+        var valueStartX = rowStartX + labelWidth + spacingX;
+
+        ImGui.SetCursorPos(new Vector2(rowStartX, cursor.Y));
+        ImGui.AlignTextToFramePadding();
+        ImGui.TextUnformatted("Priority");
+
+        ImGui.SetCursorPos(new Vector2(valueStartX, cursor.Y));
+        ImGui.SetNextItemWidth(valueWidth);
+        if (ImGui.InputTextWithHint("##priority_input", _priorityMax.ToString(), ref _priorityText, 8, ImGuiInputTextFlags.CharsDecimal)
+            && string.IsNullOrWhiteSpace(_priorityText))
+        {
+            _priorityText = _priorityMax.ToString();
+        }
+
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+        {
+            ImGui.SetTooltip("Lower numbers run first. Enter 1 to add at the top, or leave the default to append.");
         }
 
         var nextY = MathF.Max(ImGui.GetCursorPosY(), cursor.Y + ImGui.GetTextLineHeightWithSpacing());
