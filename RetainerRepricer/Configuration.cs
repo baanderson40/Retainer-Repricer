@@ -12,7 +12,7 @@ public sealed class Configuration : IPluginConfiguration
     #region Dalamud config versioning
 
     // Dalamud serialization schema version; bump when config layout changes.
-    public int Version { get; set; } = 5;
+    public int Version { get; set; } = 7;
 
     [NonSerialized]
     private IDalamudPluginInterface? _pluginInterface;
@@ -67,6 +67,9 @@ public sealed class Configuration : IPluginConfiguration
     // Remembers whether the offset sliders are expanded in the config UI.
     public bool ShowOverlayOffsetControls { get; set; } = false;
 
+    // Controls whether the Advanced tab is visible in the config UI.
+    public bool ShowAdvancedSettingsTab { get; set; } = false;
+
     #endregion
 
     #region Pricing gate
@@ -109,6 +112,34 @@ public sealed class Configuration : IPluginConfiguration
 
     public void SetSmartSortLastRunUtc(DateTime utc)
         => SmartSortLastRunTicks = utc <= DateTime.MinValue ? 0 : utc.ToUniversalTime().Ticks;
+
+    #endregion
+
+    #region Advanced automation tuning
+
+    // Pricing aggression / validation controls.
+    public int UndercutAmount { get; set; } = 1;
+    public float MarketValidationThreshold { get; set; } = 2.0f;
+
+    // Automation pacing (seconds unless noted).
+    public double ActionIntervalSeconds { get; set; } = 0.15d;
+    public double RetainerSyncIntervalSeconds { get; set; } = 2.0d;
+    public double ItemSearchResultThrottleBackoffSeconds { get; set; } = 1.0d;
+    public double MbBaseIntervalSeconds { get; set; } = 1.5d;
+    public double MbIntervalMinSeconds { get; set; } = 1.0d;
+    public double MbIntervalMaxSeconds { get; set; } = 2.0d;
+    public double MbJitterMaxSeconds { get; set; } = 0.10d;
+    public double IsrNoItemsSettleSeconds { get; set; } = 0.5d;
+    public double IsrHqFilterInitialDelaySeconds { get; set; } = 1.25d;
+    public double IsrHqFilterUiDebounceSeconds { get; set; } = 0.20d;
+    public double IsrHqFilterOpenRetrySeconds { get; set; } = 0.30d;
+    public double IsrHqFilterPostOpenSeconds { get; set; } = 0.15d;
+    public double FrameworkTickIntervalSeconds { get; set; } = 0.075d;
+
+    // Smart sort scoring constants.
+    public double SmartSortVelocityCap { get; set; } = 100.0d;
+    public double SmartSortVelocityLogBase { get; set; } = 101.0d;
+    public double SmartSortPriceLogBase { get; set; } = 100001.0d;
 
     #endregion
 
@@ -333,6 +364,37 @@ public sealed class Configuration : IPluginConfiguration
             if (SmartSortRefreshMinutes <= 0)
                 SmartSortRefreshMinutes = 30;
 
+            changed = true;
+        }
+
+        if (Version < 6)
+        {
+            Version = 6;
+            ShowAdvancedSettingsTab = false;
+            changed = true;
+        }
+
+        if (Version < 7)
+        {
+            Version = 7;
+            UndercutAmount = 1;
+            MarketValidationThreshold = 2.0f;
+            ActionIntervalSeconds = 0.15d;
+            RetainerSyncIntervalSeconds = 2.0d;
+            ItemSearchResultThrottleBackoffSeconds = 1.0d;
+            MbBaseIntervalSeconds = 1.5d;
+            MbIntervalMinSeconds = 1.0d;
+            MbIntervalMaxSeconds = 2.0d;
+            MbJitterMaxSeconds = 0.10d;
+            IsrNoItemsSettleSeconds = 0.5d;
+            IsrHqFilterInitialDelaySeconds = 1.25d;
+            IsrHqFilterUiDebounceSeconds = 0.20d;
+            IsrHqFilterOpenRetrySeconds = 0.30d;
+            IsrHqFilterPostOpenSeconds = 0.15d;
+            FrameworkTickIntervalSeconds = 0.075d;
+            SmartSortVelocityCap = 100.0d;
+            SmartSortVelocityLogBase = 101.0d;
+            SmartSortPriceLogBase = 100001.0d;
             changed = true;
         }
 

@@ -342,7 +342,7 @@ public unsafe sealed partial class Plugin
         public bool HasAppliedStagedPrice { get; set; }
         public bool IsrThrottleRetried { get; set; }
         public DateTime IsrThrottleUntilUtc { get; set; } = DateTime.MinValue;
-        public double MbIntervalSeconds { get; set; } = MbBaseIntervalSeconds;
+        public double MbIntervalSeconds { get; set; } = 1.5d;
         public DateTime LastMbQueryUtc { get; set; } = DateTime.MinValue;
         public DateTime IsrOpenedUtc { get; set; } = DateTime.MinValue;
         public int IsrNoItemsConfirm { get; set; }

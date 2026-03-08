@@ -9,9 +9,6 @@ namespace RetainerRepricer.Services;
 
 internal sealed class SellListSmartSorter : IDisposable
 {
-    private const double VelocityCap = 100.0;
-    private const double VelocityLogBase = 101.0;
-    private const double PriceLogBase = 100000.0 + 1.0;
 
     private readonly Configuration _config;
     private readonly UniversalisApiClient _universalis;
@@ -164,7 +161,7 @@ internal sealed class SellListSmartSorter : IDisposable
         _sortLock.Dispose();
     }
 
-    private static double ComputeVelocityScore(double? velocity)
+    private double ComputeVelocityScore(double? velocity)
     {
         if (velocity is null || velocity <= 0)
             return 0d;
@@ -176,7 +173,7 @@ internal sealed class SellListSmartSorter : IDisposable
         return score > 1d ? 1d : score;
     }
 
-    private static double ComputePriceScore(decimal? price)
+    private double ComputePriceScore(decimal? price)
     {
         if (price is null || price <= 0)
             return 0d;
@@ -194,4 +191,8 @@ internal sealed class SellListSmartSorter : IDisposable
         public double VelocityScore { get; set; }
         public double PriceScore { get; set; }
     }
+
+    private double VelocityCap => _config.SmartSortVelocityCap > 0d ? _config.SmartSortVelocityCap : 100d;
+    private double VelocityLogBase => _config.SmartSortVelocityLogBase > 1d ? _config.SmartSortVelocityLogBase : 101d;
+    private double PriceLogBase => _config.SmartSortPriceLogBase > 1d ? _config.SmartSortPriceLogBase : 100001d;
 }

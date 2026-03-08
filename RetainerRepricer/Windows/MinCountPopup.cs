@@ -22,6 +22,7 @@ internal sealed class MinCountPopup : Window, IDisposable
     private int _priorityMax = 1;
     private bool _initialPositionSet;
     private bool _smartSortEnabled;
+    private bool _pendingInputFocus;
 
     public MinCountPopup()
         : base(
@@ -58,6 +59,7 @@ internal sealed class MinCountPopup : Window, IDisposable
         _priorityText = _priorityMax.ToString();
         _initialPositionSet = false;
         _smartSortEnabled = smartSortEnabled;
+        _pendingInputFocus = true;
 
         IsOpen = true;
     }
@@ -97,6 +99,7 @@ internal sealed class MinCountPopup : Window, IDisposable
         ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(buttonSpacing, ImGui.GetStyle().ItemSpacing.Y));
         if (ImGui.Button("Cancel", new Vector2(buttonWidth, 0)))
         {
+            _pendingInputFocus = false;
             IsOpen = false;
         }
 
@@ -104,20 +107,7 @@ internal sealed class MinCountPopup : Window, IDisposable
 
         if (ImGui.Button("Add to Sell", new Vector2(buttonWidth, 0)))
         {
-            if (!int.TryParse(_inputText, out var minCount))
-            {
-                minCount = 1;
-            }
-
-            minCount = Math.Clamp(minCount, 1, 999);
-
-            if (!int.TryParse(_priorityText, out var priority))
-                priority = _priorityMax;
-
-            priority = Math.Clamp(priority, 1, _priorityMax);
-
-            _pendingCallback?.Invoke(_pendingItemId, _pendingIsHq, minCount, priority);
-            IsOpen = false;
+            ConfirmAdd();
         }
 
         ImGui.PopStyleVar();
@@ -172,10 +162,22 @@ internal sealed class MinCountPopup : Window, IDisposable
 
         ImGui.SetCursorPos(new Vector2(valueStartX, cursor.Y));
         ImGui.SetNextItemWidth(valueWidth);
-        if (ImGui.InputTextWithHint("##mincount_input", "1", ref _inputText, 8, ImGuiInputTextFlags.CharsDecimal)
+        ApplyInputFocusIfNeeded();
+        if (ImGui.InputTextWithHint(
+                "##mincount_input",
+                "1",
+                ref _inputText,
+                8,
+                ImGuiInputTextFlags.CharsDecimal | ImGuiInputTextFlags.AutoSelectAll)
             && string.IsNullOrWhiteSpace(_inputText))
         {
             _inputText = "1";
+        }
+
+        if (ImGui.IsItemFocused()
+            && (ImGui.IsKeyPressed(ImGuiKey.Enter) || ImGui.IsKeyPressed(ImGuiKey.KeypadEnter)))
+        {
+            ConfirmAdd();
         }
 
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
@@ -276,5 +278,35 @@ internal sealed class MinCountPopup : Window, IDisposable
         ImGui.SetWindowPos(centeredPosition, ImGuiCond.Once);
 
         _initialPositionSet = true;
+    }
+
+    private void ApplyInputFocusIfNeeded()
+    {
+        if (!_pendingInputFocus)
+            return;
+
+        ImGui.SetKeyboardFocusHere();
+        _pendingInputFocus = false;
+    }
+
+    private void ConfirmAdd()
+    {
+        if (!int.TryParse(_inputText, out var minCount))
+        {
+            minCount = 1;
+        }
+
+        minCount = Math.Clamp(minCount, 1, 999);
+
+        if (!int.TryParse(_priorityText, out var priority))
+        {
+            priority = _priorityMax;
+        }
+
+        priority = Math.Clamp(priority, 1, _priorityMax);
+
+        _pendingCallback?.Invoke(_pendingItemId, _pendingIsHq, minCount, priority);
+        _pendingInputFocus = false;
+        IsOpen = false;
     }
 }

@@ -41,34 +41,26 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
     private const ushort InfoTagColor = 34;
     private const ushort ErrorTagColor = 14;
     private const ushort SuccessTagColor = 45;
-    private const int UndercutAmount = 1;
-    private const float MarketValidationThreshold = 2.0f;  // Can be made configurable later
 
-    // General pacing between UI actions. Keep conservative while iterating on UI stability.
-    private const double ActionIntervalSeconds = 0.15;
+    #endregion
 
-    private const double RetainerSyncIntervalSeconds = 2.0;
+    #region Config-driven tuning accessors
 
-    // ItemSearchResult throttle handling ("Please wait and try your search again")
-    private const double ItemSearchResultThrottleBackoffSeconds = 1.0;
-
-    // Market query pacing (keeps Compare Prices calls from tripping server-side throttles)
-    private const double MbBaseIntervalSeconds = 1.5;
-    private const double MbIntervalMinSeconds = 1.0;
-    private const double MbIntervalMaxSeconds = 2.0;
-    private const double MbJitterMaxSeconds = 0.10;
-
-    // ISR settle gate: early "No items found" can flash before rows populate.
-    private const double IsrNoItemsSettleSeconds = 0.5;
-
-    // ISR HQ filter timing
-    private const double IsrHqFilterInitialDelaySeconds = 1.25;   // Seconds to wait after ISR opens before attempting the HQ-filter fallback.
-    private const double IsrHqFilterUiDebounceSeconds = 0.20;     // Seconds the HQ filter UI must remain visible before clicking toggle/accept (UI settle/animation debounce).
-    private const double IsrHqFilterOpenRetrySeconds = 0.30;      // Seconds between attempts to open the ItemSearchFilter window if it didn’t appear.
-    private const double IsrHqFilterPostOpenSeconds = 0.15;       // Seconds to wait after requesting the filter window before interacting with it.
-
-    // Framework tick throttle (outer gate). TickRun has its own pacing too.
-    private const double FrameworkTickIntervalSeconds = 0.075;
+    private int UndercutAmount => Configuration.UndercutAmount;
+    private float MarketValidationThreshold => Configuration.MarketValidationThreshold;
+    private double ActionIntervalSeconds => Configuration.ActionIntervalSeconds;
+    private double RetainerSyncIntervalSeconds => Configuration.RetainerSyncIntervalSeconds;
+    private double ItemSearchResultThrottleBackoffSeconds => Configuration.ItemSearchResultThrottleBackoffSeconds;
+    private double MbBaseIntervalSeconds => Configuration.MbBaseIntervalSeconds;
+    private double MbIntervalMinSeconds => Configuration.MbIntervalMinSeconds;
+    private double MbIntervalMaxSeconds => Configuration.MbIntervalMaxSeconds;
+    private double MbJitterMaxSeconds => Configuration.MbJitterMaxSeconds;
+    private double IsrNoItemsSettleSeconds => Configuration.IsrNoItemsSettleSeconds;
+    private double IsrHqFilterInitialDelaySeconds => Configuration.IsrHqFilterInitialDelaySeconds;
+    private double IsrHqFilterUiDebounceSeconds => Configuration.IsrHqFilterUiDebounceSeconds;
+    private double IsrHqFilterOpenRetrySeconds => Configuration.IsrHqFilterOpenRetrySeconds;
+    private double IsrHqFilterPostOpenSeconds => Configuration.IsrHqFilterPostOpenSeconds;
+    private double FrameworkTickIntervalSeconds => Configuration.FrameworkTickIntervalSeconds;
 
     #endregion
 
@@ -128,6 +120,8 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         WindowSystem.AddWindow(MinCountPopup);
 
         _uiReader = new Ui.UiReader(GameGui);
+
+        _mbIntervalSec = Configuration.MbBaseIntervalSeconds;
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
@@ -455,7 +449,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
     #region Decision helpers
 
-    private static int DecideNewPrice(int lowestPrice, bool sellerIsMine)
+    private int DecideNewPrice(int lowestPrice, bool sellerIsMine)
     {
         if (sellerIsMine) return lowestPrice;
 
