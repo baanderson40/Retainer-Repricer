@@ -8,6 +8,7 @@ Fully automated Dalamud plugin for Final Fantasy XIV that reprices and relists r
 - Cycles every enabled retainer at a summoning bell with zero manual input.
 - Reprices existing listings using Universalis market data and applies a fixed 1-gil undercut to the validated lowest listing.
 - Optionally lists new inventory items through a configurable Sell List with HQ/NQ awareness.
+- Universalis-powered smart sorting automatically reorders Sell List entries using sale velocity and average price so high-churn, high-value items are prioritized (with a manual "Smart Sort" trigger when needed).
 - Navigates, confirms, and closes all FFXIV UI panels safely, guaranteeing a clean return path.
 - Persists configuration immediately so stop/start cycles never lose selections.
 
@@ -23,6 +24,7 @@ Fully automated Dalamud plugin for Final Fantasy XIV that reprices and relists r
 ## Configuration
 - **Retainer Enablement:** Enable specific retainers from the main window; only checked retainers participate in automation.
 - **Sell List:** Use the inventory context-menu integration to add or remove items the plugin may list automatically when inventory has stock.
+- **Smart Sorting:** When Universalis access is enabled, turn on smart sorting to keep Sell List priorities in sync with Universalis sale velocity + average price; tweak velocity/price weights, auto-refresh cadence, or click the right-aligned “Smart Sort” button to trigger a manual reorder.
 - **Pricing Gate:** Toggle whether Universalis floor averages inform listings, set the percent threshold for skipping thin markets, and opt into Universalis fallback when the board is empty.
 - **Status Overlay:** Displays current state machine phase, latest action timestamp, and any throttling timer.
 - All settings persist instantly; no explicit save step is required.
@@ -70,6 +72,7 @@ Fully automated Dalamud plugin for Final Fantasy XIV that reprices and relists r
 - **Nothing happens when I press Start:** Confirm at least one retainer is enabled and the character is engaged with a summoning bell.
 - **Plugin stops mid-retainer:** Check the Dalamud logs for `[RR]` or `[RL]` messages; most errors indicate a blocked addon (usually an unclosed context menu).
 - **Prices seem stale:** Universalis responses are cached per item; manually refresh by waiting for the next cycle or clearing the cache via the configuration window.
+- **Smart sort button disabled:** Hover the button to see why—either Universalis averages or smart sorting is disabled in Settings, or a smart sort is currently running.
 - **Context menu entries missing:** Make sure Dalamud's inventory context menu integration is permitted and no conflicting plugins override it.
 - **Retainer slots skipped:** Ensure the Sell List matches actual inventory items and that HQ/NQ filters are set appropriately.
 
