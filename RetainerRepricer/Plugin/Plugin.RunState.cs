@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Threading.Tasks;
 
 namespace RetainerRepricer;
@@ -83,6 +84,8 @@ public unsafe sealed partial class Plugin
 
     private bool ShouldReprice => _runMode != RunMode.SellOnly;
     private bool ShouldSell => _runMode != RunMode.PriceOnly;
+    private bool ShouldRepriceThisRetainer => ShouldReprice && _currentRetainerAllowsReprice;
+    private bool ShouldSellThisRetainer => ShouldSell && _currentRetainerAllowsSell;
 
     private DateTime _lastActionUtc = DateTime.MinValue;
     private DateTime _lastFrameworkTickUtc = DateTime.MinValue;
@@ -92,7 +95,12 @@ public unsafe sealed partial class Plugin
     private readonly MarketContextState _marketState = new();
     private readonly UniversalisGateState _universalisState = new();
 
-    private List<int> _retainerRowOrder => _retainerCycle.RowOrder;
+    private bool _currentRetainerAllowsReprice;
+    private bool _currentRetainerAllowsSell;
+    private int _currentRetainerRowIndex = -1;
+    private string _currentRetainerName = string.Empty;
+
+    private List<RetainerRowEntry> _retainerRowOrder => _retainerCycle.RowOrder;
 
     private int _retainerRowPos
     {
@@ -290,6 +298,18 @@ public unsafe sealed partial class Plugin
         set => _universalisState.AveragePrice = value;
     }
 
+    private string DescribeCurrentRetainerForLog()
+    {
+        var rowLabel = _currentRetainerRowIndex < 0
+            ? "?"
+            : _currentRetainerRowIndex.ToString(CultureInfo.InvariantCulture);
+
+        if (string.IsNullOrWhiteSpace(_currentRetainerName))
+            return rowLabel;
+
+        return $"{rowLabel}:{_currentRetainerName}";
+    }
+
     private int? _universalisPriceFloor
     {
         get => _universalisState.PriceFloor;
@@ -312,9 +332,17 @@ public unsafe sealed partial class Plugin
 
     private sealed class RetainerCycleState
     {
-        public List<int> RowOrder { get; } = new();
+        public List<RetainerRowEntry> RowOrder { get; } = new();
         public int RowPos { get; set; } = -1;
         public DateTime LastRetainerSyncUtc { get; set; } = DateTime.MinValue;
+    }
+
+    private readonly struct RetainerRowEntry
+    {
+        public int RowIndex { get; init; }
+        public string Name { get; init; }
+        public bool AllowSell { get; init; }
+        public bool AllowReprice { get; init; }
     }
 
     private sealed class SellWorkflowState

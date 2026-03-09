@@ -126,10 +126,15 @@ public unsafe sealed partial class Plugin
                     _mbIntervalSec = MbBaseIntervalSeconds;
                     _lastMbQueryUtc = DateTime.MinValue;
 
-                    var row = _retainerRowOrder[_retainerRowPos];
-                    Log.Information($"[RR] Opening retainer row {row} ({_retainerRowPos + 1}/{_retainerRowOrder.Count})");
+                    var entry = _retainerRowOrder[_retainerRowPos];
+                    _currentRetainerAllowsReprice = entry.AllowReprice;
+                    _currentRetainerAllowsSell = entry.AllowSell;
+                    _currentRetainerRowIndex = entry.RowIndex;
+                    _currentRetainerName = entry.Name ?? string.Empty;
 
-                    TryClickRetainerListEntry(row);
+                    Log.Information($"[RR] Opening retainer {DescribeCurrentRetainerForLog()} ({_retainerRowPos + 1}/{_retainerRowOrder.Count})");
+
+                    TryClickRetainerListEntry(_currentRetainerRowIndex);
 
                     _runPhase = RunPhase.WaitingTalk;
                     _lastActionUtc = now;
@@ -148,7 +153,7 @@ public unsafe sealed partial class Plugin
                             return;
                         }
 
-                        Log.Debug($"[RR] SelectString opened for row {_retainerRowOrder[_retainerRowPos]}; selecting Sell items.");
+                        Log.Debug($"[RR] SelectString opened for {DescribeCurrentRetainerForLog()}; selecting Sell items.");
                         TrySelectSellItems();
 
                         _runPhase = RunPhase.WaitingRetainerSellList;
@@ -158,7 +163,7 @@ public unsafe sealed partial class Plugin
 
                     if (talkVisible)
                     {
-                        Log.Debug($"[RR] Talk open for row {_retainerRowOrder[_retainerRowPos]}; advancing.");
+                        Log.Debug($"[RR] Talk open for {DescribeCurrentRetainerForLog()}; advancing.");
                         var ok = TryAdvanceTalk();
                         Log.Debug(ok ? "[RR] Talk click sent." : "[RR] Talk click failed.");
 
@@ -182,7 +187,7 @@ public unsafe sealed partial class Plugin
                             return;
                         }
 
-                        Log.Debug($"[RR] SelectString opened for row {_retainerRowOrder[_retainerRowPos]}; selecting Sell items.");
+                        Log.Debug($"[RR] SelectString opened for {DescribeCurrentRetainerForLog()}; selecting Sell items.");
                         TrySelectSellItems();
 
                         _runPhase = RunPhase.WaitingRetainerSellList;
@@ -192,7 +197,7 @@ public unsafe sealed partial class Plugin
 
                     if (talkVisible)
                     {
-                        Log.Debug($"[RR] Talk open (late) for row {_retainerRowOrder[_retainerRowPos]}; advancing.");
+                        Log.Debug($"[RR] Talk open (late) for {DescribeCurrentRetainerForLog()}; advancing.");
                         var ok = TryAdvanceTalk();
                         Log.Debug(ok ? "[RR] Talk click sent." : "[RR] Talk click failed.");
 
@@ -233,19 +238,41 @@ public unsafe sealed partial class Plugin
                         Log.Information($"[RR] Entered RetainerSellList. Listed={_listedCountThisRetainer}; new sells capacity={_sellCapacityThisRetainer}");
                     }
 
-                    if (ShouldReprice && _listedCountThisRetainer > 0)
+                    var retainerLabel = DescribeCurrentRetainerForLog();
+
+                    if (ShouldRepriceThisRetainer && _listedCountThisRetainer > 0)
                     {
                         _runPhase = RunPhase.OpeningSellItem;
                     }
-                    else if (ShouldSell)
+                    else if (ShouldSellThisRetainer)
                     {
-                        if (!ShouldReprice)
-                            Log.Information("[RR] Repricing skipped (run mode = sell-only).");
+                        if (!ShouldRepriceThisRetainer)
+                        {
+                            if (!ShouldReprice)
+                                Log.Information("[RR] Repricing skipped (run mode = sell-only).");
+                            else
+                                Log.Information($"[RR] Repricing skipped for {retainerLabel}: retainer setting disables repricing.");
+                        }
                         _runPhase = RunPhase.Sell_FindNextItemInInventory;
                     }
                     else
                     {
-                        Log.Information("[RR] Skipping repricing/selling (run mode disables both phases).");
+                        if (!ShouldRepriceThisRetainer)
+                        {
+                            if (!ShouldReprice)
+                                Log.Information("[RR] Repricing skipped (run mode = sell-only).");
+                            else
+                                Log.Information($"[RR] Repricing skipped for {retainerLabel}: retainer setting disables repricing.");
+                        }
+
+                        if (!ShouldSellThisRetainer)
+                        {
+                            if (!ShouldSell)
+                                Log.Information("[RR] Selling skipped (run mode = price-only).");
+                            else
+                                Log.Information($"[RR] Selling skipped for {retainerLabel}: retainer setting disables selling.");
+                        }
+
                         _runPhase = RunPhase.ExitToRetainerList;
                     }
 
@@ -259,9 +286,9 @@ public unsafe sealed partial class Plugin
 
             case RunPhase.OpeningSellItem:
                 {
-                    if (!ShouldReprice)
+                    if (!ShouldRepriceThisRetainer)
                     {
-                        _runPhase = ShouldSell
+                        _runPhase = ShouldSellThisRetainer
                             ? RunPhase.Sell_FindNextItemInInventory
                             : RunPhase.ExitToRetainerList;
                         _lastActionUtc = now;
@@ -1021,9 +1048,12 @@ public unsafe sealed partial class Plugin
 
             case RunPhase.Sell_FindNextItemInInventory:
                 {
-                    if (!ShouldSell)
+                    if (!ShouldSellThisRetainer)
                     {
-                        Log.Information("[RR] Sell phase skipped (run mode = price-only).");
+                        if (!ShouldSell)
+                            Log.Information("[RR] Sell phase skipped (run mode = price-only).");
+                        else
+                            Log.Information($"[RR] Sell phase skipped for {DescribeCurrentRetainerForLog()}: retainer setting disables selling.");
                         _runPhase = RunPhase.ExitToRetainerList;
                         _lastActionUtc = now;
                         return;

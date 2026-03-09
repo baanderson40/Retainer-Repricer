@@ -297,7 +297,15 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.WidthStretch);
         ImGui.TableSetupColumn("Min Inv", ImGuiTableColumnFlags.WidthFixed, 60f);
         ImGui.TableSetupColumn("##remove", ImGuiTableColumnFlags.WidthFixed, 30f);
-        ImGui.TableHeadersRow();
+        ImGui.TableNextRow(ImGuiTableRowFlags.Headers);
+        ImGui.TableSetColumnIndex(0);
+        DrawHeaderLabel("Priority", center: true);
+        ImGui.TableSetColumnIndex(1);
+        DrawHeaderLabel("Item", center: false);
+        ImGui.TableSetColumnIndex(2);
+        DrawHeaderLabel("Min Inv", center: true);
+        ImGui.TableSetColumnIndex(3);
+        DrawHeaderLabel(string.Empty, center: true);
 
         (uint itemId, bool isHq)? removeKey = null;
         var priorityChanges = new System.Collections.Generic.List<(uint itemId, bool isHq, int newOrder)>();
@@ -313,7 +321,10 @@ public sealed class ConfigWindow : Window, IDisposable
             // Column 0: Priority input
             ImGui.TableSetColumnIndex(0);
             var priorityValue = e.SortOrder > 0 ? e.SortOrder : (rowIndex + 1);
-            ImGui.SetNextItemWidth(-1);
+            var priorityColumnWidth = ImGui.GetColumnWidth();
+            var priorityInputWidth = Math.Clamp(priorityColumnWidth - 8f, 30f, 70f);
+            BeginCenteredElement(priorityInputWidth);
+            ImGui.SetNextItemWidth(priorityInputWidth);
             var priorityTooltip = smartSortActive
                 ? "Priority is managed by smart sorting. The current order is shown for reference."
                 : "Lower numbers are processed first. Higher numbers move items later in the queue.";
@@ -353,7 +364,10 @@ public sealed class ConfigWindow : Window, IDisposable
             ImGui.TableSetColumnIndex(2);
 
             var s = e.MinCountToSell.ToString();
-            ImGui.SetNextItemWidth(-1);
+            var minColumnWidth = ImGui.GetColumnWidth();
+            var minInputWidth = Math.Clamp(minColumnWidth - 8f, 30f, 70f);
+            BeginCenteredElement(minInputWidth);
+            ImGui.SetNextItemWidth(minInputWidth);
 
             if (ImGui.InputText($"##minsell_{e.ItemId}_{(e.IsHq ? 1 : 0)}", ref s, 8, ImGuiInputTextFlags.CharsDecimal))
             {
@@ -375,8 +389,11 @@ public sealed class ConfigWindow : Window, IDisposable
 
             // Column 2: Remove button
             ImGui.TableSetColumnIndex(3);
+            var trashIcon = FontAwesomeIcon.Trash.ToIconString();
             ImGui.PushFont(UiBuilder.IconFont);
-            if (ImGui.Button($"{FontAwesomeIcon.Trash.ToIconString()}##sell_{e.ItemId}_{(e.IsHq ? 1 : 0)}"))
+            var removeWidth = ImGui.CalcTextSize(trashIcon).X + (ImGui.GetStyle().FramePadding.X * 2f);
+            BeginCenteredElement(removeWidth);
+            if (ImGui.Button($"{trashIcon}##sell_{e.ItemId}_{(e.IsHq ? 1 : 0)}", new System.Numerics.Vector2(removeWidth, 0f)))
                 removeKey = (e.ItemId, e.IsHq);
             ImGui.PopFont();
 
@@ -416,9 +433,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawRetainerEnableList()
     {
-        ImGui.TextDisabled("Disabling a retainer stops repricing and selling.");
-
-        var names = _config.RetainersEnabled.Keys
+        var names = _config.GetAllRetainerNames()
             .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
@@ -434,42 +449,171 @@ public sealed class ConfigWindow : Window, IDisposable
 
         ImGui.Spacing();
 
-        foreach (var name in names)
-            DrawRetainerToggle(name);
+        DrawRetainerTable(names);
     }
 
     private void DrawRetainerBulkButtons(System.Collections.Generic.IReadOnlyList<string> names)
     {
         if (ImGui.Button("Enable all"))
         {
+            var changed = false;
             foreach (var n in names)
-                _config.RetainersEnabled[n] = true;
+            {
+                if (!_config.IsRetainerEnabled(n))
+                {
+                    _config.SetRetainerEnabled(n, true);
+                    changed = true;
+                }
+            }
 
-            Plugin.Log.Information("[RR][Config] Enabled all {Count} retainers.", names.Count);
-            SaveConfig();
+            if (changed)
+            {
+                Plugin.Log.Information("[RR][Config] Enabled all {Count} retainers.", names.Count);
+                SaveConfig();
+            }
         }
 
         ImGui.SameLine();
 
         if (ImGui.Button("Disable all"))
         {
+            var changed = false;
             foreach (var n in names)
-                _config.RetainersEnabled[n] = false;
+            {
+                if (_config.IsRetainerEnabled(n))
+                {
+                    _config.SetRetainerEnabled(n, false);
+                    changed = true;
+                }
+            }
 
-            Plugin.Log.Information("[RR][Config] Disabled all {Count} retainers.", names.Count);
-            SaveConfig();
+            if (changed)
+            {
+                Plugin.Log.Information("[RR][Config] Disabled all {Count} retainers.", names.Count);
+                SaveConfig();
+            }
         }
     }
 
-    private void DrawRetainerToggle(string name)
+    private void DrawRetainerTable(System.Collections.Generic.IReadOnlyList<string> names)
     {
-        var enabled = _config.RetainersEnabled[name];
-        if (ImGui.Checkbox(name, ref enabled))
+        if (!ImGui.BeginTable(
+                "##rr_retainers_table",
+                4,
+                ImGuiTableFlags.RowBg |
+                ImGuiTableFlags.BordersInnerH |
+                ImGuiTableFlags.BordersOuter |
+                ImGuiTableFlags.SizingStretchSame))
+            return;
+
+        ImGui.TableSetupColumn("Enable", ImGuiTableColumnFlags.WidthFixed, 45f);
+        ImGui.TableSetupColumn("Retainer", ImGuiTableColumnFlags.WidthStretch);
+        ImGui.TableSetupColumn("Reprice", ImGuiTableColumnFlags.WidthFixed, 45f);
+        ImGui.TableSetupColumn("Sell", ImGuiTableColumnFlags.WidthFixed, 45f);
+
+        ImGui.TableNextRow(ImGuiTableRowFlags.Headers);
+        ImGui.TableSetColumnIndex(0);
+        DrawHeaderLabel("Enable", center: true);
+        ImGui.TableSetColumnIndex(1);
+        DrawHeaderLabel("Retainer", center: false);
+        ImGui.TableSetColumnIndex(2);
+        DrawHeaderLabel("Reprice", center: true);
+        ImGui.TableSetColumnIndex(3);
+        DrawHeaderLabel("Sell", center: true);
+
+        foreach (var name in names)
         {
-            _config.RetainersEnabled[name] = enabled;
-            Plugin.Log.Information("[RR][Config] Retainer '{Name}' enabled={Enabled}", name, enabled);
-            SaveConfig();
+            var behavior = _config.GetRetainerBehavior(name);
+            ImGui.TableNextRow();
+            ImGui.PushID(name);
+
+            ImGui.TableSetColumnIndex(0);
+            var enabled = behavior.Enabled;
+            if (DrawCenteredCheckbox("##retainer_enable", ref enabled))
+            {
+                _config.SetRetainerEnabled(name, enabled);
+                Plugin.Log.Information("[RR][Config] Retainer '{Name}' enabled={Enabled}", name, enabled);
+                SaveConfig();
+            }
+
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            {
+                ImGui.SetTooltip("Master toggle for this retainer. When disabled, both repricing and selling are skipped.");
+            }
+
+            var disableScoped = !enabled;
+            if (disableScoped)
+                ImGui.BeginDisabled();
+
+            ImGui.TableSetColumnIndex(1);
+            if (string.IsNullOrWhiteSpace(name))
+                ImGui.TextDisabled("(Unknown retainer)");
+            else
+                ImGui.TextUnformatted(name);
+
+            ImGui.TableSetColumnIndex(2);
+            var allowReprice = behavior.AllowReprice;
+            if (DrawCenteredCheckbox("##retainer_reprice", ref allowReprice))
+            {
+                _config.SetRetainerRepriceEnabled(name, allowReprice);
+                Plugin.Log.Information("[RR][Config] Retainer '{Name}' reprice={Reprice}", name, allowReprice);
+                SaveConfig();
+            }
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                ImGui.SetTooltip("Allows automation to reprice existing listings for this retainer.");
+
+            ImGui.TableSetColumnIndex(3);
+            var allowSell = behavior.AllowSell;
+            if (DrawCenteredCheckbox("##retainer_sell", ref allowSell))
+            {
+                _config.SetRetainerSellEnabled(name, allowSell);
+                Plugin.Log.Information("[RR][Config] Retainer '{Name}' sell={Sell}", name, allowSell);
+                SaveConfig();
+            }
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                ImGui.SetTooltip("Allows automation to create new listings for this retainer.");
+
+            if (disableScoped)
+                ImGui.EndDisabled();
+
+            ImGui.PopID();
         }
+
+        ImGui.EndTable();
+    }
+
+    private static bool DrawCenteredCheckbox(string id, ref bool value)
+    {
+        var columnWidth = ImGui.GetColumnWidth();
+        var frameHeight = ImGui.GetFrameHeight();
+        var startPos = ImGui.GetCursorPos();
+        var desiredX = startPos.X + Math.Max(0f, (columnWidth - frameHeight) * 0.5f);
+        ImGui.SetCursorPosX(desiredX);
+        return ImGui.Checkbox(id, ref value);
+    }
+
+    private static void DrawHeaderLabel(string label, bool center)
+    {
+        if (!center)
+        {
+            ImGui.TextUnformatted(label);
+            return;
+        }
+
+        var columnWidth = ImGui.GetColumnWidth();
+        var textWidth = ImGui.CalcTextSize(label).X;
+        var startPos = ImGui.GetCursorPos();
+        var desiredX = startPos.X + Math.Max(0f, (columnWidth - textWidth) * 0.5f);
+        ImGui.SetCursorPosX(desiredX);
+        ImGui.TextUnformatted(label);
+    }
+
+    private static void BeginCenteredElement(float elementWidth)
+    {
+        var columnWidth = ImGui.GetColumnWidth();
+        var startPos = ImGui.GetCursorPos();
+        var desiredX = startPos.X + Math.Max(0f, (columnWidth - elementWidth) * 0.5f);
+        ImGui.SetCursorPosX(desiredX);
     }
 
     #endregion

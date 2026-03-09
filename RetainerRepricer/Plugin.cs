@@ -15,6 +15,7 @@ using RetainerRepricer.Services;
 using RetainerRepricer.Windows;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 
 namespace RetainerRepricer;
@@ -197,9 +198,11 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
         foreach (var n in names)
         {
+            var behavior = Configuration.GetRetainerBehavior(n);
+
             if (!Configuration.RetainersEnabled.ContainsKey(n))
             {
-                Configuration.RetainersEnabled[n] = true;
+                Configuration.SetRetainerEnabled(n, behavior.Enabled);
                 addedNames.Add(n);
                 changed = true;
             }
@@ -232,8 +235,11 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
     internal void RebuildMyRetainersSet()
     {
         _myRetainers.Clear();
-        foreach (var kvp in Configuration.RetainersEnabled)
-            _myRetainers.Add(kvp.Key);
+        foreach (var name in Configuration.GetAllRetainerNames())
+        {
+            if (Configuration.IsRetainerEnabled(name))
+                _myRetainers.Add(name);
+        }
     }
 
     #endregion
@@ -263,8 +269,17 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
             name = name.Trim('\'', ' ');
 
-            if (Configuration.IsRetainerEnabled(name))
-                _retainerRowOrder.Add(i);
+            var behavior = Configuration.GetRetainerBehavior(name);
+            if (!behavior.Enabled)
+                continue;
+
+            _retainerRowOrder.Add(new RetainerRowEntry
+            {
+                RowIndex = i,
+                Name = name,
+                AllowSell = behavior.AllowSell,
+                AllowReprice = behavior.AllowReprice,
+            });
         }
 
         if (_retainerRowOrder.Count == 0)
@@ -278,7 +293,8 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         _runPhase = RunPhase.NeedOpen;
         _lastActionUtc = DateTime.MinValue;
 
-        Log.Information($"[RR] Start ({DescribeRunMode(mode)}). Enabled rows = {string.Join(",", _retainerRowOrder)}");
+        var rowSummary = string.Join(",", _retainerRowOrder.Select(r => r.RowIndex));
+        Log.Information($"[RR] Start ({DescribeRunMode(mode)}). Enabled rows = {rowSummary}");
         return true;
     }
 
@@ -317,8 +333,17 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
             name = name.Trim('\'', ' ');
 
-            if (Configuration.IsRetainerEnabled(name))
-                _retainerRowOrder.Add(i);
+            var behavior = Configuration.GetRetainerBehavior(name);
+            if (!behavior.Enabled)
+                continue;
+
+            _retainerRowOrder.Add(new RetainerRowEntry
+            {
+                RowIndex = i,
+                Name = name,
+                AllowSell = behavior.AllowSell,
+                AllowReprice = behavior.AllowReprice,
+            });
         }
 
         if (_retainerRowOrder.Count == 0)
@@ -331,7 +356,8 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         _runPhase = RunPhase.NeedOpen;
         _lastActionUtc = DateTime.MinValue;
 
-        Log.Information($"[RR] Started ({DescribeRunMode(mode)}). Enabled retainers: {string.Join(",", _retainerRowOrder)}");
+        var rowSummary = string.Join(",", _retainerRowOrder.Select(r => r.RowIndex));
+        Log.Information($"[RR] Started ({DescribeRunMode(mode)}). Enabled retainers: {rowSummary}");
         return true;
     }
 
@@ -343,6 +369,10 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
         _retainerRowOrder.Clear();
         _retainerRowPos = -1;
+        _currentRetainerAllowsReprice = false;
+        _currentRetainerAllowsSell = false;
+        _currentRetainerRowIndex = -1;
+        _currentRetainerName = string.Empty;
 
         _sellListCountCaptured = false;
         _listedCountThisRetainer = 0;

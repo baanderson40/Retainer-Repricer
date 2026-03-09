@@ -49,11 +49,101 @@ public sealed class Configuration : IPluginConfiguration
     public Dictionary<string, bool> RetainersEnabled { get; set; }
         = new(StringComparer.OrdinalIgnoreCase);
 
+    public Dictionary<string, RetainerBehavior> RetainerSettings { get; set; }
+        = new(StringComparer.OrdinalIgnoreCase);
+
+    public IEnumerable<string> GetAllRetainerNames()
+    {
+        EnsureRetainerDictionaries();
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var name in RetainersEnabled.Keys)
+        {
+            if (string.IsNullOrWhiteSpace(name)) continue;
+            if (seen.Add(name))
+                yield return name;
+        }
+
+        foreach (var name in RetainerSettings.Keys)
+        {
+            if (string.IsNullOrWhiteSpace(name)) continue;
+            if (seen.Add(name))
+                yield return name;
+        }
+    }
+
     public bool IsRetainerEnabled(string name)
-        => RetainersEnabled.TryGetValue(name, out var enabled) ? enabled : true;
+        => GetRetainerBehavior(name).Enabled;
 
     public void SetRetainerEnabled(string name, bool enabled)
-        => RetainersEnabled[name] = enabled;
+    {
+        EnsureRetainerDictionaries();
+        var key = NormalizeRetainerName(name);
+        RetainersEnabled[key] = enabled;
+        var behavior = EnsureRetainerBehavior(key);
+        behavior.Enabled = enabled;
+    }
+
+    public bool RetainerAllowsSell(string name)
+    {
+        var behavior = GetRetainerBehavior(name);
+        return behavior.Enabled && behavior.AllowSell;
+    }
+
+    public bool RetainerAllowsReprice(string name)
+    {
+        var behavior = GetRetainerBehavior(name);
+        return behavior.Enabled && behavior.AllowReprice;
+    }
+
+    public void SetRetainerSellEnabled(string name, bool allowSell)
+    {
+        var behavior = EnsureRetainerBehavior(name);
+        behavior.AllowSell = allowSell;
+    }
+
+    public void SetRetainerRepriceEnabled(string name, bool allowReprice)
+    {
+        var behavior = EnsureRetainerBehavior(name);
+        behavior.AllowReprice = allowReprice;
+    }
+
+    public RetainerBehavior GetRetainerBehavior(string name)
+        => EnsureRetainerBehavior(name);
+
+    private RetainerBehavior EnsureRetainerBehavior(string name)
+    {
+        EnsureRetainerDictionaries();
+        var key = NormalizeRetainerName(name);
+        if (!RetainerSettings.TryGetValue(key, out var behavior) || behavior == null)
+        {
+            var enabled = RetainersEnabled.TryGetValue(key, out var existing)
+                ? existing
+                : true;
+
+            behavior = new RetainerBehavior
+            {
+                Enabled = enabled,
+                AllowSell = true,
+                AllowReprice = true,
+            };
+
+            RetainerSettings[key] = behavior;
+        }
+
+        behavior.Normalize();
+        return behavior;
+    }
+
+    private static string NormalizeRetainerName(string name)
+        => (name ?? string.Empty).Trim();
+
+    private void EnsureRetainerDictionaries()
+    {
+        RetainersEnabled ??= new(StringComparer.OrdinalIgnoreCase);
+        RetainerSettings ??= new(StringComparer.OrdinalIgnoreCase);
+    }
 
     #endregion
 
@@ -339,6 +429,24 @@ public sealed class Configuration : IPluginConfiguration
             .Max();
 
         return maxOrder < 1 ? SellList.Count + 1 : maxOrder + 1;
+    }
+
+    #endregion
+
+    #region Retainer behavior model
+
+    [Serializable]
+    public sealed class RetainerBehavior
+    {
+        public bool Enabled { get; set; } = true;
+        public bool AllowSell { get; set; } = true;
+        public bool AllowReprice { get; set; } = true;
+
+        public void Normalize()
+        {
+            AllowSell = AllowSell;
+            AllowReprice = AllowReprice;
+        }
     }
 
     #endregion
