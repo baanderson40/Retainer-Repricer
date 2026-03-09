@@ -1,0 +1,24 @@
+[
+  {
+    "Author": "baanderson40",
+    "Name": "Retainer Repricer",
+    "Punchline": "Automates retainer item repricing and listing using live market data.",
+    "Description": "Automates retainer item listing and repricing by cycling through retainers, reading market prices from Universalis, and updating listings safely. Use /repricer or /rr to open.",
+    "Tags": [
+      "market",
+      "retainer",
+      "economy"
+    ],
+    "InternalName": "RetainerRepricer",
+    "RepoUrl": "https://github.com/baanderson40/Retainer-Repricer",
+    "AssemblyVersion": "1.0.0.0",
+    "IsTestingExclusive": false,
+    "ApplicableVersion": "any",
+    "DalamudApiLevel": 14,
+    "DownloadCount": 0,
+    "LastUpdate": 0,
+    "DownloadLinkInstall": "https://github.com/baanderson40/Retainer-Repricer/releases/download/v1.0.0/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/baanderson40/Retainer-Repricer/releases/download/v1.0.0/latest.zip",
+    "SupportsProfiles": false
+  }
+]
