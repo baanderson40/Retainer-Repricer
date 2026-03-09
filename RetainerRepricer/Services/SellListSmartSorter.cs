@@ -55,7 +55,10 @@ internal sealed class SellListSmartSorter : IDisposable
             return Task.FromResult(false);
 
         if (!force && !IsRefreshDue())
+        {
+            _log.Verbose("[RR][SmartSort] Skipping: not due for refresh (last={LastRun}, next={NextRun})", LastSortUtc, LastSortUtc + TimeSpan.FromMinutes(Math.Max(1, _config.SmartSortRefreshMinutes)));
             return Task.FromResult(false);
+        }
 
         return SortInternalAsync(reason, cancellationToken);
     }
@@ -103,6 +106,11 @@ internal sealed class SellListSmartSorter : IDisposable
                 var velocityScore = ComputeVelocityScore(stats?.DailySaleVelocity ?? 0d);
                 var priceScore = ComputePriceScore(stats?.AveragePrice);
                 var composite = (velocityScore * velocityWeight) + (priceScore * priceWeight);
+
+                if (stats?.DailySaleVelocity == null && stats?.AveragePrice == null)
+                {
+                    _log.Debug("[RR][SmartSort] Item {ItemId}: no velocity/price data, score=0", entry.ItemId);
+                }
 
                 scored.Add(new ScoredEntry
                 {

@@ -193,14 +193,21 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
     internal void SyncRetainersIntoConfig(IEnumerable<string> names)
     {
         var changed = false;
+        var addedNames = new List<string>();
 
         foreach (var n in names)
         {
             if (!Configuration.RetainersEnabled.ContainsKey(n))
             {
                 Configuration.RetainersEnabled[n] = true;
+                addedNames.Add(n);
                 changed = true;
             }
+        }
+
+        if (addedNames.Count > 0)
+        {
+            Log.Information("[RR] Sync: Added {Count} new retainer(s) to configuration: {Names}", addedNames.Count, string.Join(", ", addedNames));
         }
 
         if (changed) Configuration.Save();
@@ -213,8 +220,11 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
         var now = DateTime.UtcNow;
         if ((now - _lastRetainerSyncUtc).TotalSeconds < RetainerSyncIntervalSeconds)
+        {
+            Log.Verbose("[RR] Sync: Throttled, skipping this cycle");
             return;
-  
+        }
+
         SyncRetainersIntoConfig(ReadRetainerNames());
         _lastRetainerSyncUtc = now;
     }

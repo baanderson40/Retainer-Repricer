@@ -188,13 +188,17 @@ public sealed unsafe class MainWindow : Window, IDisposable
         {
             if (_plugin.IsRunning)
             {
+                Plugin.Log.Information("[RR][Overlay] Stop button clicked");
                 _plugin.StopRun();
             }
             else
             {
                 // Don't allow starting while plugin is disabled.
                 if (_plugin.Configuration.PluginEnabled)
+                {
+                    Plugin.Log.Information("[RR][Overlay] Start button clicked");
                     _plugin.StartRunFromRetainerList();
+                }
             }
         }
         ImGui.PopID();
@@ -207,7 +211,10 @@ public sealed unsafe class MainWindow : Window, IDisposable
     {
         ImGui.PushID("rr-config");
         if (ImGuiComponents.IconButton(FontAwesomeIcon.Cog))
+        {
+            Plugin.Log.Debug("[RR][Overlay] Config button clicked");
             _plugin.ToggleConfigUi();
+        }
         ImGui.PopID();
 
         if (ImGui.IsItemHovered())

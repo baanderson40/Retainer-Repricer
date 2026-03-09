@@ -105,7 +105,10 @@ internal sealed class ContextMenuManager : IDisposable
                 OnClicked = _ =>
                 {
                     if (_config.RemoveSellItem(itemId, isHq))
+                    {
+                        Plugin.Log.Information("[RR][ContextMenu] Removed item {ItemId} (HQ={IsHq}) from Sell List", itemId, isHq);
                         _config.Save();
+                    }
                 }
             });
 
@@ -144,7 +147,7 @@ internal sealed class ContextMenuManager : IDisposable
                 .AddUiForeground(AddLabel, PrefixColor)
                 .Build(),
 
-            OnClicked = clickedArgs =>
+                OnClicked = clickedArgs =>
             {
                 var clickPosition = ImGui.GetMousePos();
                 var defaultPriority = _config.GetAppendSortOrder();
@@ -152,6 +155,7 @@ internal sealed class ContextMenuManager : IDisposable
                 {
                     if (_config.TryAddSellItemWithMinCount(id, hq, itemName, minCount, priority))
                     {
+                        Plugin.Log.Information("[RR][ContextMenu] Added item {ItemId} (HQ={IsHq}, minCount={MinCount}) to Sell List", id, hq, minCount);
                         _config.Save();
                         if (_plugin.SmartSortEnabled)
                             _ = _plugin.RequestSmartSortAsync("item_added", force: true);

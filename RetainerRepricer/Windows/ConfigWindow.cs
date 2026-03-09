@@ -396,12 +396,16 @@ public sealed class ConfigWindow : Window, IDisposable
                 changed |= _config.TrySetSellItemOrder(change.itemId, change.isHq, change.newOrder);
 
             if (changed)
+            {
+                Plugin.Log.Information("[RR][Config] Sell List priority changed.");
                 SaveConfig();
+            }
         }
 
         if (removeKey.HasValue)
         {
             _config.RemoveSellItem(removeKey.Value.itemId, removeKey.Value.isHq);
+            Plugin.Log.Information("[RR][Config] Removed item {ItemId} (HQ={IsHq}) from Sell List", removeKey.Value.itemId, removeKey.Value.isHq);
             SaveConfig();
         }
     }
@@ -441,6 +445,7 @@ public sealed class ConfigWindow : Window, IDisposable
             foreach (var n in names)
                 _config.RetainersEnabled[n] = true;
 
+            Plugin.Log.Information("[RR][Config] Enabled all {Count} retainers.", names.Count);
             SaveConfig();
         }
 
@@ -451,6 +456,7 @@ public sealed class ConfigWindow : Window, IDisposable
             foreach (var n in names)
                 _config.RetainersEnabled[n] = false;
 
+            Plugin.Log.Information("[RR][Config] Disabled all {Count} retainers.", names.Count);
             SaveConfig();
         }
     }
@@ -461,6 +467,7 @@ public sealed class ConfigWindow : Window, IDisposable
         if (ImGui.Checkbox(name, ref enabled))
         {
             _config.RetainersEnabled[name] = enabled;
+            Plugin.Log.Information("[RR][Config] Retainer '{Name}' enabled={Enabled}", name, enabled);
             SaveConfig();
         }
     }
@@ -480,6 +487,7 @@ public sealed class ConfigWindow : Window, IDisposable
             if (!enabled && _plugin.IsRunning)
                 _plugin.StopRun();
 
+            Plugin.Log.Information("[RR][Config] Plugin enabled={Enabled}", enabled);
             SaveConfig();
         }
 
@@ -498,6 +506,7 @@ public sealed class ConfigWindow : Window, IDisposable
         if (ImGui.Checkbox("Enable overlay window", ref overlayEnabled))
         {
             _config.OverlayEnabled = overlayEnabled;
+            Plugin.Log.Information("[RR][Config] Overlay enabled={Enabled}", overlayEnabled);
             SaveConfig();
         }
 
