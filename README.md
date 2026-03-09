@@ -1,82 +1,134 @@
 # Retainer Repricer
 
-Fully automated Dalamud plugin for Final Fantasy XIV that reprices and relists retainer market entries using deterministic UI automation.
+Fully automated Dalamud plugin for Final Fantasy XIV that reprices and lists new items on the marketboard.
+
+---
+
+## Overview
+
+Retainer Repricer handles the tedious work of repricing your retainer sales at the market. It works through each enabled retainer, opens the sell menus, checks current market prices, and lists or reprices items based on your settings. Just stand at a summoning bell, open your retainer list, and hit start—the plugin handles the rest.
 
 ---
 
 ## Key Features
-- Cycles every enabled retainer at a summoning bell with zero manual input.
-- Reprices existing listings using Universalis market data and applies a fixed 1-gil undercut to the validated lowest listing.
-- Optionally lists new inventory items through a configurable Sell List with HQ/NQ awareness.
-- Universalis-powered smart sorting automatically reorders Sell List entries using sale velocity and average price so high-churn, high-value items are prioritized (with a manual "Smart Sort" trigger when needed).
-- Navigates, confirms, and closes all FFXIV UI panels safely, guaranteeing a clean return path.
-- Persists configuration immediately so stop/start cycles never lose selections.
+
+- Automatically visits every enabled retainer and handles repricing or listing new items.
+- Pulls live market data from Universalis to set competitive prices, with a configurable undercut amount.
+- Smart Sort keeps your Sell List organized by prioritizing items that sell fast and for good prices—you can trigger it manually or let it run on a schedule.
+- Settings apply instantly—no need to reload or restart anything.
+- Right-click items in your inventory to add them to your Sell List directly from the game.
+- Checks that each game menu is ready before acting, keeping everything running smoothly.
 
 ---
 
-## Requirements & Compatibility
-- Final Fantasy XIV retail client with Dalamud available through XIVLauncher.
-- Character retainers must already be unlocked and accessible at a summoning bell.
-- Access to Universalis API (public) for price retrieval; the plugin handles caching and rate limits internally.
+## Requirements & Setup
+
+- Final Fantasy XIV running through XIVLauncher with Dalamud installed.
+- Stand at a summoning bell and open your Retainer List before starting.
+- Your retainers must already be unlocked and have available sell slots.
+- Optional: enable Universalis in Settings for better pricing decisions and smart sorting.
 
 ---
 
-## Configuration
-- **Retainer Enablement:** Enable specific retainers from the main window; only checked retainers participate in automation.
-- **Sell List:** Use the inventory context-menu integration to add or remove items the plugin may list automatically when inventory has stock.
-- **Smart Sorting:** When Universalis access is enabled, turn on smart sorting to keep Sell List priorities in sync with Universalis sale velocity + average price; tweak velocity/price weights, auto-refresh cadence, or click the right-aligned “Smart Sort” button to trigger a manual reorder.
-- **Pricing Gate:** Toggle whether Universalis floor averages inform listings, set the percent threshold for skipping thin markets, and opt into Universalis fallback when the board is empty.
-- **Status Overlay:** Displays current state machine phase, latest action timestamp, and any throttling timer.
-- All settings persist instantly; no explicit save step is required.
+## MB Sell List
+
+The items you want the plugin to list or reprice live here.
+
+- Use the search box to find items by name or ID.
+- Clear list requires clicking twice so you don't accidentally wipe everything.
+- Each row shows priority, item name, how many you need in inventory before listing, and a remove button.
+- When Smart Sort is active, priority numbers are just for reference—the plugin reorders them automatically.
+- The Smart Sort button reorder your list based on how fast items sell and their average price. If it's disabled, check that Universalis is enabled in Settings.
 
 ---
 
-## Operation Flow
-1. Stand at a summoning bell with retainer list open and start the plugin.
-2. The state machine starts, interacts with talk windows, and selects the first enabled retainer.
-3. Within each enabled retainer:
-   - Reprice every slot in the sell list using live data.
-   - Optionally list new items queued in the Sell List.
-   - Confirm compare windows and market confirmations before proceeding.
-4. The plugin unwinds UI windows (Sell → Retainer → Talk) and advances to the next retainer.
-5. When all retainers are processed or the user stops the plugin, the state machine returns to Idle after closing any open addons.
+## Retainers
+
+- Shows every retainer currently visible in your Retainer List.
+- Uncheck any retainer you don't want the plugin to touch.
+- Your choices save right away.
+
+---
+
+## Settings
+
+- Toggle the overlay that appears near bell menus (Start, Stop, Config buttons).
+- Enable or disable Universalis features like the price floor and Smart Sort.
+- Configure how much to undercut the lowest price and whether to use Universalis data when the board is empty.
+- Flip on the Advanced toggle to see more options if you need them.
+
+---
+
+## Advanced
+
+These are fine-tuning options for users who want more control:
+
+- Move the overlay around more precisely.
+- Adjust how quickly the plugin clicks through menus.
+- Tweak how Smart Sort calculates priority between sales speed and average price.
+- Reset everything back to defaults if things feel off.
+
+---
+
+## Inventory Context Menu
+
+When the plugin is on, right-clicking items in your inventory gives you extra options:
+
+- Add to Sell List – choose how many you need before listing and optionally set a priority.
+- Items you can't sell (like items bound to your character) show as "Not Sellable."
+- Items already in your list show a remove option instead.
+- If Smart Sort is enabled, adding a new item can automatically reorganize your list.
+
+---
+
+## How It Works
+
+1. Open the Retainer List at a summoning bell, then hit Start on the overlay or use the chat command.
+2. The plugin figures out which retainers you've enabled.
+3. For each retainer:
+   - Opens the player's inventory and sell list, then reprices any existing listings based on current market data.
+   - Checks your Sell List and lists any new items if you have enough in your inventory.
+   - Confirms each price change through the game dialogs.
+4. Closes all the menus and moves to the next retainer.
+5. When done, cleans up and goes back to idle, leaving the Retainer List open or closed based on your preference.
+6. Tells you what happened through chat messages.
 
 ---
 
 ## Commands
-- `/repricer` or `/rr` — show the same help output as `/repricer help`.
-- `/repricer start [mode]` — begin automation; omit `mode` to run both repricing and selling. Supported modes: `price` (reprice existing listings only) and `sell` (process Sell List inventory only).
-- `/repricer stop` — halt the current run and unwind open UI windows.
-- `/repricer config` or `/repricer c` — toggle the configuration window.
 
----
+- `/repricer` or `/rr` — show help or prefix a command.
+- `/repricer start` — start the automation. Runs both repricing and listing by default.
+- `/repricer start price` — only reprice existing listings.
+- `/repricer start sell` — only list new items from your Sell List.
+- `/repricer stop` — stop and close any open menus.
+- `/repricer config` or `/repricer c` — open the settings window.
 
-## Architecture Highlights
-- **Deterministic State Machine:** `RunPhase` governs every action. Transitions occur only when addons are both visible and populated.
-- **Readiness Guards:** All pointer accesses check `addon.IsNull`, visibility, and node counts before use.
-- **UI Automation:** Uses AddonMaster wrappers and `Callback.Fire` for button presses; context menus are cleared before continuing.
-- **Timing Discipline:** Timestamp comparison fields (`ActionIntervalSeconds`, `MbBaseIntervalSeconds`, `FrameworkTickIntervalSeconds`) pace actions instead of `Thread.Sleep`.
-- **Data Source:** `UniversalisApiClient` handles HTTP requests with timeouts, caching, and cancellation so the UI thread remains responsive.
+The overlay near the bell has the same Start, Stop, and Config buttons.
 
 ---
 
 ## Safety & Limitations
-- Designed for the Dalamud sandbox; other automation plugins can coexist as long as they do not hijack the same addons simultaneously.
-- Requires manual positioning at a summoning bell; the plugin does not auto-navigate the world.
-- Inventory order is not assumed—every listing step refreshes node data before making decisions.
-- HQ and NQ queues are processed separately to prevent cross-quality pricing errors.
+
+- Works only inside the game through Dalamud—no external automation.
+- Must be connected to a world or data center for Universalis features to work.
+- Handles high quality and normal quality items completely separately to avoid mistakes.
+- Other plugins that mess with the same menus might conflict—finish one before starting another.
+- Keep the timing settings as-is unless you know what you're doing; changing them can cause the plugin to act too fast for the game to handle.
 
 ---
 
-## Troubleshooting & FAQ
-- **Nothing happens when I press Start:** Confirm at least one retainer is enabled and the character is engaged with a summoning bell.
-- **Plugin stops mid-retainer:** Check the Dalamud logs for `[RR]` or `[RL]` messages; most errors indicate a blocked addon (usually an unclosed context menu).
-- **Prices seem stale:** Universalis responses are cached per item; manually refresh by waiting for the next cycle or clearing the cache via the configuration window.
-- **Smart sort button disabled:** Hover the button to see why—either Universalis averages or smart sorting is disabled in Settings, or a smart sort is currently running.
-- **Context menu entries missing:** Make sure Dalamud's inventory context menu integration is permitted and no conflicting plugins override it.
-- **Retainer slots skipped:** Ensure the Sell List matches actual inventory items and that HQ/NQ filters are set appropriately.
+## Troubleshooting
+
+- **Start button does nothing** – Make sure the plugin is enabled in Settings and you have at least one retainer checked in the Retainers tab.
+- **Stops partway through** – Check the Dalamud logs (/xllog) for messages starting with `[RR]`; usually a menu didn't open in time or something blocked it.
+- **Smart Sort button is grayed out** – Universalis or Smart Sort might be turned off in Settings, or a sort is already running.
+- **Prices seem wrong** – Make sure Universalis is enabled in Settings and reachable; otherwise the plugin uses whatever price is currently listed on the marketboard.
+- **Items not listing** – Check that you actually have enough of the item in your inventory (your min-count setting) and that it's the right quality (HQ vs NQ).
+- **Overlay isn't showing** – Make sure the plugin is enabled and the Retainer List is open.
 
 ---
 
 ## License
+
 Retainer Repricer is distributed under the AGPL-3.0-or-later license. See `LICENSE.md` for full terms.
