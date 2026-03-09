@@ -12,7 +12,7 @@ public sealed class Configuration : IPluginConfiguration
     #region Dalamud config versioning
 
     // Dalamud serialization schema version; bump when config layout changes.
-    public int Version { get; set; } = 7;
+    public int Version { get; set; } = 1;
 
     [NonSerialized]
     private IDalamudPluginInterface? _pluginInterface;
@@ -20,7 +20,6 @@ public sealed class Configuration : IPluginConfiguration
     public void Initialize(IDalamudPluginInterface pi)
     {
         _pluginInterface = pi;
-        RunMigrations();
     }
 
     public void Save()
@@ -340,69 +339,6 @@ public sealed class Configuration : IPluginConfiguration
             .Max();
 
         return maxOrder < 1 ? SellList.Count + 1 : maxOrder + 1;
-    }
-
-    private void RunMigrations()
-    {
-        var changed = false;
-
-        if (Version < 4)
-        {
-            Version = 4;
-            changed = true;
-        }
-
-        if (Version < 5)
-        {
-            Version = 5;
-            if (SmartSortVelocityWeight <= 0f && SmartSortPriceWeight <= 0f)
-            {
-                SmartSortVelocityWeight = 0.555f;
-                SmartSortPriceWeight = 0.445f;
-            }
-
-            if (SmartSortRefreshMinutes <= 0)
-                SmartSortRefreshMinutes = 30;
-
-            changed = true;
-        }
-
-        if (Version < 6)
-        {
-            Version = 6;
-            ShowAdvancedSettingsTab = false;
-            changed = true;
-        }
-
-        if (Version < 7)
-        {
-            Version = 7;
-            UndercutAmount = 1;
-            MarketValidationThreshold = 2.0f;
-            ActionIntervalSeconds = 0.15d;
-            RetainerSyncIntervalSeconds = 2.0d;
-            ItemSearchResultThrottleBackoffSeconds = 1.0d;
-            MbBaseIntervalSeconds = 1.5d;
-            MbIntervalMinSeconds = 1.0d;
-            MbIntervalMaxSeconds = 2.0d;
-            MbJitterMaxSeconds = 0.10d;
-            IsrNoItemsSettleSeconds = 0.5d;
-            IsrHqFilterInitialDelaySeconds = 1.25d;
-            IsrHqFilterUiDebounceSeconds = 0.20d;
-            IsrHqFilterOpenRetrySeconds = 0.30d;
-            IsrHqFilterPostOpenSeconds = 0.15d;
-            FrameworkTickIntervalSeconds = 0.075d;
-            SmartSortVelocityCap = 100.0d;
-            SmartSortVelocityLogBase = 101.0d;
-            SmartSortPriceLogBase = 100001.0d;
-            changed = true;
-        }
-
-        if (NormalizeSellListOrder(saveChanges: false))
-            changed = true;
-
-        if (changed)
-            Save();
     }
 
     #endregion
