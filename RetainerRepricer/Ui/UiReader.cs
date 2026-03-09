@@ -25,6 +25,14 @@ internal sealed unsafe class UiReader
         InventoryType.Inventory2,
         InventoryType.Inventory3,
         InventoryType.Inventory4,
+        InventoryType.Crystals,
+    };
+
+    private static readonly string[] InventoryGridAddonNames =
+    {
+        "InventoryGrid",
+        "InventoryGrid1",
+        "InventoryGrid0E",
     };
 
     #endregion
@@ -360,23 +368,44 @@ internal sealed unsafe class UiReader
     /// </summary>
     public bool TryOpenRetainerSellFromInventory(int container, int slot)
     {
-        // InventoryGrid has multiple indices depending on layout; grab the first visible one.
-        var idx = FindVisibleAddonIndex("InventoryGrid", 10);
-        if (idx < 0)
-            return false;
-
-        var addon = _gui.GetAddonByName("InventoryGrid", idx);
-        if (addon.IsNull)
-            return false;
-
-        var unit = (AtkUnitBase*)addon.Address;
-        if (unit == null || !unit->IsVisible)
+        var unit = ResolveInventoryGridUnit();
+        if (unit == null)
             return false;
 
         // Observed callback signature (InventoryGrid):
         // Callback.Fire(unit, 15, container, slot)
         Callback.Fire(unit, updateState: true, 15, container, slot);
         return true;
+    }
+
+    private AtkUnitBase* ResolveInventoryGridUnit()
+    {
+        foreach (var addonName in InventoryGridAddonNames)
+        {
+            var unit = FindVisibleInventoryGrid(addonName);
+            if (unit != null)
+                return unit;
+        }
+
+        return null;
+    }
+
+    private AtkUnitBase* FindVisibleInventoryGrid(string addonName)
+    {
+        const int maxIndexSearch = 10;
+        var idx = FindVisibleAddonIndex(addonName, maxIndexSearch);
+        if (idx < 0)
+            return null;
+
+        var addon = _gui.GetAddonByName(addonName, idx);
+        if (addon.IsNull)
+            return null;
+
+        var unit = (AtkUnitBase*)addon.Address;
+        if (unit == null || !unit->IsVisible)
+            return null;
+
+        return unit;
     }
 
     #endregion
