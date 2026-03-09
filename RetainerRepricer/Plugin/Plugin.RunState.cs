@@ -114,6 +114,12 @@ public unsafe sealed partial class Plugin
         set => _retainerCycle.LastRetainerSyncUtc = value;
     }
 
+    private DateTime _lastRetainerSyncThrottleLogUtc
+    {
+        get => _retainerCycle.LastRetainerSyncThrottleLogUtc;
+        set => _retainerCycle.LastRetainerSyncThrottleLogUtc = value;
+    }
+
     private bool _sellListCountCaptured
     {
         get => _sellState.SellListCountCaptured;
@@ -335,6 +341,7 @@ public unsafe sealed partial class Plugin
         public List<RetainerRowEntry> RowOrder { get; } = new();
         public int RowPos { get; set; } = -1;
         public DateTime LastRetainerSyncUtc { get; set; } = DateTime.MinValue;
+        public DateTime LastRetainerSyncThrottleLogUtc { get; set; } = DateTime.MinValue;
     }
 
     private readonly struct RetainerRowEntry

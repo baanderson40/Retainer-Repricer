@@ -169,6 +169,8 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
     #region Retainer list sync
 
+    private const double RetainerSyncThrottleLogIntervalSeconds = 1.0d;
+
     internal unsafe List<string> ReadRetainerNames()
     {
         var names = new List<string>();
@@ -224,12 +226,18 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         var now = DateTime.UtcNow;
         if ((now - _lastRetainerSyncUtc).TotalSeconds < RetainerSyncIntervalSeconds)
         {
-            Log.Verbose("[RR] Sync: Throttled, skipping this cycle");
+            if ((now - _lastRetainerSyncThrottleLogUtc).TotalSeconds >= RetainerSyncThrottleLogIntervalSeconds)
+            {
+                Log.Verbose("[RR] Sync: Throttled, skipping this cycle");
+                _lastRetainerSyncThrottleLogUtc = now;
+            }
+
             return;
         }
 
         SyncRetainersIntoConfig(ReadRetainerNames());
         _lastRetainerSyncUtc = now;
+        _lastRetainerSyncThrottleLogUtc = DateTime.MinValue;
     }
 
     internal void RebuildMyRetainersSet()
@@ -440,6 +448,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         _hasAppliedStagedPrice = false;
 
         _lastRetainerSyncUtc = DateTime.MinValue;
+        _lastRetainerSyncThrottleLogUtc = DateTime.MinValue;
     }
 
     private static string DescribeRunMode(RunMode mode)
