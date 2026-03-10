@@ -1,7 +1,10 @@
-using Dalamud.Bindings.ImGui;
-using Dalamud.Interface.Windowing;
 using System;
 using System.Numerics;
+
+using Dalamud.Bindings.ImGui;
+using Dalamud.Interface.Windowing;
+
+using RetainerRepricer.Ui;
 
 namespace RetainerRepricer.Windows;
 
@@ -18,6 +21,7 @@ internal sealed class MinCountPopup : Window, IDisposable
     private const float BaseMinHeight = 190f;
     private const float BaseMaxHeight = 320f;
 
+    private readonly Configuration _config;
     private uint _pendingItemId;
     private bool _pendingIsHq;
     private string _pendingItemName = string.Empty;
@@ -32,12 +36,13 @@ internal sealed class MinCountPopup : Window, IDisposable
     private bool _needsSizeRefresh;
     private Vector2? _pendingWindowSize;
 
-    public MinCountPopup()
+    public MinCountPopup(Configuration config)
         : base(
             "Set Minimum Count##RR_MinCount",
             ImGuiWindowFlags.AlwaysAutoResize
         )
     {
+        _config = config;
         Size = new(285, 160);
         SizeConstraints = new WindowSizeConstraints
         {
@@ -196,7 +201,7 @@ internal sealed class MinCountPopup : Window, IDisposable
 
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
         {
-            ImGui.SetTooltip("Items will be listed only when you have at least this many in your inventory.");
+            TooltipHelper.Show(_config, "Item will be listed once you have at least this many in inventory.");
         }
 
         var nextY = MathF.Max(ImGui.GetCursorPosY(), cursor.Y + ImGui.GetTextLineHeightWithSpacing());
@@ -232,9 +237,9 @@ internal sealed class MinCountPopup : Window, IDisposable
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
         {
             var tooltip = _smartSortEnabled
-                ? "Priority is managed by smart sorting. The current order is shown for reference."
+                ? "Priority is managed by smart sorting. Current order shown for reference."
                 : "Lower numbers run first. Enter 1 to add at the top, or leave the default to append.";
-            ImGui.SetTooltip(tooltip);
+            TooltipHelper.Show(_config, tooltip);
         }
 
         var nextY = MathF.Max(ImGui.GetCursorPosY(), cursor.Y + ImGui.GetTextLineHeightWithSpacing());

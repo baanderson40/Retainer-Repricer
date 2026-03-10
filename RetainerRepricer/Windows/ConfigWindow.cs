@@ -1,9 +1,12 @@
+using System;
+using System.Linq;
+
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
 using Dalamud.Interface.Windowing;
 using FFXIVClientStructs.FFXIV.Common.Lua;
-using System;
-using System.Linq;
+
+using RetainerRepricer.Ui;
 
 namespace RetainerRepricer.Windows;
 
@@ -240,7 +243,7 @@ public sealed class ConfigWindow : Window, IDisposable
             ImGui.BeginDisabled();
             ImGui.Button("Smart Sort", new System.Numerics.Vector2(buttonWidth, 0f));
             if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-                ImGui.SetTooltip("Enable Universalis averages in Settings to access smart sorting.");
+                TooltipHelper.Show(_config, "Enable Universalis averages in Settings to unlock smart sorting.");
             ImGui.EndDisabled();
             return ImGui.GetCursorPosY();
         }
@@ -259,14 +262,14 @@ public sealed class ConfigWindow : Window, IDisposable
         if (!enabled)
         {
             if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-                ImGui.SetTooltip("Enable smart sort in Settings to use this button.");
+                TooltipHelper.Show(_config, "Enable smart sort in Settings to use this feature.");
             return ImGui.GetCursorPosY();
         }
 
         if (sorting)
         {
             if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-                ImGui.SetTooltip("Smart sort is currently running.");
+                TooltipHelper.Show(_config, "Smart sort is running...");
             return ImGui.GetCursorPosY();
         }
 
@@ -351,8 +354,8 @@ public sealed class ConfigWindow : Window, IDisposable
             BeginCenteredElement(priorityInputWidth);
             ImGui.SetNextItemWidth(priorityInputWidth);
             var priorityTooltip = smartSortActive
-                ? "Priority is managed by smart sorting. The current order is shown for reference."
-                : "Lower numbers are processed first. Higher numbers move items later in the queue.";
+                ? "Priority is managed by smart sorting. Current order shown for reference."
+                : "Lower numbers run first. Higher numbers push items later in the queue.";
 
             if (smartSortActive)
                 ImGui.BeginDisabled();
@@ -367,7 +370,7 @@ public sealed class ConfigWindow : Window, IDisposable
             {
                 ImGui.EndDisabled();
                 if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-                    ImGui.SetTooltip(priorityTooltip);
+                    TooltipHelper.Show(_config, priorityTooltip);
             }
 
             if (ImGui.IsItemDeactivatedAfterEdit())
@@ -378,7 +381,7 @@ public sealed class ConfigWindow : Window, IDisposable
             }
 
             if (!smartSortActive && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-                ImGui.SetTooltip(priorityTooltip);
+                TooltipHelper.Show(_config, priorityTooltip);
 
             // Column 0: Item name
             ImGui.TableSetColumnIndex(1);
@@ -391,7 +394,7 @@ public sealed class ConfigWindow : Window, IDisposable
                 ImGui.TreeNodeEx($"##caps_disabled_{rowIndex}", treeFlags);
                 ImGui.PopStyleColor();
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("Enable per-retainer sell limits in Settings to use this.");
+                    TooltipHelper.Show(_config, "Enable per-retainer sell limits in Settings to edit this.");
 
                 ImGui.SameLine(0f, ImGui.GetStyle().ItemInnerSpacing.X);
                 ImGui.TextUnformatted(displayName);
@@ -403,7 +406,7 @@ public sealed class ConfigWindow : Window, IDisposable
                 var treeFlags = ImGuiTreeNodeFlags.SpanFullWidth | ImGuiTreeNodeFlags.FramePadding | ImGuiTreeNodeFlags.OpenOnArrow | ImGuiTreeNodeFlags.OpenOnDoubleClick;
                 var open = ImGui.TreeNodeEx($"{displayName}##caps", treeFlags);
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("Expand to edit per-retainer limits.");
+                    TooltipHelper.Show(_config, "Expand to set per-retainer limits.");
 
                 if (open)
                 {
@@ -426,7 +429,7 @@ public sealed class ConfigWindow : Window, IDisposable
                 BeginCenteredElement(minInputWidth);
                 ImGui.TextDisabled("—");
                 if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-                    ImGui.SetTooltip("Per-retainer stack sizes are active. Set all stacks to 0 to edit this inventory threshold again.");
+                    TooltipHelper.Show(_config, "Per-retainer stack sizes are active. Set all stacks to 0 to edit the minimum inventory threshold.");
             }
             else
             {
@@ -449,7 +452,7 @@ public sealed class ConfigWindow : Window, IDisposable
                 }
 
                 if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-                    ImGui.SetTooltip("Item will be listed only when your inventory count is at least this number.");
+                    TooltipHelper.Show(_config, "Item will be listed when you have at least this many in inventory.");
             }
 
             // Column 2: Remove button
@@ -463,7 +466,7 @@ public sealed class ConfigWindow : Window, IDisposable
             ImGui.PopFont();
 
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("Remove from sell list");
+                TooltipHelper.Show(_config, "Remove from sell list");
 
             ImGui.PopID();
             rowIndex++;
@@ -549,7 +552,7 @@ public sealed class ConfigWindow : Window, IDisposable
                     }
                 }
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("0 blocks; 1 is default; 20 uses every slot.");
+                    TooltipHelper.Show(_config, "0 = no limit; 1 = default; 20 = use every slot");
 
                 ImGui.TableSetColumnIndex(2);
                 var stackValue = entry.GetRetainerStackSize(name);
@@ -577,14 +580,14 @@ public sealed class ConfigWindow : Window, IDisposable
                 if (stackDisabled)
                 {
                     if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-                        ImGui.SetTooltip("Set the sell limit above zero to edit the stack size.");
+                        TooltipHelper.Show(_config, "Set the sell limit above 0 to edit stack sizes.");
                     ImGui.EndDisabled();
                 }
                 else if (ImGui.IsItemHovered())
                 {
-                    ImGui.SetTooltip(stackCap >= 1000
-                        ? "0 = any available amount; max stack = 9999."
-                        : "0 = any available amount; max stack = 99.");
+                    TooltipHelper.Show(_config, stackCap >= 1000
+                        ? "0 = any amount; max = 9999."
+                        : "0 = any amount; max = 99.");
                 }
 
                 ImGui.PopID();
@@ -719,7 +722,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
             if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
             {
-                ImGui.SetTooltip("Master toggle for this retainer. When disabled, both repricing and selling are skipped.");
+                TooltipHelper.Show(_config, "Master toggle for this retainer. Disabling skips both repricing and selling.");
             }
 
             var disableScoped = !enabled;
@@ -741,7 +744,7 @@ public sealed class ConfigWindow : Window, IDisposable
                 SaveConfig();
             }
             if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-                ImGui.SetTooltip("Allows automation to reprice existing listings for this retainer.");
+                TooltipHelper.Show(_config, "Allows repricing existing listings for this retainer.");
 
             ImGui.TableSetColumnIndex(3);
             var allowSell = behavior.AllowSell;
@@ -752,7 +755,7 @@ public sealed class ConfigWindow : Window, IDisposable
                 SaveConfig();
             }
             if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-                ImGui.SetTooltip("Allows automation to create new listings for this retainer.");
+                TooltipHelper.Show(_config, "Allows creating new listings for this retainer.");
 
             if (disableScoped)
                 ImGui.EndDisabled();
@@ -818,9 +821,9 @@ public sealed class ConfigWindow : Window, IDisposable
 
         if (ImGui.IsItemHovered())
         {
-            ImGui.SetTooltip(
+            TooltipHelper.Show(_config,
                 "Master switch for the plugin.\n" +
-                "Disabling this stops any active run and disables automation, overlay, and context menu features."
+                "Disabling stops any active run and turns off automation, overlay, and context menu."
             );
         }
 
@@ -837,9 +840,23 @@ public sealed class ConfigWindow : Window, IDisposable
 
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
         {
-            ImGui.SetTooltip(
-                "When enabled, an overlay will be added to the retainer list."
+            TooltipHelper.Show(_config,
+                "Shows an overlay on the retainer list."
             );
+        }
+
+        ImGui.Spacing();
+
+        var showTooltips = _config.ShowTooltips;
+        if (ImGui.Checkbox("Show UI tooltips", ref showTooltips))
+        {
+            _config.ShowTooltips = showTooltips;
+            SaveConfig();
+        }
+
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+        {
+            TooltipHelper.Show(_config, "Turns off all tooltip popups.");
         }
 
         ImGui.Spacing();
@@ -853,9 +870,9 @@ public sealed class ConfigWindow : Window, IDisposable
 
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
         {
-            ImGui.SetTooltip(
-                "When enabled, the plugin closes RetainerList at the end of a run.\n" +
-                "When disabled, it leaves it open."
+            TooltipHelper.Show(_config,
+                "Closes the retainer list when finished running.\n" +
+                "Leave unchecked to keep it open."
             );
         }
 
@@ -877,7 +894,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
         {
-            ImGui.SetTooltip("When enabled, each Sell List row can be expanded to set per-retainer caps.");
+            TooltipHelper.Show(_config, "Expand each Sell List row to set per-retainer limits.");
         }
 
         ImGui.Spacing();
@@ -913,7 +930,7 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.TextUnformatted("Universalis smart pricing");
         if (ImGui.IsItemHovered())
         {
-            ImGui.SetTooltip("Requires Universalis data to guard repricing and handle empty boards.");
+            TooltipHelper.Show(_config, "Requires Universalis data to guard repricing and handle empty boards.");
         }
 
         var useUniversalis = _config.UseUniversalisApi;
@@ -926,8 +943,8 @@ public sealed class ConfigWindow : Window, IDisposable
 
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
         {
-            ImGui.SetTooltip(
-                "Master switch for Universalis-backed pricing safeguards and empty-board fallbacks."
+            TooltipHelper.Show(_config, 
+                "Master switch for Universalis pricing protection and empty board handling."
             );
         }
 
@@ -946,8 +963,8 @@ public sealed class ConfigWindow : Window, IDisposable
 
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
         {
-            ImGui.SetTooltip(
-                "Compares in-game listings to Universalis averages and enforces the minimum price floor below."
+            TooltipHelper.Show(_config, 
+                "Compares in-game prices against Universalis averages to enforce a minimum price floor."
             );
         }
 
@@ -960,8 +977,8 @@ public sealed class ConfigWindow : Window, IDisposable
 
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
         {
-            ImGui.SetTooltip(
-                "When enabled, listings with no in-game competition will use Universalis averages before skipping."
+            TooltipHelper.Show(_config, 
+                "Uses Universalis averages for empty in-game listings instead of skipping."
             );
         }
 
@@ -982,7 +999,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
         {
-            ImGui.SetTooltip("Reveals low-level controls that can destabilize automation if misconfigured.");
+            TooltipHelper.Show(_config, "Reveals advanced controls that could break automation if misconfigured.");
         }
     }
 
@@ -1014,7 +1031,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
         if (ImGui.IsItemHovered())
         {
-            ImGui.SetTooltip("Gil subtracted from the lowest competing listing when that listing is not yours.");
+            TooltipHelper.Show(_config, "Gil subtracted from the lowest competing listing (except your own).");
         }
 
         var validation = _config.MarketValidationThreshold;
@@ -1030,7 +1047,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
         if (ImGui.IsItemHovered())
         {
-            ImGui.SetTooltip("If Universalis averages exceed live market prices by more than this multiplier, the plugin trusts the market instead.");
+            TooltipHelper.Show(_config, "When Universalis averages exceed live market prices by more than this multiplier, the plugin trusts the market instead.");
         }
 
         if (!_config.UseUniversalisApi)
@@ -1062,7 +1079,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
         {
-            ImGui.SetTooltip("Listings below this percent of the Universalis average will be ignored.");
+            TooltipHelper.Show(_config, "Listings below this percent of the Universalis average will be ignored.");
         }
     }
 
@@ -1109,7 +1126,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
         {
-            ImGui.SetTooltip("Higher values favor fast-selling items; lower balances toward expensive items.");
+            TooltipHelper.Show(_config, "Higher values favor fast-selling items; lower balances toward expensive items.");
         }
 
         DrawFloatSlider(
@@ -1119,7 +1136,7 @@ public sealed class ConfigWindow : Window, IDisposable
             100f,
             200000f,
             "%.0f",
-            "Log base controlling how expensive items contribute to the score.");
+            "Log base controlling how much price influences the score.");
 
         var priceWeight = _config.SmartSortPriceWeight;
         if (ImGui.SliderFloat("Price weight", ref priceWeight, 0.1f, 0.8f, "%.2f"))
@@ -1132,7 +1149,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
         {
-            ImGui.SetTooltip("Higher values favor expensive items; lower balances toward fast sellers.");
+            TooltipHelper.Show(_config, "Higher values favor expensive items; lower balances toward fast sellers.");
         }
 
         var refreshMinutes = _config.SmartSortRefreshMinutes;
@@ -1145,7 +1162,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
         {
-            ImGui.SetTooltip("Smart sort refreshes automatically if the last refresh is older than this many minutes when a run begins.");
+            TooltipHelper.Show(_config, "Smart sort auto-refreshes if the last refresh was more than this many minutes ago when a run starts.");
         }
 
         ImGui.PopItemWidth();
@@ -1157,7 +1174,7 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.TextDisabled("Smart sort formula");
         if (ImGui.IsItemHovered())
         {
-            ImGui.SetTooltip(
+            TooltipHelper.Show(_config, 
                 "composite = (velocityScore × velocityWeight) + (priceScore × priceWeight)\n" +
                 "velocityScore = log10(min(cap, velocity)+1) / log10(base)\n" +
                 "priceScore = log10(price+1) / log10(base)\n" +
@@ -1209,7 +1226,7 @@ public sealed class ConfigWindow : Window, IDisposable
             v => _config.MbBaseIntervalSeconds = v,
             0.5f,
             5f,
-            "Target pacing between Compare Prices requests.\nThis value is adjusted up or down automatically based on recent market throttles.");
+            "Target pacing between Compare Prices requests. This value adjusts up or down automatically based on recent market throttles.");
 
         DrawSecondsSlider(
             "MB min interval##adv_mb_min",
@@ -1234,7 +1251,7 @@ public sealed class ConfigWindow : Window, IDisposable
             0f,
             1f,
             "%.2f s",
-            "Random variance added to market pacing so requests do not occur on a strict cadence.");
+            "Random variance added to market pacing so requests don't occur on a strict cadence.");
 
         DrawSecondsSlider(
             "ISR throttle backoff##adv_isr_backoff",
@@ -1313,7 +1330,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
         if (ImGui.IsItemHovered())
         {
-            ImGui.SetTooltip(tooltip);
+            TooltipHelper.Show(_config, tooltip);
         }
     }
 
@@ -1336,7 +1353,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
         if (ImGui.IsItemHovered())
         {
-            ImGui.SetTooltip(tooltip);
+            TooltipHelper.Show(_config, tooltip);
         }
     }
 
@@ -1388,7 +1405,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
         if (ImGui.IsItemHovered())
         {
-            ImGui.SetTooltip("Restores every advanced setting on this tab to its default value.");
+            TooltipHelper.Show(_config, "Resets all advanced settings on this tab to defaults.");
         }
 
         if (_showAdvancedResetConfirmation)
@@ -1581,7 +1598,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
         {
-            ImGui.SetTooltip("Automatically reorder sell items using Universalis sale velocity and average price data.");
+            TooltipHelper.Show(_config, "Automatically reorder sell items using Universalis sale velocity and average price data.");
         }
 
         if (!smartSortEnabled)

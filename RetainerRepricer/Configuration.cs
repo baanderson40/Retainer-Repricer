@@ -36,6 +36,9 @@ public sealed class Configuration : IPluginConfiguration
     // Optional: when enabled, per-retainer sell caps become available in the Sell List.
     public bool EnablePerRetainerCaps { get; set; } = false;
 
+    // Controls whether ImGui tooltips are shown while hovering configuration controls.
+    public bool ShowTooltips { get; set; } = true;
+
     #endregion
 
     #region Run behavior

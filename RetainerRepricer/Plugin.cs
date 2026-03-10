@@ -113,7 +113,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
         ConfigWindow = new ConfigWindow(this);
         MainWindow = new MainWindow(this);
-        MinCountPopup = new MinCountPopup();
+        MinCountPopup = new MinCountPopup(Configuration);
         ContextMenu = new ContextMenuManager(this, Configuration, MinCountPopup);
 
         WindowSystem.AddWindow(ConfigWindow);

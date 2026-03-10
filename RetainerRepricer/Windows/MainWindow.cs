@@ -1,10 +1,13 @@
+using System;
+using System.Numerics;
+
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
 using Dalamud.Interface.Components;
 using Dalamud.Interface.Windowing;
 using FFXIVClientStructs.FFXIV.Component.GUI;
-using System;
-using System.Numerics;
+
+using RetainerRepricer.Ui;
 
 namespace RetainerRepricer.Windows;
 
@@ -204,7 +207,7 @@ public sealed unsafe class MainWindow : Window, IDisposable
         ImGui.PopID();
 
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(_plugin.IsRunning ? "Stop" : "Start");
+            TooltipHelper.Show(_plugin.Configuration, _plugin.IsRunning ? "Stop run" : "Start run");
     }
 
     private void DrawConfigButton()
@@ -218,7 +221,7 @@ public sealed unsafe class MainWindow : Window, IDisposable
         ImGui.PopID();
 
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Config");
+            TooltipHelper.Show(_plugin.Configuration, "Open config");
     }
 
     private void DrawRightAlignedStatusText()
