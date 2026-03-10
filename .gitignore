@@ -2,6 +2,5 @@
 obj/
 bin/
 *.user
-ai_planning/
 AGENTS.md
 RetainerRepricer/Properties/
