@@ -39,12 +39,17 @@ The items you want the plugin to list or reprice live here.
 - Each row shows priority, item name, how many you need in inventory before listing, and a remove button.
 - When Smart Sort is active, priority numbers are just for reference—the plugin reorders them automatically.
 - The Smart Sort button reorder your list based on how fast items sell and their average price. If it's disabled, check that Universalis is enabled in Settings.
+- With per-retainer caps enabled in Settings, each Sell List item can have different listing limits per retainer, and you can set how many of an item to list in a single transaction.
 
 ---
 
 ## Retainers
 
 - Shows every retainer currently visible in your Retainer List.
+- Each retainer has three checkboxes:
+  - **Enabled** – Whether the plugin touches this retainer at all.
+  - **Allow reprice** – Whether to reprice existing listings.
+  - **Allow sell** – Whether to list new items from your Sell List.
 - Uncheck any retainer you don't want the plugin to touch.
 - Your choices save right away.
 
@@ -52,10 +57,12 @@ The items you want the plugin to list or reprice live here.
 
 ## Settings
 
-- Toggle the overlay that appears near bell menus (Start, Stop, Config buttons).
-- Enable or disable Universalis features like the price floor and Smart Sort.
-- Configure how much to undercut the lowest price and whether to use Universalis data when the board is empty.
-- Flip on the Advanced toggle to see more options if you need them.
+- **Plugin enabled** – Master toggle to enable or disable all automation, overlay, and context menu features.
+- **Show tooltips** – Turns on helpful tooltips when hovering over settings controls.
+- **Close RetainerList on finish** – Automatically closes the Retainer List when a run completes.
+- **Overlay** – Toggle the overlay that appears near bell menus (Start, Stop, Config buttons).
+- **Universalis options** – Enable or disable price floor, Smart Sort, and fallback pricing when the board is empty.
+- **Advanced** – Flip on this toggle to see more options if you need them.
 
 ---
 
@@ -104,14 +111,13 @@ When the plugin is on, right-clicking items in your inventory gives you extra op
 - `/repricer stop` — stop and close any open menus.
 - `/repricer config` or `/repricer c` — open the settings window.
 
-The overlay near the bell has the same Start, Stop, and Config buttons.
+The overlay near the retainer list has the same Start, Stop, and Config buttons.
 
 ---
 
 ## Safety & Limitations
 
 - Works only inside the game through Dalamud—no external automation.
-- Must be connected to a world or data center for Universalis features to work.
 - Handles high quality and normal quality items completely separately to avoid mistakes.
 - Other plugins that mess with the same menus might conflict—finish one before starting another.
 - Keep the timing settings as-is unless you know what you're doing; changing them can cause the plugin to act too fast for the game to handle.
