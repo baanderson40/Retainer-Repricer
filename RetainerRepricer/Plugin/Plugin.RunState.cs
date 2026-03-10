@@ -170,6 +170,18 @@ public unsafe sealed partial class Plugin
         set => _sellState.CurrentSellItemId = value;
     }
 
+    private bool _currentSellItemIsHq
+    {
+        get => _sellState.CurrentSellItemIsHq;
+        set => _sellState.CurrentSellItemIsHq = value;
+    }
+
+    private int _currentSellStackSize
+    {
+        get => _sellState.CurrentSellStackSize;
+        set => _sellState.CurrentSellStackSize = value;
+    }
+
     private InventorySlotRef _pendingSellSlot
     {
         get => _sellState.PendingSellSlot;
@@ -180,6 +192,18 @@ public unsafe sealed partial class Plugin
     {
         get => _sellState.HasPendingSellSlot;
         set => _sellState.HasPendingSellSlot = value;
+    }
+
+    private Dictionary<ulong, int> _retainerSellCounts
+        => _sellState.RetainerSellCounts;
+
+    private Dictionary<ulong, int> _retainerExistingSellCounts
+        => _sellState.RetainerExistingSellCounts;
+
+    private bool _needsExistingListingScan
+    {
+        get => _sellState.NeedsExistingListingScan;
+        set => _sellState.NeedsExistingListingScan = value;
     }
 
     private HashSet<string> _myRetainers => _marketState.MyRetainers;
@@ -328,6 +352,9 @@ public unsafe sealed partial class Plugin
         public bool IsHq;
         public int MinCountToSell;
         public string Name;
+        public Dictionary<string, int>? RetainerCaps;
+        public Dictionary<string, int>? RetainerStackSizes;
+        public int StackSizeMax;
     }
 
     private struct InventorySlotRef
@@ -363,8 +390,13 @@ public unsafe sealed partial class Plugin
         public int SoldThisRetainer { get; set; }
         public bool ProcessingListedItem { get; set; } = true;
         public uint CurrentSellItemId { get; set; }
+        public bool CurrentSellItemIsHq { get; set; }
+        public int CurrentSellStackSize { get; set; }
         public InventorySlotRef PendingSellSlot { get; set; }
         public bool HasPendingSellSlot { get; set; }
+        public Dictionary<ulong, int> RetainerSellCounts { get; } = new();
+        public Dictionary<ulong, int> RetainerExistingSellCounts { get; } = new();
+        public bool NeedsExistingListingScan { get; set; }
     }
 
     private sealed class MarketContextState

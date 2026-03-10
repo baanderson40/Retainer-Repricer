@@ -250,6 +250,14 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         }
     }
 
+    internal int GetStackSizeCap(uint itemId)
+    {
+        if (itemId >= 2 && itemId <= 19)
+            return 9999;
+
+        return 99;
+    }
+
     #endregion
 
     #region Start/stop helpers
@@ -395,7 +403,15 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
         _processingListedItem = true;
         _currentSellItemId = 0;
+        _currentSellItemIsHq = false;
+        _currentSellStackSize = 0;
         _hasPendingSellSlot = false;
+        if (Configuration.EnablePerRetainerCaps)
+        {
+            _retainerSellCounts.Clear();
+            _retainerExistingSellCounts.Clear();
+        }
+        _needsExistingListingScan = false;
 
         ResetUniversalisGateState();
 
@@ -424,7 +440,15 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
         _processingListedItem = true;
         _currentSellItemId = 0;
+        _currentSellItemIsHq = false;
+        _currentSellStackSize = 0;
         _hasPendingSellSlot = false;
+        if (Configuration.EnablePerRetainerCaps)
+        {
+            _retainerSellCounts.Clear();
+            _retainerExistingSellCounts.Clear();
+        }
+        _needsExistingListingScan = false;
 
         // Reset pacing so one bad throttle event doesn't slow the whole plugin permanently.
         _mbIntervalSec = MbBaseIntervalSeconds;

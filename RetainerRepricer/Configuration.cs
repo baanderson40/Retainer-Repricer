@@ -33,6 +33,9 @@ public sealed class Configuration : IPluginConfiguration
     // Config UI stays usable so it’s easy to turn back on.
     public bool PluginEnabled { get; set; } = true;
 
+    // Optional: when enabled, per-retainer sell caps become available in the Sell List.
+    public bool EnablePerRetainerCaps { get; set; } = false;
+
     #endregion
 
     #region Run behavior
@@ -136,7 +139,7 @@ public sealed class Configuration : IPluginConfiguration
         return behavior;
     }
 
-    private static string NormalizeRetainerName(string name)
+    internal static string NormalizeRetainerName(string name)
         => (name ?? string.Empty).Trim();
 
     private void EnsureRetainerDictionaries()
@@ -236,6 +239,8 @@ public sealed class Configuration : IPluginConfiguration
 
     // HQ glyph suffix (matches in-game suffix style).
     public const char HqGlyphChar = '\uE03C';
+    public const int RetainerCapDefault = 1;
+    public const int RetainerCapMax = 20;
 
     [Serializable]
     public sealed class SellListEntry
@@ -254,10 +259,138 @@ public sealed class Configuration : IPluginConfiguration
 
         // Explicit ordering (1..N). Lower numbers run earlier.
         public int SortOrder { get; set; }
+
+        // Optional per-retainer caps for new listings; defaults to 1 per retainer when unset.
+        public Dictionary<string, int> RetainerCaps { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+        // Optional per-retainer stack sizes (0 = any available amount).
+        public Dictionary<string, int> RetainerStackSizes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+        public void EnsureRetainerCaps()
+        {
+            RetainerCaps ??= new(StringComparer.OrdinalIgnoreCase);
+        }
+
+        public void EnsureRetainerStackSizes()
+        {
+            RetainerStackSizes ??= new(StringComparer.OrdinalIgnoreCase);
+        }
+
+        public bool TryGetRetainerCap(string name, out int cap)
+        {
+            EnsureRetainerCaps();
+            var key = NormalizeRetainerName(name);
+            if (key.Length == 0)
+            {
+                cap = RetainerCapDefault;
+                return false;
+            }
+
+            if (RetainerCaps.TryGetValue(key, out cap))
+                return true;
+
+            cap = RetainerCapDefault;
+            return false;
+        }
+
+        public int GetRetainerCapOrDefault(string name)
+        {
+            TryGetRetainerCap(name, out var cap);
+            return cap;
+        }
+
+        public void SetRetainerCap(string name, int value)
+        {
+            EnsureRetainerCaps();
+            var key = NormalizeRetainerName(name);
+            if (key.Length == 0)
+                return;
+
+            var clamped = Math.Clamp(value, 0, RetainerCapMax);
+
+            if (clamped == RetainerCapDefault)
+            {
+                RetainerCaps.Remove(key);
+                return;
+            }
+
+            RetainerCaps[key] = clamped;
+        }
+
+        public void ClearRetainerCap(string name)
+        {
+            EnsureRetainerCaps();
+            var key = NormalizeRetainerName(name);
+            if (key.Length == 0)
+                return;
+
+            RetainerCaps.Remove(key);
+        }
+
+        public int GetRetainerStackSize(string name)
+        {
+            EnsureRetainerStackSizes();
+            var key = NormalizeRetainerName(name);
+            if (key.Length == 0)
+                return 0;
+
+            return RetainerStackSizes.TryGetValue(key, out var value) ? value : 0;
+        }
+
+        public void SetRetainerStackSize(string name, int value, int stackCap)
+        {
+            EnsureRetainerStackSizes();
+            var key = NormalizeRetainerName(name);
+            if (key.Length == 0)
+                return;
+
+            var clamped = Math.Clamp(value, 0, stackCap);
+
+            if (clamped == 0)
+                RetainerStackSizes.Remove(key);
+            else
+                RetainerStackSizes[key] = clamped;
+
+            RefreshMinCountFromStackSizes();
+        }
+
+        public void ClearRetainerStackSize(string name)
+        {
+            EnsureRetainerStackSizes();
+            var key = NormalizeRetainerName(name);
+            if (key.Length == 0)
+                return;
+
+            if (RetainerStackSizes.Remove(key))
+                RefreshMinCountFromStackSizes();
+        }
+
+        public void RefreshMinCountFromStackSizes()
+        {
+            EnsureRetainerStackSizes();
+            if (RetainerStackSizes.Count == 0)
+                return;
+
+            var minPositive = int.MaxValue;
+            foreach (var kvp in RetainerStackSizes)
+            {
+                if (kvp.Value <= 0)
+                {
+                    minPositive = int.MaxValue;
+                    break;
+                }
+
+                if (kvp.Value < minPositive)
+                    minPositive = kvp.Value;
+            }
+
+            if (minPositive != int.MaxValue)
+                MinCountToSell = Math.Clamp(minPositive, 1, 999);
+        }
     }
 
     // Key = (baseItemId << 1) | (isHq ? 1 : 0)
-    private static ulong MakeSellKey(uint baseItemId, bool isHq)
+    internal static ulong MakeSellKey(uint baseItemId, bool isHq)
         => ((ulong)baseItemId << 1) | (isHq ? 1UL : 0UL);
 
     // Stored as a single dictionary so HQ/NQ don’t collide.
@@ -265,12 +398,33 @@ public sealed class Configuration : IPluginConfiguration
     public Dictionary<ulong, SellListEntry> SellList { get; set; } = new();
 
     // Convenience: display name builder (HQ suffix).
-    private static string BuildDisplayName(string name, bool isHq)
+    internal static string BuildDisplayName(string name, bool isHq)
     {
         var n = (name ?? string.Empty).Trim();
         if (isHq)
             return (n + " " + HqGlyphChar).Trim(); // suffix (matches game convention)
         return n;
+    }
+
+    public bool TryGetSellEntryKeyByDisplayName(string displayName, out ulong key)
+    {
+        key = 0;
+        if (SellList == null || SellList.Count == 0)
+            return false;
+
+        foreach (var entry in SellList.Values)
+        {
+            if (entry == null)
+                continue;
+
+            if (string.Equals(entry.Name, displayName, StringComparison.OrdinalIgnoreCase))
+            {
+                key = MakeSellKey(entry.ItemId, entry.IsHq);
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public bool HasSellItem(uint baseItemId, bool isHq)

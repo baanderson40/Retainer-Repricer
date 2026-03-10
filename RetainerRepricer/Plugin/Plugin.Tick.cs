@@ -101,9 +101,17 @@ public unsafe sealed partial class Plugin
 
                     // Build per-retainer sell queue (runs after repricing).
                     _sellQueue.Clear();
+                    if (Configuration.EnablePerRetainerCaps)
+                        _retainerSellCounts.Clear();
+                    _retainerExistingSellCounts.Clear();
+                    _needsExistingListingScan = Configuration.EnablePerRetainerCaps;
                     foreach (var e in Configuration.GetSellListOrdered())
                     {
                         if (e.ItemId == 0) continue;
+
+                        e.EnsureRetainerCaps();
+                        e.EnsureRetainerStackSizes();
+                        var stackCap = GetStackSizeCap(e.ItemId);
 
                         _sellQueue.Add(new SellCandidate
                         {
@@ -111,6 +119,9 @@ public unsafe sealed partial class Plugin
                             IsHq = e.IsHq,
                             MinCountToSell = Math.Max(1, e.MinCountToSell),
                             Name = e.Name ?? string.Empty,
+                            RetainerCaps = e.RetainerCaps,
+                            RetainerStackSizes = e.RetainerStackSizes,
+                            StackSizeMax = stackCap,
                         });
                     }
                     _sellQueuePos = 0;
@@ -120,6 +131,7 @@ public unsafe sealed partial class Plugin
 
                     _processingListedItem = true;
                     _currentSellItemId = 0;
+                    _currentSellItemIsHq = false;
                     _hasPendingSellSlot = false;
 
                     // Reset pacing per retainer so a throttle hit doesn't poison the next retainer.
@@ -236,11 +248,15 @@ public unsafe sealed partial class Plugin
                         _soldThisRetainer = 0;
 
                         Log.Information($"[RR] Entered RetainerSellList. Listed={_listedCountThisRetainer}; new sells capacity={_sellCapacityThisRetainer}");
+
+                        if (_listedCountThisRetainer <= 0)
+                            _needsExistingListingScan = false;
                     }
 
                     var retainerLabel = DescribeCurrentRetainerForLog();
+                    var needListingScan = Configuration.EnablePerRetainerCaps && _needsExistingListingScan && _listedCountThisRetainer > 0;
 
-                    if (ShouldRepriceThisRetainer && _listedCountThisRetainer > 0)
+                    if ((ShouldRepriceThisRetainer && _listedCountThisRetainer > 0) || needListingScan)
                     {
                         _runPhase = RunPhase.OpeningSellItem;
                     }
@@ -286,7 +302,9 @@ public unsafe sealed partial class Plugin
 
             case RunPhase.OpeningSellItem:
                 {
-                    if (!ShouldRepriceThisRetainer)
+                    var needListingScan = Configuration.EnablePerRetainerCaps && _needsExistingListingScan;
+
+                    if (!ShouldRepriceThisRetainer && !needListingScan)
                     {
                         _runPhase = ShouldSellThisRetainer
                             ? RunPhase.Sell_FindNextItemInInventory
@@ -301,7 +319,17 @@ public unsafe sealed partial class Plugin
 
                     if (_slotIndexToOpen >= _listedCountThisRetainer)
                     {
-                        _runPhase = RunPhase.Sell_FindNextItemInInventory;
+                        if (needListingScan)
+                        {
+                            _needsExistingListingScan = false;
+                            _runPhase = ShouldSellThisRetainer
+                                ? RunPhase.Sell_FindNextItemInInventory
+                                : RunPhase.ExitToRetainerList;
+                        }
+                        else
+                        {
+                            _runPhase = RunPhase.Sell_FindNextItemInInventory;
+                        }
                         _lastActionUtc = now;
                         return;
                     }
@@ -368,8 +396,23 @@ public unsafe sealed partial class Plugin
                     ResetUniversalisGateState();
 
                     Log.Information($"[RR] Sell capture: item='{name}' currentPrice={priceOpt.Value}");
+                    RecordExistingListingForCaps(name, _currentIsHq);
 
-                    _runPhase = RunPhase.OpenComparePrices;
+                    if (ShouldRepriceThisRetainer)
+                    {
+                        _runPhase = RunPhase.OpenComparePrices;
+                    }
+                    else if (Configuration.EnablePerRetainerCaps && _needsExistingListingScan)
+                    {
+                        _runPhase = RunPhase.CleanupAfterItem;
+                    }
+                    else
+                    {
+                        _runPhase = ShouldSellThisRetainer
+                            ? RunPhase.Sell_FindNextItemInInventory
+                            : RunPhase.ExitToRetainerList;
+                    }
+
                     _lastActionUtc = now;
                     return;
                 }
@@ -977,6 +1020,19 @@ public unsafe sealed partial class Plugin
                     var unit = (AtkUnitBase*)sellAddon.Address;
                     if (unit == null || !unit->IsVisible) return;
 
+                    if (_currentSellStackSize > 0)
+                    {
+                        var desiredQuantity = Math.Clamp(_currentSellStackSize, 1, 9999);
+                        try
+                        {
+                            new AddonMaster.RetainerSell(unit).Quantity = desiredQuantity;
+                        }
+                        catch (Exception ex)
+                        {
+                            Log.Warning(ex, "[RR] Failed to set sell quantity; proceeding with default amount.");
+                        }
+                    }
+
                     Log.Information($"[RR] Confirm price={desired}");
 
                     Callback.Fire(unit, updateState: true, 0);
@@ -1018,7 +1074,20 @@ public unsafe sealed partial class Plugin
                     {
                         _processingListedItem = true;
                         _hasPendingSellSlot = false;
+
+                        if (Configuration.EnablePerRetainerCaps && _currentSellItemId != 0)
+                        {
+                            var sellKey = Configuration.MakeSellKey(_currentSellItemId, _currentSellItemIsHq);
+                            var updated = _retainerSellCounts.TryGetValue(sellKey, out var existing)
+                                ? existing + 1
+                                : 1;
+                            _retainerSellCounts[sellKey] = updated;
+                            Log.Debug($"[RR][Sell] Incremented retainer cap counter for itemId={_currentSellItemId} hq={_currentSellItemIsHq}: {updated}.");
+                        }
+
                         _currentSellItemId = 0;
+                        _currentSellItemIsHq = false;
+                        _currentSellStackSize = 0;
 
                         _soldThisRetainer++;
                         Log.Information($"[RR] New listings: {_soldThisRetainer}/{_sellCapacityThisRetainer}");
@@ -1032,6 +1101,7 @@ public unsafe sealed partial class Plugin
 
                     if (_slotIndexToOpen >= _listedCountThisRetainer)
                     {
+                        _needsExistingListingScan = false;
                         _runPhase = RunPhase.Sell_FindNextItemInInventory;
                         _lastActionUtc = now;
                         return;
@@ -1085,6 +1155,9 @@ public unsafe sealed partial class Plugin
                         return;
                     }
 
+                    var normalizedRetainerName = Configuration.NormalizeRetainerName(_currentRetainerName);
+                    var hasRetainerName = Configuration.EnablePerRetainerCaps && normalizedRetainerName.Length > 0;
+
                     while (_sellQueuePos < _sellQueue.Count)
                     {
                         var c = _sellQueue[_sellQueuePos];
@@ -1093,7 +1166,37 @@ public unsafe sealed partial class Plugin
                         if (c.ItemId == 0)
                             continue;
 
-                        var threshold = Math.Max(1, c.MinCountToSell);
+                        var (threshold, desiredQuantity) = ResolveStackSizeForRetainer(c, hasRetainerName ? normalizedRetainerName : string.Empty);
+
+                        if (hasRetainerName)
+                        {
+                            var requestedCap = Configuration.RetainerCapDefault;
+
+                            if (c.RetainerCaps is { Count: > 0 } caps && caps.TryGetValue(normalizedRetainerName, out var storedCap))
+                                requestedCap = storedCap;
+
+                            var capValue = Math.Clamp(requestedCap, 0, Configuration.RetainerCapMax);
+                            if (capValue <= 0)
+                            {
+                                Log.Verbose($"[RR][Sell] Retainer cap blocks itemId={c.ItemId} hq={c.IsHq} on '{normalizedRetainerName}' (cap=0).");
+                                continue;
+                            }
+
+                            var sellKey = Configuration.MakeSellKey(c.ItemId, c.IsHq);
+                            var newCountSoFar = _retainerSellCounts.TryGetValue(sellKey, out var newCount)
+                                ? newCount
+                                : 0;
+                            var existingCount = _retainerExistingSellCounts.TryGetValue(sellKey, out var already)
+                                ? already
+                                : 0;
+                            var usedCount = existingCount + newCountSoFar;
+
+                            if (usedCount >= capValue)
+                            {
+                                Log.Verbose($"[RR][Sell] Retainer cap reached for itemId={c.ItemId} hq={c.IsHq} on '{normalizedRetainerName}': {usedCount}/{capValue} (existing={existingCount}, new={newCountSoFar}).");
+                                continue;
+                            }
+                        }
 
                         if (!TryFindItemInInventory(c.ItemId, c.IsHq, out var slotRef, out var totalCount))
                         {
@@ -1108,6 +1211,8 @@ public unsafe sealed partial class Plugin
                         }
 
                         _currentSellItemId = c.ItemId;
+                        _currentSellItemIsHq = c.IsHq;
+                        _currentSellStackSize = desiredQuantity;
                         _pendingSellSlot = slotRef;
                         _hasPendingSellSlot = true;
 
@@ -1153,6 +1258,8 @@ public unsafe sealed partial class Plugin
                         _hasPendingSellSlot = false;
                         _pendingSellSlot = default;
                         _currentSellItemId = 0;
+                        _currentSellItemIsHq = false;
+                        _currentSellStackSize = 0;
 
                         _runPhase = RunPhase.Sell_FindNextItemInInventory;
                         _lastActionUtc = now;
@@ -1240,6 +1347,44 @@ public unsafe sealed partial class Plugin
             default:
                 return;
         }
+    }
+
+    private void RecordExistingListingForCaps(string itemName, bool isHq)
+    {
+        if (!Configuration.EnablePerRetainerCaps)
+            return;
+
+        var trimmed = (itemName ?? string.Empty).Trim();
+        if (trimmed.Length == 0)
+            return;
+
+        var displayName = Configuration.BuildDisplayName(trimmed, isHq);
+        if (!Configuration.TryGetSellEntryKeyByDisplayName(displayName, out var key))
+            return;
+
+        var updated = _retainerExistingSellCounts.TryGetValue(key, out var existing)
+            ? existing + 1
+            : 1;
+        _retainerExistingSellCounts[key] = updated;
+        Log.Verbose($"[RR][Caps] Existing listing count for '{displayName}' now {updated}.");
+    }
+
+    private (int Threshold, int DesiredQuantity) ResolveStackSizeForRetainer(SellCandidate candidate, string normalizedRetainerName)
+    {
+        var cap = candidate.StackSizeMax > 0 ? candidate.StackSizeMax : 99;
+        var baseline = Math.Clamp(candidate.MinCountToSell, 1, cap);
+
+        if (!Configuration.EnablePerRetainerCaps || string.IsNullOrEmpty(normalizedRetainerName) || candidate.RetainerStackSizes is not { Count: > 0 })
+            return (baseline, 0);
+
+        if (!candidate.RetainerStackSizes.TryGetValue(normalizedRetainerName, out var overrideValue))
+            return (baseline, 0);
+
+        if (overrideValue <= 0)
+            return (baseline, 0);
+
+        var desired = Math.Clamp(overrideValue, 1, cap);
+        return (desired, desired);
     }
 
     #endregion
