@@ -633,10 +633,11 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         return true;
     }
 
-    private unsafe bool TryPickReferenceListing(out int lowestPrice, out string lowestSeller)
+    private unsafe bool TryPickReferenceListing(out int lowestPrice, out string lowestSeller, out bool usedUniversalisFallback)
     {
         lowestPrice = 0;
         lowestSeller = string.Empty;
+        usedUniversalisFallback = false;
 
         var list = _uiReader.GetMarketList();
         if (list == null) return false;
@@ -668,9 +669,19 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
             if (gateFloor.HasValue)
             {
-                Log.Information($"[RR][Gate] No HQ listings met the floor {gateFloor.Value}; using floor price.");
-                lowestPrice = gateFloor.Value;
-                lowestSeller = "[UniversalisFloor]";
+                lowestPrice = ResolveUniversalisFallbackPrice(gateFloor.Value, out var fallbackSeller);
+                lowestSeller = fallbackSeller;
+                usedUniversalisFallback = true;
+
+                if (fallbackSeller == "[UniversalisAverage]")
+                {
+                    Log.Information($"[RR][Gate] No HQ listings met the floor {gateFloor.Value}; using Universalis average {lowestPrice}.");
+                }
+                else
+                {
+                    Log.Information($"[RR][Gate] No HQ listings met the floor {gateFloor.Value}; using floor price.");
+                }
+
                 return true;
             }
 
@@ -698,9 +709,19 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
                 return true;
             }
 
-            Log.Information($"[RR][Gate] No NQ listings met the floor {gateFloor.Value}; using floor price.");
-            lowestPrice = gateFloor.Value;
-            lowestSeller = "[UniversalisFloor]";
+            lowestPrice = ResolveUniversalisFallbackPrice(gateFloor.Value, out var fallbackSellerNq);
+            lowestSeller = fallbackSellerNq;
+            usedUniversalisFallback = true;
+
+            if (fallbackSellerNq == "[UniversalisAverage]")
+            {
+                Log.Information($"[RR][Gate] No NQ listings met the floor {gateFloor.Value}; using Universalis average {lowestPrice}.");
+            }
+            else
+            {
+                Log.Information($"[RR][Gate] No NQ listings met the floor {gateFloor.Value}; using floor price.");
+            }
+
             return true;
         }
 
@@ -711,6 +732,22 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         lowestPrice = p0;
         lowestSeller = s0;
         return true;
+    }
+
+    private int ResolveUniversalisFallbackPrice(int gateFloor, out string sellerLabel)
+    {
+        if (_universalisGateAverage is { } average && average > 0)
+        {
+            var avgPrice = (int)Math.Floor(average);
+            if (avgPrice < 1)
+                avgPrice = 1;
+
+            sellerLabel = "[UniversalisAverage]";
+            return avgPrice;
+        }
+
+        sellerLabel = "[UniversalisFloor]";
+        return gateFloor < 1 ? 1 : gateFloor;
     }
     private unsafe bool IsAnyHqVisibleInFirstPage()
     {

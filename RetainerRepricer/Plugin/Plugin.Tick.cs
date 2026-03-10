@@ -396,21 +396,37 @@ public unsafe sealed partial class Plugin
                     ResetUniversalisGateState();
 
                     Log.Information($"[RR] Sell capture: item='{name}' currentPrice={priceOpt.Value}");
-                    RecordExistingListingForCaps(name, _currentIsHq);
 
-                    if (ShouldRepriceThisRetainer)
+                    if (_processingListedItem)
                     {
-                        _runPhase = RunPhase.OpenComparePrices;
-                    }
-                    else if (Configuration.EnablePerRetainerCaps && _needsExistingListingScan)
-                    {
-                        _runPhase = RunPhase.CleanupAfterItem;
+                        RecordExistingListingForCaps(name, _currentIsHq);
+
+                        if (ShouldRepriceThisRetainer)
+                        {
+                            _runPhase = RunPhase.OpenComparePrices;
+                        }
+                        else if (Configuration.EnablePerRetainerCaps && _needsExistingListingScan)
+                        {
+                            _runPhase = RunPhase.CleanupAfterItem;
+                        }
+                        else
+                        {
+                            _runPhase = ShouldSellThisRetainer
+                                ? RunPhase.Sell_FindNextItemInInventory
+                                : RunPhase.ExitToRetainerList;
+                        }
                     }
                     else
                     {
-                        _runPhase = ShouldSellThisRetainer
-                            ? RunPhase.Sell_FindNextItemInInventory
-                            : RunPhase.ExitToRetainerList;
+                        if (!ShouldSellThisRetainer)
+                        {
+                            Log.Warning("[RR][Sell] Unexpected inventory capture while selling disabled; aborting listing.");
+                            _runPhase = RunPhase.CleanupAfterItem;
+                        }
+                        else
+                        {
+                            _runPhase = RunPhase.OpenComparePrices;
+                        }
                     }
 
                     _lastActionUtc = now;
@@ -785,7 +801,7 @@ public unsafe sealed partial class Plugin
                         _universalisPriceFloor = null;
                     }
 
-                    if (!TryPickReferenceListing(out var lowestPrice, out var lowestSeller))
+                    if (!TryPickReferenceListing(out var lowestPrice, out var lowestSeller, out var usedUniversalisFallback))
                     {
                         // If this is an HQ item and we didn't see HQ in the first page,
                         // try applying the HQ filter ONCE as a fallback to avoid list virtualization.
@@ -824,11 +840,36 @@ public unsafe sealed partial class Plugin
                         return;
                     }
 
+                    if (_currentIsHq && usedUniversalisFallback && !_isrHqFilterFallbackTried)
+                    {
+                        if (!IsAnyHqVisibleInFirstPage())
+                        {
+                            Log.Information("[RR] Universalis fallback triggered without HQ visibility; applying HQ filter once.");
+
+                            _isrHqFilterFallbackTried = true;
+
+                            _isrNeedApplyHqFilter = true;
+                            _isrHqFilterApplied = false;
+                            _isrHqFilterRequestedUtc = DateTime.MinValue;
+
+                            _isrAllowFilterAfterUtc = now.AddSeconds(IsrHqFilterInitialDelaySeconds);
+
+                            _isrNoItemsConfirm = 0;
+                            _isrOpenedUtc = now;
+
+                            _runPhase = RunPhase.WaitingItemSearchResult;
+                            _lastActionUtc = now;
+                            return;
+                        }
+                    }
+
                     var referenceIsMine =
                         !string.IsNullOrWhiteSpace(lowestSeller) &&
                         _myRetainers.Contains(lowestSeller);
 
-                    var desired = DecideNewPrice(lowestPrice, referenceIsMine);
+                    var desired = usedUniversalisFallback
+                        ? lowestPrice
+                        : DecideNewPrice(lowestPrice, referenceIsMine);
 
                     var sellAddonPeek = GameGui.GetAddonByName("RetainerSell", 1);
                     if (sellAddonPeek.IsNull) return;
