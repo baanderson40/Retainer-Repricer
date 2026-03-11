@@ -1,4 +1,6 @@
 using System;
+using System.Threading.Tasks;
+using RetainerRepricer.Services;
 
 namespace RetainerRepricer;
 
@@ -36,6 +38,11 @@ public unsafe sealed partial class Plugin
                 ToggleConfigUi();
                 return;
 
+            case "debuguniv":
+            case "debuguniversalis":
+                HandleDebugUniversalisCommand(tokens);
+                return;
+
             default:
                 PrintHelp();
                 return;
@@ -64,6 +71,74 @@ public unsafe sealed partial class Plugin
         PrintError("Not currently running.");
     }
 
+    private void HandleDebugUniversalisCommand(string[] tokens)
+    {
+        if (tokens.Length < 2 || !uint.TryParse(tokens[1], out var itemId) || itemId == 0)
+        {
+            PrintError("Usage: /repricer debuguniv <itemId> [hq|nq]");
+            return;
+        }
+
+        var qualityArg = tokens.Length > 2 ? tokens[2].ToLowerInvariant() : string.Empty;
+        var isHq = qualityArg switch
+        {
+            "nq" or "normal" or "low" => false,
+            "hq" or "high" => true,
+            _ => true,
+        };
+
+        PrintInfo($"Running Universalis debug for item {itemId} (HQ={isHq}); results will be logged.");
+        _ = DumpUniversalisDebugAsync(itemId, isHq);
+    }
+
+    private async Task DumpUniversalisDebugAsync(uint itemId, bool isHq)
+    {
+        var region = GetWorldDcRegionKey();
+        if (string.IsNullOrWhiteSpace(region))
+        {
+            PrintError("Cannot resolve world or DC for Universalis debug request.");
+            return;
+        }
+
+        var baseUrl = UniversalisApiClient.AggregatedBaseUrl;
+
+        try
+        {
+            var rawJsonTask = _universalisClient.GetAggregatedPayloadAsync(baseUrl, region, itemId);
+            var statsTask = _universalisClient.GetListingStatsAsync(baseUrl, region, itemId, isHq, cacheDuration: TimeSpan.Zero);
+
+            await Task.WhenAll(rawJsonTask, statsTask).ConfigureAwait(false);
+
+            var rawJson = rawJsonTask.Result;
+            var stats = statsTask.Result;
+
+            if (rawJson == null)
+            {
+                Framework.RunOnFrameworkThread(() => PrintError($"Universalis debug request failed for item {itemId}."));
+                return;
+            }
+
+            Log.Information($"[RR][Debug] Universalis aggregated payload for item {itemId} (HQ={isHq}): {rawJson}");
+
+            if (stats?.AveragePrice is { } avg)
+            {
+                var velocityText = stats.DailySaleVelocity is { } vel
+                    ? vel.ToString("0.###")
+                    : "n/a";
+                Log.Information($"[RR][Debug] Computed average={avg:0.###}, velocity={velocityText} (HQ={isHq}).");
+            }
+            else
+            {
+                Log.Information($"[RR][Debug] No computed average returned for item {itemId} (HQ={isHq}).");
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, $"[RR][Debug] Failed to fetch Universalis data for item {itemId}.");
+            Framework.RunOnFrameworkThread(() => PrintError("Universalis debug request failed. See log for details."));
+        }
+    }
+
     private static (RunMode mode, bool recognized) ResolveRunMode(string arg)
     {
         if (string.IsNullOrWhiteSpace(arg))
@@ -85,5 +160,6 @@ public unsafe sealed partial class Plugin
         PrintInfo("--Modes: price = reprice listings only, sell = Sell List only");
         PrintInfo("/repricer stop - Stop the current run and unwind open UI");
         PrintInfo("/repricer config | c - Open or close the configuration window");
+        PrintInfo("/repricer debuguniv <itemId> [hq|nq] - Fetch Universalis data and log the raw payload");
     }
 }

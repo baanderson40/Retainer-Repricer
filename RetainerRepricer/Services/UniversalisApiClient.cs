@@ -49,6 +49,41 @@ public sealed class UniversalisApiClient : IDisposable
         return stats?.AveragePrice;
     }
 
+    public async Task<string?> GetAggregatedPayloadAsync(
+        string baseUrl,
+        string worldDcRegion,
+        uint itemId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(baseUrl) || string.IsNullOrWhiteSpace(worldDcRegion))
+            return null;
+
+        var requestUri = BuildRequestUri(baseUrl, worldDcRegion, itemId);
+
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
+            using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _log.Warning($"[Universalis] Raw request failed ({response.StatusCode}) for '{requestUri}'.");
+                return null;
+            }
+
+            return await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Error(ex, $"[Universalis] Failed to fetch aggregated payload for item {itemId}.");
+            return null;
+        }
+    }
+
     public async Task<UniversalisListingStats?> GetListingStatsAsync(
         string baseUrl,
         string worldDcRegion,
