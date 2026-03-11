@@ -154,6 +154,38 @@ public unsafe sealed partial class Plugin
         return true;
     }
 
+    private bool TrySelectRetainerContextMenuAdjustPrice()
+    {
+        var addon = GameGui.GetAddonByName("ContextMenu", 1);
+        if (addon.IsNull) return false;
+
+        var unit = (AtkUnitBase*)addon.Address;
+        if (unit == null || !unit->IsVisible) return false;
+
+        try
+        {
+            var ctx = new AddonMaster.ContextMenu(addon.Address);
+            var entries = ctx.Entries;
+            if (entries.Length > 0)
+            {
+                var entry = entries[0];
+                if (entry.Select())
+                {
+                    Log.Verbose("[CTX] Selected entry 0 (Adjust price)");
+                    return true;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Verbose(ex, "[CTX] Failed selecting entry 0; fallback to callback.");
+        }
+
+        Callback.Fire(unit, updateState: true, 0, 0);
+        Log.Verbose("[CTX] Fallback context menu callback (0,0) fired");
+        return true;
+    }
+
     private bool FireItemSearchResultOpenFilter()
     {
         var addon = GameGui.GetAddonByName("ItemSearchResult", 1);
