@@ -7,7 +7,7 @@ namespace RetainerRepricer;
 /// <summary>
 /// Command routing for /repricer operations.
 /// </summary>
-public unsafe sealed partial class Plugin
+public sealed partial class Plugin
 {
     private void OnCommand(string command, string args)
     {
@@ -114,7 +114,8 @@ public unsafe sealed partial class Plugin
 
             if (rawJson == null)
             {
-                Framework.RunOnFrameworkThread(() => PrintError($"Universalis debug request failed for item {itemId}."));
+                await Framework.RunOnFrameworkThread(() => PrintError($"Universalis debug request failed for item {itemId}."))
+                    .ConfigureAwait(false);
                 return;
             }
 
@@ -135,7 +136,8 @@ public unsafe sealed partial class Plugin
         catch (Exception ex)
         {
             Log.Error(ex, $"[RR][Debug] Failed to fetch Universalis data for item {itemId}.");
-            Framework.RunOnFrameworkThread(() => PrintError("Universalis debug request failed. See log for details."));
+            await Framework.RunOnFrameworkThread(() => PrintError("Universalis debug request failed. See log for details."))
+                .ConfigureAwait(false);
         }
     }
 
@@ -160,6 +162,5 @@ public unsafe sealed partial class Plugin
         PrintInfo("--Modes: price = reprice listings only, sell = Sell List only");
         PrintInfo("/repricer stop - Stop the current run and unwind open UI");
         PrintInfo("/repricer config | c - Open or close the configuration window");
-        PrintInfo("/repricer debuguniv <itemId> [hq|nq] - Fetch Universalis data and log the raw payload");
     }
 }
