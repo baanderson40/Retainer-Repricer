@@ -1,12 +1,17 @@
-using Dalamud.Plugin.Services;
-using ECommons.Automation;
-using ECommons.DalamudServices;
-using FFXIVClientStructs.FFXIV.Client.Game;
-using FFXIVClientStructs.FFXIV.Component.GUI;
-using Lumina.Excel.Sheets;
 using System;
 using System.Collections.Generic;
 using System.Text;
+
+using Dalamud.Game;
+using Dalamud.Plugin.Services;
+
+using ECommons.Automation;
+using ECommons.DalamudServices;
+
+using FFXIVClientStructs.FFXIV.Client.Game;
+using FFXIVClientStructs.FFXIV.Component.GUI;
+
+using Lumina.Excel.Sheets;
 
 namespace RetainerRepricer.Ui;
 
@@ -55,6 +60,9 @@ internal sealed unsafe class UiReader
     #region Fields / lifecycle
 
     private static readonly Lazy<ItemSearchResultStatusStrings> ItemSearchResultStatusStringsLoader = new(LoadItemSearchResultStatusStrings);
+
+    private static bool IsJapaneseClient
+        => Svc.ClientState?.ClientLanguage == ClientLanguage.Japanese;
 
     private readonly IGameGui _gui;
 
@@ -534,13 +542,12 @@ internal sealed unsafe class UiReader
     {
         if (string.IsNullOrEmpty(raw)) return string.Empty;
 
-        // Keep printable ASCII + HQ glyph.
+        var allowExtendedCharacters = IsJapaneseClient;
+
         var sb = new StringBuilder(raw.Length);
         foreach (var ch in raw)
         {
-            if (ch >= 0x20 && ch <= 0x7E)
-                sb.Append(ch);
-            else if (ch == RetainerSell_HqGlyphChar)
+            if (IsAllowedRetainerSellCharacter(ch, allowExtendedCharacters))
                 sb.Append(ch);
         }
 
@@ -560,6 +567,20 @@ internal sealed unsafe class UiReader
 
         // Normalize whitespace.
         return string.Join(" ", s.Split(' ', StringSplitOptions.RemoveEmptyEntries)).Trim();
+    }
+
+    private static bool IsAllowedRetainerSellCharacter(char ch, bool allowExtendedCharacters)
+    {
+        if (ch == RetainerSell_HqGlyphChar)
+            return true;
+
+        if (char.IsControl(ch))
+            return false;
+
+        if (!allowExtendedCharacters)
+            return ch >= 0x20 && ch <= 0x7E;
+
+        return true;
     }
 
     private static string StripEarlyDelimiterPrefix(string s)
