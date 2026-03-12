@@ -194,6 +194,18 @@ public unsafe sealed partial class Plugin
         set => _sellState.HasPendingSellSlot = value;
     }
 
+    private bool _awaitingRetainerContextMenu
+    {
+        get => _sellState.AwaitingRetainerContextMenu;
+        set => _sellState.AwaitingRetainerContextMenu = value;
+    }
+
+    private DateTime _retainerContextMenuRequestedUtc
+    {
+        get => _sellState.RetainerContextMenuRequestedUtc;
+        set => _sellState.RetainerContextMenuRequestedUtc = value;
+    }
+
     private Dictionary<ulong, int> _retainerSellCounts
         => _sellState.RetainerSellCounts;
 
@@ -394,6 +406,8 @@ public unsafe sealed partial class Plugin
         public int CurrentSellStackSize { get; set; }
         public InventorySlotRef PendingSellSlot { get; set; }
         public bool HasPendingSellSlot { get; set; }
+        public bool AwaitingRetainerContextMenu { get; set; }
+        public DateTime RetainerContextMenuRequestedUtc { get; set; } = DateTime.MinValue;
         public Dictionary<ulong, int> RetainerSellCounts { get; } = new();
         public Dictionary<ulong, int> RetainerExistingSellCounts { get; } = new();
         public bool NeedsExistingListingScan { get; set; }

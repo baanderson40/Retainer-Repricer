@@ -1,9 +1,17 @@
+using System;
+using System.Collections.Generic;
+using System.Text;
+
+using Dalamud.Game;
 using Dalamud.Plugin.Services;
+
 using ECommons.Automation;
+using ECommons.DalamudServices;
+
 using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Component.GUI;
-using System;
-using System.Text;
+
+using Lumina.Excel.Sheets;
 
 namespace RetainerRepricer.Ui;
 
@@ -50,6 +58,11 @@ internal sealed unsafe class UiReader
     #endregion
 
     #region Fields / lifecycle
+
+    private static readonly Lazy<ItemSearchResultStatusStrings> ItemSearchResultStatusStringsLoader = new(LoadItemSearchResultStatusStrings);
+
+    private static bool IsJapaneseClient
+        => Svc.ClientState?.ClientLanguage == ClientLanguage.Japanese;
 
     private readonly IGameGui _gui;
 
@@ -275,11 +288,11 @@ internal sealed unsafe class UiReader
         if (string.IsNullOrWhiteSpace(message))
             return ItemSearchResultStatus.None;
 
-        // Match the strings we actually see in-game. Use Contains to survive punctuation/spacing changes.
-        if (message.Contains("No items found", StringComparison.OrdinalIgnoreCase))
+        var statuses = ItemSearchResultStatusStringsLoader.Value;
+        if (statuses.NoItems.Contains(message))
             return ItemSearchResultStatus.NoItemsFound;
 
-        if (message.Contains("Please wait and try your search again", StringComparison.OrdinalIgnoreCase))
+        if (statuses.PleaseWait.Contains(message))
             return ItemSearchResultStatus.PleaseWaitRetry;
 
         return ItemSearchResultStatus.OtherMessage;
@@ -287,17 +300,104 @@ internal sealed unsafe class UiReader
 
     private static string NormalizeStatusText(string? raw)
     {
-        // For UI status strings: keep printable ASCII; strip payload/control chars; trim.
-        if (string.IsNullOrWhiteSpace(raw)) return string.Empty;
+        if (string.IsNullOrWhiteSpace(raw))
+            return string.Empty;
 
         var sb = new StringBuilder(raw.Length);
+        var lastWasSpace = false;
+
         foreach (var ch in raw)
         {
-            if (ch >= 0x20 && ch <= 0x7E)
-                sb.Append(ch);
+            if (char.IsControl(ch))
+                continue;
+
+            if (char.IsWhiteSpace(ch))
+            {
+                if (sb.Length == 0 || lastWasSpace)
+                    continue;
+
+                sb.Append(' ');
+                lastWasSpace = true;
+                continue;
+            }
+
+            sb.Append(char.ToLowerInvariant(ch));
+            lastWasSpace = false;
         }
 
         return sb.ToString().Trim();
+    }
+
+    #endregion
+
+    #region ItemSearchResult status string helpers
+
+    private static readonly string[] DefaultNoItemsStatusFallbacks =
+    {
+        "No items found.",
+        "No items found",
+    };
+
+    private static readonly string[] DefaultPleaseWaitStatusFallbacks =
+    {
+        "Please wait and try your search again.",
+        "Please wait and try your search again",
+    };
+
+    private static ItemSearchResultStatusStrings LoadItemSearchResultStatusStrings()
+    {
+        var noItems = new HashSet<string>(StringComparer.Ordinal);
+        var pleaseWait = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var fallback in DefaultNoItemsStatusFallbacks)
+            AddNormalizedStatus(noItems, fallback);
+
+        foreach (var fallback in DefaultPleaseWaitStatusFallbacks)
+            AddNormalizedStatus(pleaseWait, fallback);
+
+        try
+        {
+            var sheet = Svc.Data.GetExcelSheet<Addon>();
+            if (sheet != null)
+            {
+                AddAddonRowString(noItems, sheet.GetRowOrDefault(1959));
+                AddAddonRowString(pleaseWait, sheet.GetRowOrDefault(1997));
+            }
+        }
+        catch
+        {
+            // Dalamud data unavailable; fall back to English literals.
+        }
+
+        return new ItemSearchResultStatusStrings(noItems, pleaseWait);
+    }
+
+    private static void AddAddonRowString(HashSet<string> bucket, Addon? row)
+    {
+        if (row == null)
+            return;
+
+        AddNormalizedStatus(bucket, row.Value.Text.ToString());
+    }
+
+    private static void AddNormalizedStatus(HashSet<string> bucket, string? raw)
+    {
+        var normalized = NormalizeStatusText(raw);
+        if (!string.IsNullOrEmpty(normalized))
+            bucket.Add(normalized);
+    }
+
+    private sealed class ItemSearchResultStatusStrings
+    {
+        public ItemSearchResultStatusStrings(HashSet<string> noItems, HashSet<string> pleaseWait)
+        {
+            NoItems = noItems;
+            PleaseWait = pleaseWait;
+        }
+
+        public HashSet<string> NoItems { get; }
+
+        public HashSet<string> PleaseWait { get; }
     }
 
     #endregion
@@ -442,13 +542,12 @@ internal sealed unsafe class UiReader
     {
         if (string.IsNullOrEmpty(raw)) return string.Empty;
 
-        // Keep printable ASCII + HQ glyph.
+        var allowExtendedCharacters = IsJapaneseClient;
+
         var sb = new StringBuilder(raw.Length);
         foreach (var ch in raw)
         {
-            if (ch >= 0x20 && ch <= 0x7E)
-                sb.Append(ch);
-            else if (ch == RetainerSell_HqGlyphChar)
+            if (IsAllowedRetainerSellCharacter(ch, allowExtendedCharacters))
                 sb.Append(ch);
         }
 
@@ -468,6 +567,20 @@ internal sealed unsafe class UiReader
 
         // Normalize whitespace.
         return string.Join(" ", s.Split(' ', StringSplitOptions.RemoveEmptyEntries)).Trim();
+    }
+
+    private static bool IsAllowedRetainerSellCharacter(char ch, bool allowExtendedCharacters)
+    {
+        if (ch == RetainerSell_HqGlyphChar)
+            return true;
+
+        if (char.IsControl(ch))
+            return false;
+
+        if (!allowExtendedCharacters)
+            return ch >= 0x20 && ch <= 0x7E;
+
+        return true;
     }
 
     private static string StripEarlyDelimiterPrefix(string s)

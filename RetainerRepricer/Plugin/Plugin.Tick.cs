@@ -12,6 +12,7 @@ namespace RetainerRepricer;
 /// </summary>
 public unsafe sealed partial class Plugin
 {
+    private const double RetainerContextMenuTimeoutSeconds = 2.0d;
     #region Run tick (state machine)
 
     internal unsafe void TickRun()
@@ -342,6 +343,8 @@ public unsafe sealed partial class Plugin
                     if (!FireRetainerSellListOpenItem(idx))
                         return;
 
+                    ArmRetainerContextMenuExpectation(now);
+
                     _runPhase = RunPhase.WaitingRetainerSell;
                     _lastActionUtc = now;
                     return;
@@ -351,12 +354,49 @@ public unsafe sealed partial class Plugin
                 {
                     if (contextMenuVisible)
                     {
+                        if (_awaitingRetainerContextMenu)
+                        {
+                            if (TrySelectRetainerContextMenuAdjustPrice())
+                            {
+                                ClearRetainerContextMenuExpectation();
+                                _lastActionUtc = now;
+                                return;
+                            }
+
+                            if (HasRetainerContextMenuTimedOut(now))
+                            {
+                                Log.Warning($"[RR] Retainer context menu timed out on slot {_slotIndexToOpen + 1}/{_listedCountThisRetainer}; skipping.");
+                                FireContextMenuDismiss();
+                                ClearRetainerContextMenuExpectation();
+                                _slotIndexToOpen++;
+                                _runPhase = RunPhase.OpeningSellItem;
+                                _lastActionUtc = now;
+                                return;
+                            }
+
+                            _lastActionUtc = now;
+                            return;
+                        }
+
                         FireContextMenuDismiss();
                         _lastActionUtc = now;
                         return;
                     }
 
+                    if (_awaitingRetainerContextMenu && HasRetainerContextMenuTimedOut(now))
+                    {
+                        Log.Warning($"[RR] Retainer context menu never appeared for slot {_slotIndexToOpen + 1}/{_listedCountThisRetainer}; skipping.");
+                        ClearRetainerContextMenuExpectation();
+                        _slotIndexToOpen++;
+                        _runPhase = RunPhase.OpeningSellItem;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
                     if (!retainerSellVisible) return;
+
+                    if (_awaitingRetainerContextMenu)
+                        ClearRetainerContextMenuExpectation();
 
                     Log.Debug($"[RR] RetainerSell opened (listedItem={_processingListedItem}).");
 
@@ -1090,6 +1130,7 @@ public unsafe sealed partial class Plugin
                 {
                     CloseMarketWindows();
                     CloseRetainerSellIfOpen();
+                    ClearRetainerContextMenuExpectation();
 
                     Log.Verbose("[RR] Cleanup complete (market closed, exited RetainerSell).");
 
@@ -1115,6 +1156,7 @@ public unsafe sealed partial class Plugin
                     {
                         _processingListedItem = true;
                         _hasPendingSellSlot = false;
+                        ClearRetainerContextMenuExpectation();
 
                         if (Configuration.EnablePerRetainerCaps && _currentSellItemId != 0)
                         {
@@ -1291,6 +1333,7 @@ public unsafe sealed partial class Plugin
                     }
 
                     _processingListedItem = false;
+                    ClearRetainerContextMenuExpectation();
 
                     var ok = TryOpenRetainerSellFromInventory(_pendingSellSlot);
                     if (!ok)
@@ -1388,6 +1431,26 @@ public unsafe sealed partial class Plugin
             default:
                 return;
         }
+    }
+
+    private void ArmRetainerContextMenuExpectation(DateTime now)
+    {
+        _awaitingRetainerContextMenu = true;
+        _retainerContextMenuRequestedUtc = now;
+        Log.Verbose("[RR][CTX] Awaiting RetainerSell context menu.");
+    }
+
+    private void ClearRetainerContextMenuExpectation()
+    {
+        _awaitingRetainerContextMenu = false;
+        _retainerContextMenuRequestedUtc = DateTime.MinValue;
+    }
+
+    private bool HasRetainerContextMenuTimedOut(DateTime now)
+    {
+        if (!_awaitingRetainerContextMenu) return false;
+        if (_retainerContextMenuRequestedUtc == DateTime.MinValue) return false;
+        return (now - _retainerContextMenuRequestedUtc).TotalSeconds >= RetainerContextMenuTimeoutSeconds;
     }
 
     private void RecordExistingListingForCaps(string itemName, bool isHq)
