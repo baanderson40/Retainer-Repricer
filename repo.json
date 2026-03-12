@@ -11,14 +11,14 @@
     ],
     "InternalName": "RetainerRepricer",
     "RepoUrl": "https://github.com/baanderson40/Retainer-Repricer",
-    "AssemblyVersion": "1.0.0.0",
+    "AssemblyVersion": "1.0.1.0",
     "IsTestingExclusive": false,
     "ApplicableVersion": "any",
     "DalamudApiLevel": 14,
     "DownloadCount": 1,
-    "DownloadLinkInstall": "https://github.com/baanderson40/Retainer-Repricer/releases/download/v1.0.0/latest.zip",
-    "DownloadLinkUpdate": "https://github.com/baanderson40/Retainer-Repricer/releases/download/v1.0.0/latest.zip",
-    "DownloadLinkTesting": "https://github.com/baanderson40/Retainer-Repricer/releases/download/v1.0.0/latest.zip",
+    "DownloadLinkInstall": "https://github.com/baanderson40/Retainer-Repricer/releases/download/v1.0.1/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/baanderson40/Retainer-Repricer/releases/download/v1.0.1/latest.zip",
+    "DownloadLinkTesting": "https://github.com/baanderson40/Retainer-Repricer/releases/download/v1.0.1/latest.zip",
     "SupportsProfiles": false
   }
 ]
