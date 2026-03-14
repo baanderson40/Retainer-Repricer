@@ -4,3 +4,4 @@ bin/
 *.user
 AGENTS.md
 RetainerRepricer/Properties/
+ai_planning/
