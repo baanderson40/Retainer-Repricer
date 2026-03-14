@@ -132,6 +132,15 @@ public sealed class UniversalisApiClient : IDisposable
             }
 
             var avgPrice = quality.AverageSalePrice?.GetBestPrice();
+            if (avgPrice is null)
+            {
+                var fallbackPrice = quality.GetFallbackPrice(out var fallbackSource);
+                if (fallbackPrice is not null)
+                {
+                    _log.Debug($"[Universalis] Missing average price for item {itemId} (HQ={isHighQuality}); using {fallbackSource} price {fallbackPrice.Value:0}.");
+                    avgPrice = fallbackPrice;
+                }
+            }
             var velocity = quality.DailySaleVelocity?.GetBestQuantity();
             var lastUpload = result.GetLatestUploadUtc();
 
@@ -216,6 +225,32 @@ public sealed class UniversalisApiClient : IDisposable
 
         [JsonPropertyName("dailySaleVelocity")]
         public AggregatedVelocity? DailySaleVelocity { get; set; }
+
+        [JsonPropertyName("minListing")]
+        public AggregatedListingPoint? MinListing { get; set; }
+
+        [JsonPropertyName("recentPurchase")]
+        public AggregatedPurchasePoint? RecentPurchase { get; set; }
+
+        public decimal? GetFallbackPrice(out string source)
+        {
+            var recent = RecentPurchase?.GetBestPrice();
+            if (recent is { } recentPrice && recentPrice > 0)
+            {
+                source = "recent purchase";
+                return recentPrice;
+            }
+
+            var minListing = MinListing?.GetBestPrice();
+            if (minListing is { } minListingPrice && minListingPrice > 0)
+            {
+                source = "min listing";
+                return minListingPrice;
+            }
+
+            source = string.Empty;
+            return null;
+        }
     }
 
     private sealed class AggregatedAverage
@@ -237,6 +272,57 @@ public sealed class UniversalisApiClient : IDisposable
     {
         [JsonPropertyName("price")]
         public decimal? Price { get; set; }
+    }
+
+    private sealed class AggregatedListingPoint
+    {
+        [JsonPropertyName("world")]
+        public AggregatedListingEntry? World { get; set; }
+
+        [JsonPropertyName("dc")]
+        public AggregatedListingEntry? Dc { get; set; }
+
+        [JsonPropertyName("region")]
+        public AggregatedListingEntry? Region { get; set; }
+
+        public decimal? GetBestPrice()
+            => World?.Price ?? Dc?.Price ?? Region?.Price;
+    }
+
+    private sealed class AggregatedListingEntry
+    {
+        [JsonPropertyName("price")]
+        public decimal? Price { get; set; }
+
+        [JsonPropertyName("worldId")]
+        public uint? WorldId { get; set; }
+    }
+
+    private sealed class AggregatedPurchasePoint
+    {
+        [JsonPropertyName("world")]
+        public AggregatedPurchaseEntry? World { get; set; }
+
+        [JsonPropertyName("dc")]
+        public AggregatedPurchaseEntry? Dc { get; set; }
+
+        [JsonPropertyName("region")]
+        public AggregatedPurchaseEntry? Region { get; set; }
+
+        public decimal? GetBestPrice()
+            => World?.Price ?? Dc?.Price ?? Region?.Price;
+    }
+
+    private sealed class AggregatedPurchaseEntry
+    {
+        [JsonPropertyName("price")]
+        public decimal? Price { get; set; }
+
+        [JsonPropertyName("timestamp")]
+        public long? Timestamp { get; set; }
+
+        [JsonPropertyName("worldId")]
+        public uint? WorldId { get; set; }
     }
 
     private sealed class AggregatedVelocity
