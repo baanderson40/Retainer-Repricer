@@ -190,6 +190,9 @@ public sealed class Configuration : IPluginConfiguration
     public int SmartSortRefreshMinutes { get; set; } = 30;
     public long SmartSortLastRunTicks { get; set; } = 0;
 
+    // Inventory pruning (removes stale sell entries before sorting/selling)
+    public bool AutoPruneMissingInventory { get; set; } = false;
+
     public (float velocityWeight, float priceWeight) GetSmartSortWeights()
     {
         var v = SmartSortVelocityWeight;
@@ -268,6 +271,9 @@ public sealed class Configuration : IPluginConfiguration
 
         // Optional per-retainer stack sizes (0 = any available amount).
         public Dictionary<string, int> RetainerStackSizes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+        // Protect this entry from automatic pruning even if it is missing from inventory.
+        public bool PreserveFromAutoPrune { get; set; }
 
         public void EnsureRetainerCaps()
         {
@@ -449,6 +455,7 @@ public sealed class Configuration : IPluginConfiguration
             Name = BuildDisplayName(name, isHq),
             MinCountToSell = 1,
             SortOrder = nextOrder,
+            PreserveFromAutoPrune = false,
         };
 
         if (priorityOverride.HasValue)
@@ -474,6 +481,7 @@ public sealed class Configuration : IPluginConfiguration
             Name = BuildDisplayName(name, isHq),
             MinCountToSell = clampedMinCount,
             SortOrder = nextOrder,
+            PreserveFromAutoPrune = false,
         };
 
         if (priorityOverride.HasValue)
@@ -492,6 +500,45 @@ public sealed class Configuration : IPluginConfiguration
 
     public void ClearSellList()
         => SellList.Clear();
+
+    public void SetSellItemPreserveFlag(uint baseItemId, bool isHq, bool preserve)
+    {
+        var key = MakeSellKey(baseItemId, isHq);
+        if (!SellList.TryGetValue(key, out var entry) || entry == null)
+            return;
+
+        entry.PreserveFromAutoPrune = preserve;
+    }
+
+    public int RemoveSellEntries(Func<SellListEntry, bool> predicate)
+    {
+        if (predicate == null)
+            throw new ArgumentNullException(nameof(predicate));
+
+        if (SellList == null || SellList.Count == 0)
+            return 0;
+
+        var keysToRemove = new List<ulong>();
+
+        foreach (var kvp in SellList)
+        {
+            var entry = kvp.Value;
+            if (entry == null)
+                continue;
+
+            if (predicate(entry))
+                keysToRemove.Add(kvp.Key);
+        }
+
+        if (keysToRemove.Count == 0)
+            return 0;
+
+        foreach (var key in keysToRemove)
+            SellList.Remove(key);
+
+        NormalizeSellListOrder(saveChanges: false);
+        return keysToRemove.Count;
+    }
 
     public IEnumerable<SellListEntry> GetSellListOrdered()
     {

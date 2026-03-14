@@ -74,8 +74,12 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
     private readonly UniversalisApiClient _universalisClient;
     private readonly SellListSmartSorter _smartSorter;
+    private readonly SellListInventoryPruner _sellListPruner;
     private Task<bool>? _pendingSmartSortTask;
     private bool _smartSortKickoffDone;
+    private SellListInventoryPruner.SellListInventoryPruneResult? _lastPruneResult;
+    private bool _autoPruneRunThisCycle;
+    private bool _pendingPostSellPrune;
 
     #endregion
 
@@ -110,6 +114,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
         _universalisClient = new UniversalisApiClient(log);
         _smartSorter = new SellListSmartSorter(Configuration, _universalisClient, log, GetWorldDcRegionKey);
+        _sellListPruner = new SellListInventoryPruner(Configuration, log);
 
         ConfigWindow = new ConfigWindow(this);
         MainWindow = new MainWindow(this);
@@ -398,6 +403,8 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         _sellQueuePos = 0;
         _pendingSmartSortTask = null;
         _smartSortKickoffDone = false;
+        _autoPruneRunThisCycle = false;
+        _pendingPostSellPrune = false;
         _sellCapacityThisRetainer = 0;
         _soldThisRetainer = 0;
 
@@ -435,6 +442,8 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         _sellQueuePos = 0;
         _pendingSmartSortTask = null;
         _smartSortKickoffDone = false;
+        _autoPruneRunThisCycle = false;
+        _pendingPostSellPrune = false;
         _sellCapacityThisRetainer = 0;
         _soldThisRetainer = 0;
 
@@ -779,9 +788,12 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
     internal bool SmartSortIsSorting => _smartSorter.IsSorting;
     internal DateTime SmartSortLastRunUtc => _smartSorter.LastSortUtc;
     internal bool SmartSortRefreshDue => _smartSorter.IsRefreshDue();
+    internal SellListInventoryPruner.SellListInventoryPruneResult? LastPruneResult => _lastPruneResult;
 
     internal Task<bool> RequestSmartSortAsync(string reason, bool force = false)
     {
+        RunAutoPruneIfEnabled($"smart_sort:{reason}", latchRun: false);
+
         if (force)
             return _smartSorter.ForceSortAsync(reason);
 
@@ -793,6 +805,58 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         // Reset pending state so a new run can force refresh immediately.
         _pendingSmartSortTask = null;
         _smartSortKickoffDone = false;
+    }
+
+    internal SellListInventoryPruner.SellListInventoryPruneResult RunInventoryPruneManual(string reason = "manual_button")
+        => RunPruneInternal(reason);
+
+    private SellListInventoryPruner.SellListInventoryPruneResult? RunAutoPruneIfEnabled(string reason, bool latchRun)
+    {
+        if (!Configuration.AutoPruneMissingInventory)
+            return null;
+
+        if (latchRun && _autoPruneRunThisCycle)
+            return null;
+
+        var result = RunPruneInternal(reason);
+
+        if (latchRun)
+            _autoPruneRunThisCycle = true;
+
+        return result;
+    }
+
+    private SellListInventoryPruner.SellListInventoryPruneResult RunPruneInternal(string reason)
+    {
+        var result = _sellListPruner.Run(reason);
+        _lastPruneResult = result;
+        return result;
+    }
+
+    private void QueuePostSellPruneIfNeeded()
+    {
+        if (!Configuration.AutoPruneMissingInventory)
+            return;
+
+        if (_soldThisRetainer <= 0)
+            return;
+
+        _pendingPostSellPrune = true;
+    }
+
+    private void RunPendingSellPrune()
+    {
+        if (!_pendingPostSellPrune)
+            return;
+
+        RunAutoPruneIfEnabled("sell_cycle_complete", latchRun: false);
+        _pendingPostSellPrune = false;
+    }
+
+    private void TransitionToExitToRetainerList()
+    {
+        QueuePostSellPruneIfNeeded();
+        _runPhase = RunPhase.ExitToRetainerList;
     }
 
     #endregion

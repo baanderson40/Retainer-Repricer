@@ -25,7 +25,7 @@ internal sealed class MinCountPopup : Window, IDisposable
     private uint _pendingItemId;
     private bool _pendingIsHq;
     private string _pendingItemName = string.Empty;
-    private Action<uint, bool, int, int>? _pendingCallback;
+    private Action<uint, bool, int, int, bool>? _pendingCallback;
     private Vector2? _pendingAnchorPosition;
     private string _inputText = "1";
     private string _priorityText = "1";
@@ -35,6 +35,8 @@ internal sealed class MinCountPopup : Window, IDisposable
     private bool _pendingInputFocus;
     private bool _needsSizeRefresh;
     private Vector2? _pendingWindowSize;
+    private bool _showKeepToggle;
+    private bool _keepPreserved;
 
     public MinCountPopup(Configuration config)
         : base(
@@ -63,10 +65,11 @@ internal sealed class MinCountPopup : Window, IDisposable
         uint itemId,
         bool isHq,
         string itemName,
-        Action<uint, bool, int, int> onConfirm,
+        Action<uint, bool, int, int, bool> onConfirm,
         Vector2? anchorPosition = null,
         int defaultPriority = 1,
-        bool smartSortEnabled = false)
+        bool smartSortEnabled = false,
+        bool allowPreserveToggle = false)
     {
         _pendingItemId = itemId;
         _pendingIsHq = isHq;
@@ -81,6 +84,8 @@ internal sealed class MinCountPopup : Window, IDisposable
         _pendingInputFocus = true;
         _needsSizeRefresh = true;
         _pendingWindowSize = null;
+        _showKeepToggle = allowPreserveToggle;
+        _keepPreserved = false;
 
         IsOpen = true;
     }
@@ -95,10 +100,7 @@ internal sealed class MinCountPopup : Window, IDisposable
         DrawCenteredLabelValueRow("Item", itemLabel, ItemLabelWidth, MinValueColumnWidth);
         ImGui.Dummy(new Vector2(0, spacingY));
 
-        DrawCenteredInputRow(ItemLabelWidth, MinValueColumnWidth);
-        ImGui.Dummy(new Vector2(0, spacingY));
-        DrawPriorityInputRow(ItemLabelWidth, MinValueColumnWidth);
-
+        DrawInputTable();
         ImGui.Dummy(new Vector2(0, spacingY));
 
         DrawCenteredButtons();
@@ -155,6 +157,7 @@ internal sealed class MinCountPopup : Window, IDisposable
         ImGui.TextUnformatted(label);
 
         ImGui.SetCursorPos(new Vector2(valueStartX, cursor.Y));
+        ImGui.AlignTextToFramePadding();
         ImGui.PushTextWrapPos(valueStartX + valueWidth);
         ImGui.TextWrapped(value);
         ImGui.PopTextWrapPos();
@@ -163,24 +166,28 @@ internal sealed class MinCountPopup : Window, IDisposable
         ImGui.SetCursorPos(new Vector2(cursor.X, nextY));
     }
 
-    private void DrawCenteredInputRow(float labelWidth, float minValueWidth)
+    private void DrawInputTable()
     {
-        var spacingX = ImGui.GetStyle().ItemSpacing.X;
-        var region = ImGui.GetContentRegionAvail().X;
-        var valueWidth = MathF.Max(minValueWidth, region - labelWidth - spacingX);
-        var rowWidth = labelWidth + spacingX + valueWidth;
-        var rowStartOffset = MathF.Max(0f, (region - rowWidth) * 0.5f);
+        var columnCount = _showKeepToggle ? 3 : 2;
+        if (!ImGui.BeginTable("##min_popup_table", columnCount, ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.SizingStretchProp))
+            return;
 
-        var cursor = ImGui.GetCursorPos();
-        var rowStartX = cursor.X + rowStartOffset;
-        var valueStartX = rowStartX + labelWidth + spacingX;
+        ImGui.TableSetupColumn("Min Inv", ImGuiTableColumnFlags.WidthStretch | ImGuiTableColumnFlags.DefaultHide, 1f);
+        ImGui.TableSetupColumn("Priority", ImGuiTableColumnFlags.WidthStretch | ImGuiTableColumnFlags.DefaultHide, 1f);
+        if (_showKeepToggle)
+            ImGui.TableSetupColumn("Keep", ImGuiTableColumnFlags.WidthFixed | ImGuiTableColumnFlags.DefaultHide, 70f);
 
-        ImGui.SetCursorPos(new Vector2(rowStartX, cursor.Y));
-        ImGui.AlignTextToFramePadding();
-        ImGui.TextUnformatted("Min Inv");
+        ImGui.TableNextRow(ImGuiTableRowFlags.Headers);
+        DrawHeaderCell("Min Inv", 0);
+        DrawHeaderCell("Priority", 1);
+        if (_showKeepToggle)
+            DrawHeaderCell("Keep", 2);
 
-        ImGui.SetCursorPos(new Vector2(valueStartX, cursor.Y));
-        ImGui.SetNextItemWidth(valueWidth);
+        ImGui.TableNextRow();
+
+        // Min inventory column
+        ImGui.TableSetColumnIndex(0);
+        ImGui.SetNextItemWidth(-1);
         ApplyInputFocusIfNeeded();
         if (ImGui.InputTextWithHint(
                 "##mincount_input",
@@ -204,29 +211,10 @@ internal sealed class MinCountPopup : Window, IDisposable
             TooltipHelper.Show(_config, "Item will be listed once you have at least this many in inventory.");
         }
 
-        var nextY = MathF.Max(ImGui.GetCursorPosY(), cursor.Y + ImGui.GetTextLineHeightWithSpacing());
-        ImGui.SetCursorPos(new Vector2(cursor.X, nextY));
-    }
-
-    private void DrawPriorityInputRow(float labelWidth, float minValueWidth)
-    {
-        var spacingX = ImGui.GetStyle().ItemSpacing.X;
-        var region = ImGui.GetContentRegionAvail().X;
-        var valueWidth = MathF.Max(minValueWidth, region - labelWidth - spacingX);
-        var rowWidth = labelWidth + spacingX + valueWidth;
-        var rowStartOffset = MathF.Max(0f, (region - rowWidth) * 0.5f);
-
-        var cursor = ImGui.GetCursorPos();
-        var rowStartX = cursor.X + rowStartOffset;
-        var valueStartX = rowStartX + labelWidth + spacingX;
-
-        ImGui.SetCursorPos(new Vector2(rowStartX, cursor.Y));
-        ImGui.AlignTextToFramePadding();
-        ImGui.TextUnformatted("Priority");
-
-        ImGui.SetCursorPos(new Vector2(valueStartX, cursor.Y));
+        // Priority column
+        ImGui.TableSetColumnIndex(1);
         ImGui.BeginDisabled(_smartSortEnabled);
-        ImGui.SetNextItemWidth(valueWidth);
+        ImGui.SetNextItemWidth(-1);
         if (ImGui.InputTextWithHint("##priority_input", _priorityMax.ToString(), ref _priorityText, 8, ImGuiInputTextFlags.CharsDecimal)
             && string.IsNullOrWhiteSpace(_priorityText))
         {
@@ -242,8 +230,35 @@ internal sealed class MinCountPopup : Window, IDisposable
             TooltipHelper.Show(_config, tooltip);
         }
 
-        var nextY = MathF.Max(ImGui.GetCursorPosY(), cursor.Y + ImGui.GetTextLineHeightWithSpacing());
-        ImGui.SetCursorPos(new Vector2(cursor.X, nextY));
+        // Keep column (optional)
+        if (_showKeepToggle)
+        {
+            ImGui.TableSetColumnIndex(2);
+            var cursorX = ImGui.GetCursorPosX();
+            var columnWidth = ImGui.GetColumnWidth();
+            var checkboxWidth = ImGui.GetFrameHeight();
+            var padding = Math.Max(0f, (columnWidth - checkboxWidth) * 0.5f);
+            ImGui.SetCursorPosX(cursorX + padding);
+            ImGui.Checkbox("##keep_checkbox", ref _keepPreserved);
+
+            if (ImGui.IsItemHovered())
+            {
+                TooltipHelper.Show(_config, "Keep this entry on the sell list even when auto prune runs.");
+            }
+        }
+
+        ImGui.EndTable();
+    }
+
+    private static void DrawHeaderCell(string label, int columnIndex)
+    {
+        ImGui.TableSetColumnIndex(columnIndex);
+        var width = ImGui.GetColumnWidth();
+        var textWidth = ImGui.CalcTextSize(label).X;
+        var cursor = ImGui.GetCursorPos();
+        var padding = Math.Max(0f, (width - textWidth) * 0.5f);
+        ImGui.SetCursorPosX(cursor.X + padding);
+        ImGui.TextUnformatted(label);
     }
 
     private string BuildItemLabel()
@@ -324,7 +339,7 @@ internal sealed class MinCountPopup : Window, IDisposable
 
         priority = Math.Clamp(priority, 1, _priorityMax);
 
-        _pendingCallback?.Invoke(_pendingItemId, _pendingIsHq, minCount, priority);
+        _pendingCallback?.Invoke(_pendingItemId, _pendingIsHq, minCount, priority, _showKeepToggle && _keepPreserved);
         _pendingInputFocus = false;
         IsOpen = false;
     }

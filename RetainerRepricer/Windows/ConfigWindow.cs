@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Numerics;
 
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
@@ -44,7 +45,7 @@ public sealed class ConfigWindow : Window, IDisposable
         _config = plugin.Configuration;
         _perRetainerCapsLastEnabled = _config.EnablePerRetainerCaps;
 
-        Flags = ImGuiWindowFlags.NoCollapse;
+        Flags = ImGuiWindowFlags.None;
         SizeConstraints = new WindowSizeConstraints
         {
             MinimumSize = new(360, 180),
@@ -146,12 +147,14 @@ public sealed class ConfigWindow : Window, IDisposable
         DrawSellListClearButtonInline(totalItemCount > 0);
         var afterClearY = ImGui.GetCursorPosY();
 
-        var buttonWidth = 80f;
+        var buttonWidth = 90f;
         var rightEdge = ImGui.GetWindowContentRegionMax().X;
-        var buttonX = Math.Max(ImGui.GetCursorPosX(), rightEdge - buttonWidth);
+        var spacing = ImGui.GetStyle().ItemSpacing.X;
+        var totalButtonsWidth = (buttonWidth * 2f) + spacing;
+        var buttonX = Math.Max(ImGui.GetCursorPosX(), rightEdge - totalButtonsWidth);
 
         ImGui.SetCursorPos(new System.Numerics.Vector2(buttonX, startPos.Y));
-        var statusBottom = DrawSmartSortControlsInline(buttonWidth);
+        var statusBottom = DrawSellListUtilityButtons(buttonWidth);
 
         ImGui.SetCursorPosY(Math.Max(afterClearY, statusBottom));
     }
@@ -165,6 +168,7 @@ public sealed class ConfigWindow : Window, IDisposable
     {
         DrawPluginSettings();
         DrawPerRetainerToggle();
+        DrawAutoPruneSettings();
         DrawPricingGateSettings();
         DrawAdvancedTabToggle();
     }
@@ -231,15 +235,31 @@ public sealed class ConfigWindow : Window, IDisposable
             _confirmClearSellList = false;
     }
 
-    private float DrawSmartSortControlsInline(float buttonWidth)
+    private float DrawSellListUtilityButtons(float buttonWidth)
     {
-        var cursorX = ImGui.GetCursorPosX();
-        var rightEdge = ImGui.GetWindowContentRegionMax().X;
-        var buttonX = Math.Max(cursorX, rightEdge - buttonWidth);
+        var pruneBottom = DrawPruneNowButton(buttonWidth);
+        ImGui.SameLine(0f, ImGui.GetStyle().ItemInnerSpacing.X);
+        var sortBottom = DrawSmartSortButton(buttonWidth);
+        return Math.Max(pruneBottom, sortBottom);
+    }
 
+    private float DrawPruneNowButton(float buttonWidth)
+    {
+        if (ImGui.Button("Prune", new System.Numerics.Vector2(buttonWidth, 0f)))
+            _ = _plugin.RunInventoryPruneManual("manual_sell_list_button");
+
+        if (ImGui.IsItemHovered())
+        {
+            TooltipHelper.Show(_config, "Removes sell items that are nowhere in your bags. Preserved entries are skipped.");
+        }
+
+        return ImGui.GetCursorPosY();
+    }
+
+    private float DrawSmartSortButton(float buttonWidth)
+    {
         if (!_config.UseUniversalisApi)
         {
-            ImGui.SetCursorPosX(buttonX);
             ImGui.BeginDisabled();
             ImGui.Button("Smart Sort", new System.Numerics.Vector2(buttonWidth, 0f));
             if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
@@ -251,29 +271,23 @@ public sealed class ConfigWindow : Window, IDisposable
         var enabled = _plugin.SmartSortEnabled;
         var sorting = _plugin.SmartSortIsSorting;
 
-        ImGui.SetCursorPosX(buttonX);
         ImGui.BeginDisabled(!enabled || sorting);
         if (ImGui.Button("Smart Sort", new System.Numerics.Vector2(buttonWidth, 0f)))
             _ = _plugin.RequestSmartSortAsync("manual_button", force: true);
         ImGui.EndDisabled();
 
-        var afterButtonY = ImGui.GetCursorPosY();
-
         if (!enabled)
         {
             if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
                 TooltipHelper.Show(_config, "Enable smart sort in Settings to use this feature.");
-            return ImGui.GetCursorPosY();
         }
-
-        if (sorting)
+        else if (sorting)
         {
             if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
                 TooltipHelper.Show(_config, "Smart sort is running...");
-            return ImGui.GetCursorPosY();
         }
 
-        return afterButtonY;
+        return ImGui.GetCursorPosY();
     }
 
     private System.Collections.Generic.List<Configuration.SellListEntry> BuildFilteredSellListRows()
@@ -314,7 +328,7 @@ public sealed class ConfigWindow : Window, IDisposable
         var smartSortActive = _plugin.SmartSortEnabled;
         if (!ImGui.BeginTable(
                 "##sell_list_table",
-                4,
+                5,
                 ImGuiTableFlags.RowBg |
                 ImGuiTableFlags.BordersInnerH |
                 ImGuiTableFlags.BordersV |
@@ -324,6 +338,7 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.TableSetupColumn("Priority", ImGuiTableColumnFlags.WidthFixed, 60f);
         ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.WidthStretch);
         ImGui.TableSetupColumn("Min Inv", ImGuiTableColumnFlags.WidthFixed, 60f);
+        ImGui.TableSetupColumn("Keep", ImGuiTableColumnFlags.WidthFixed, 50f);
         ImGui.TableSetupColumn("##remove", ImGuiTableColumnFlags.WidthFixed, 30f);
         ImGui.TableNextRow(ImGuiTableRowFlags.Headers);
         ImGui.TableSetColumnIndex(0);
@@ -333,6 +348,8 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.TableSetColumnIndex(2);
         DrawHeaderLabel("Min Inv", center: true);
         ImGui.TableSetColumnIndex(3);
+        DrawHeaderLabel("Keep", center: true);
+        ImGui.TableSetColumnIndex(4);
         DrawHeaderLabel(string.Empty, center: true);
 
         (uint itemId, bool isHq)? removeKey = null;
@@ -455,8 +472,22 @@ public sealed class ConfigWindow : Window, IDisposable
                     TooltipHelper.Show(_config, "Item will be listed when you have at least this many in inventory.");
             }
 
-            // Column 2: Remove button
+            // Column 3: Preserve toggle
             ImGui.TableSetColumnIndex(3);
+            var preserveValue = e.PreserveFromAutoPrune;
+            BeginCenteredElement(30f);
+            if (ImGui.Checkbox("##preserve", ref preserveValue))
+            {
+                e.PreserveFromAutoPrune = preserveValue;
+                Plugin.Log.Information("[RR][Config] Sell item preserve flag updated itemId={ItemId} HQ={IsHq} preserve={Preserve}", e.ItemId, e.IsHq, preserveValue);
+                SaveConfig();
+            }
+
+            if (ImGui.IsItemHovered())
+                TooltipHelper.Show(_config, "Keep this entry even when auto prune runs.");
+
+            // Column 4: Remove button
+            ImGui.TableSetColumnIndex(4);
             var trashIcon = FontAwesomeIcon.Trash.ToIconString();
             ImGui.PushFont(UiBuilder.IconFont);
             var removeWidth = ImGui.CalcTextSize(trashIcon).X + (ImGui.GetStyle().FramePadding.X * 2f);
@@ -984,6 +1015,24 @@ public sealed class ConfigWindow : Window, IDisposable
 
         DrawSmartSortSettings();
     }
+
+    private void DrawAutoPruneSettings()
+    {
+        var autoPrune = _config.AutoPruneMissingInventory;
+        if (ImGui.Checkbox("Auto prune sell list before sorting/selling", ref autoPrune))
+        {
+            _config.AutoPruneMissingInventory = autoPrune;
+            SaveConfig();
+        }
+
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+        {
+            TooltipHelper.Show(_config, "When enabled, the sell list is trimmed before smart sort or a run begins.");
+        }
+
+        ImGui.Spacing();
+    }
+
 
     private void DrawAdvancedTabToggle()
     {

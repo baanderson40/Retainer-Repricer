@@ -48,6 +48,8 @@ public unsafe sealed partial class Plugin
                         return;
                     }
 
+                    RunAutoPruneIfEnabled("run_start", latchRun: true);
+
                     if (SmartSortEnabled && !_smartSortKickoffDone)
                     {
                         if (_pendingSmartSortTask == null)
@@ -290,7 +292,7 @@ public unsafe sealed partial class Plugin
                                 Log.Information($"[RR] Selling skipped for {retainerLabel}: retainer setting disables selling.");
                         }
 
-                        _runPhase = RunPhase.ExitToRetainerList;
+                        TransitionToExitToRetainerList();
                     }
 
                     _lastActionUtc = now;
@@ -307,9 +309,10 @@ public unsafe sealed partial class Plugin
 
                     if (!ShouldRepriceThisRetainer && !needListingScan)
                     {
-                        _runPhase = ShouldSellThisRetainer
-                            ? RunPhase.Sell_FindNextItemInInventory
-                            : RunPhase.ExitToRetainerList;
+                        if (ShouldSellThisRetainer)
+                            _runPhase = RunPhase.Sell_FindNextItemInInventory;
+                        else
+                            TransitionToExitToRetainerList();
                         _lastActionUtc = now;
                         return;
                     }
@@ -323,9 +326,10 @@ public unsafe sealed partial class Plugin
                         if (needListingScan)
                         {
                             _needsExistingListingScan = false;
-                            _runPhase = ShouldSellThisRetainer
-                                ? RunPhase.Sell_FindNextItemInInventory
-                                : RunPhase.ExitToRetainerList;
+                            if (ShouldSellThisRetainer)
+                                _runPhase = RunPhase.Sell_FindNextItemInInventory;
+                            else
+                                TransitionToExitToRetainerList();
                         }
                         else
                         {
@@ -451,9 +455,10 @@ public unsafe sealed partial class Plugin
                         }
                         else
                         {
-                            _runPhase = ShouldSellThisRetainer
-                                ? RunPhase.Sell_FindNextItemInInventory
-                                : RunPhase.ExitToRetainerList;
+                            if (ShouldSellThisRetainer)
+                                _runPhase = RunPhase.Sell_FindNextItemInInventory;
+                            else
+                                TransitionToExitToRetainerList();
                         }
                     }
                     else
@@ -1207,7 +1212,7 @@ public unsafe sealed partial class Plugin
                             Log.Information("[RR] Sell phase skipped (run mode = price-only).");
                         else
                             Log.Information($"[RR] Sell phase skipped for {DescribeCurrentRetainerForLog()}: retainer setting disables selling.");
-                        _runPhase = RunPhase.ExitToRetainerList;
+                        TransitionToExitToRetainerList();
                         _lastActionUtc = now;
                         return;
                     }
@@ -1217,7 +1222,7 @@ public unsafe sealed partial class Plugin
                     if (_sellCapacityThisRetainer <= 0)
                     {
                         Log.Information("[RR] Sell skipped: retainer is full (20/20).");
-                        _runPhase = RunPhase.ExitToRetainerList;
+                        TransitionToExitToRetainerList();
                         _lastActionUtc = now;
                         return;
                     }
@@ -1225,7 +1230,7 @@ public unsafe sealed partial class Plugin
                     if (_soldThisRetainer >= _sellCapacityThisRetainer)
                     {
                         Log.Information($"[RR] Sell complete: reached capacity {_soldThisRetainer}/{_sellCapacityThisRetainer}.");
-                        _runPhase = RunPhase.ExitToRetainerList;
+                        TransitionToExitToRetainerList();
                         _lastActionUtc = now;
                         return;
                     }
@@ -1233,7 +1238,7 @@ public unsafe sealed partial class Plugin
                     if (_sellQueue.Count == 0)
                     {
                         Log.Debug("[RR] Sell skipped: SellList is empty.");
-                        _runPhase = RunPhase.ExitToRetainerList;
+                        TransitionToExitToRetainerList();
                         _lastActionUtc = now;
                         return;
                     }
@@ -1308,7 +1313,7 @@ public unsafe sealed partial class Plugin
                     }
 
                     Log.Information("[RR] Sell complete: none of the SellList items were found in inventory.");
-                    _runPhase = RunPhase.ExitToRetainerList;
+                    TransitionToExitToRetainerList();
                     _lastActionUtc = now;
                     return;
                 }
@@ -1319,7 +1324,7 @@ public unsafe sealed partial class Plugin
 
                     if (_sellCapacityThisRetainer <= 0 || _soldThisRetainer >= _sellCapacityThisRetainer)
                     {
-                        _runPhase = RunPhase.ExitToRetainerList;
+                        TransitionToExitToRetainerList();
                         _lastActionUtc = now;
                         return;
                     }
@@ -1416,6 +1421,7 @@ public unsafe sealed partial class Plugin
 
                     if (retainerListVisible)
                     {
+                        RunPendingSellPrune();
                         Log.Debug("[RR] Exit: back on RetainerList; continuing.");
                         _runPhase = RunPhase.NeedOpen;
                         _lastActionUtc = now;

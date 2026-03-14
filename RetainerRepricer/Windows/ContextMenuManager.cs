@@ -151,16 +151,20 @@ internal sealed class ContextMenuManager : IDisposable
             {
                 var clickPosition = ImGui.GetMousePos();
                 var defaultPriority = _config.GetAppendSortOrder();
-                _minCountPopup.Show(itemId, isHq, itemName, (id, hq, minCount, priority) =>
+                var allowPreserveToggle = _config.AutoPruneMissingInventory;
+                _minCountPopup.Show(itemId, isHq, itemName, (id, hq, minCount, priority, keep) =>
                 {
                     if (_config.TryAddSellItemWithMinCount(id, hq, itemName, minCount, priority))
                     {
+                        if (allowPreserveToggle)
+                            _config.SetSellItemPreserveFlag(id, hq, keep);
+
                         Plugin.Log.Information("[RR][ContextMenu] Added item {ItemId} (HQ={IsHq}, minCount={MinCount}) to Sell List", id, hq, minCount);
                         _config.Save();
                         if (_plugin.SmartSortEnabled)
                             _ = _plugin.RequestSmartSortAsync("item_added", force: true);
                     }
-                }, clickPosition, defaultPriority, _plugin.SmartSortEnabled);
+                }, clickPosition, defaultPriority, _plugin.SmartSortEnabled, allowPreserveToggle);
             }
         });
     }
