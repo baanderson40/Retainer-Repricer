@@ -22,6 +22,7 @@ internal sealed class MinCountPopup : Window, IDisposable
     private const float BaseMaxHeight = 320f;
     private const float NumericInputWidth = 40f;
     private const float HeightPadding = 12f;
+    private const float TableColumnMinWidth = 90f;
 
     private readonly Configuration _config;
     private uint _pendingItemId;
@@ -186,7 +187,7 @@ internal sealed class MinCountPopup : Window, IDisposable
         var style = ImGui.GetStyle();
         var cellPaddingX = style.CellPadding.X;
         var contentWidth = ImGui.GetContentRegionAvail().X;
-        var targetColumnWidth = MathF.Max(1f, contentWidth / columnCount);
+        var targetColumnWidth = MathF.Max(TableColumnMinWidth, contentWidth / columnCount);
 
         if (!ImGui.BeginTable(
                 "##min_popup_table",
@@ -425,6 +426,8 @@ internal sealed class MinCountPopup : Window, IDisposable
         var textWidth = ImGui.CalcTextSize(label).X;
         var desiredValueWidth = Math.Max(MinValueColumnWidth, textWidth);
         var requiredWidth = ItemLabelWidth + spacingX + desiredValueWidth + paddingX;
+        var minimumTableWidth = (TableColumnMinWidth * (_showKeepToggle ? 3 : 2)) + paddingX;
+        requiredWidth = Math.Max(requiredWidth, minimumTableWidth);
         var width = Math.Clamp(requiredWidth, BaseMinWidth, BaseMaxWidth);
 
         var availableValueWidth = Math.Max(1f, width - ItemLabelWidth - spacingX - paddingX);
