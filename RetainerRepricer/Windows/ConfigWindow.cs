@@ -33,6 +33,15 @@ public sealed class ConfigWindow : Window, IDisposable
     private bool _sellListTabWasOpenLastFrame;
     private bool _forceCollapseSellListRows;
     private bool _perRetainerCapsLastEnabled;
+    private ConfigTabFocus? _pendingTabFocus;
+
+    private enum ConfigTabFocus
+    {
+        SellList,
+        Retainers,
+        Settings,
+        Advanced,
+    }
 
     #endregion
 
@@ -58,6 +67,19 @@ public sealed class ConfigWindow : Window, IDisposable
         // Nothing to dispose.
     }
 
+    public void OpenSellListTab()
+    {
+        _pendingTabFocus = ConfigTabFocus.SellList;
+        _forceCollapseSellListRows = true;
+        IsOpen = true;
+    }
+
+    public void OpenSettingsTab()
+    {
+        _pendingTabFocus = ConfigTabFocus.Settings;
+        IsOpen = true;
+    }
+
     #endregion
 
     #region Draw
@@ -75,7 +97,8 @@ public sealed class ConfigWindow : Window, IDisposable
             return;
 
         // Order: Sell List, Retainers, Settings, Advanced (optional).
-        var sellTabOpen = ImGui.BeginTabItem("MB Sell List");
+        var sellTabFlags = ConsumeTabFocus(ConfigTabFocus.SellList);
+        var sellTabOpen = ImGui.BeginTabItem("MB Sell List", sellTabFlags);
         if (sellTabOpen)
         {
             if (!_sellListTabWasOpenLastFrame)
@@ -85,19 +108,19 @@ public sealed class ConfigWindow : Window, IDisposable
         }
         _sellListTabWasOpenLastFrame = sellTabOpen;
 
-        if (ImGui.BeginTabItem("Retainers"))
+        if (BeginFocusedTab("Retainers", ConfigTabFocus.Retainers))
         {
             DrawRetainersTab();
             ImGui.EndTabItem();
         }
 
-        if (ImGui.BeginTabItem("Settings"))
+        if (BeginFocusedTab("Settings", ConfigTabFocus.Settings))
         {
             DrawSettingsTab();
             ImGui.EndTabItem();
         }
 
-        if (_config.ShowAdvancedSettingsTab && ImGui.BeginTabItem("Advanced"))
+        if (_config.ShowAdvancedSettingsTab && BeginFocusedTab("Advanced", ConfigTabFocus.Advanced))
         {
             DrawAdvancedTab();
             ImGui.EndTabItem();
@@ -831,6 +854,23 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.SetCursorPosX(desiredX);
     }
 
+    private ImGuiTabItemFlags ConsumeTabFocus(ConfigTabFocus tab)
+    {
+        if (_pendingTabFocus == tab)
+        {
+            _pendingTabFocus = null;
+            return ImGuiTabItemFlags.SetSelected;
+        }
+
+        return ImGuiTabItemFlags.None;
+    }
+
+    private bool BeginFocusedTab(string label, ConfigTabFocus tab)
+    {
+        var flags = ConsumeTabFocus(tab);
+        return ImGui.BeginTabItem(label, flags);
+    }
+
     #endregion
 
     #region Plugin settings tab
@@ -873,6 +913,23 @@ public sealed class ConfigWindow : Window, IDisposable
         {
             TooltipHelper.Show(_config,
                 "Shows an overlay on the retainer list."
+            );
+        }
+
+        ImGui.Spacing();
+
+        var showContextPopup = _config.EnableContextMenuPopup;
+        if (ImGui.Checkbox("Show context menu add popup", ref showContextPopup))
+        {
+            _config.EnableContextMenuPopup = showContextPopup;
+            Plugin.Log.Information("[RR][Config] Context popup enabled={Enabled}", showContextPopup);
+            SaveConfig();
+        }
+
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+        {
+            TooltipHelper.Show(_config,
+                "Uncheck to add context-menu items instantly with minimum inventory 1."
             );
         }
 

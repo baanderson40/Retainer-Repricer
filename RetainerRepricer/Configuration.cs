@@ -39,6 +39,9 @@ public sealed class Configuration : IPluginConfiguration
     // Controls whether ImGui tooltips are shown while hovering configuration controls.
     public bool ShowTooltips { get; set; } = true;
 
+    // Shows the Min Count popup when adding via context menu; when off, items add instantly with defaults.
+    public bool EnableContextMenuPopup { get; set; } = true;
+
     #endregion
 
     #region Run behavior

@@ -37,7 +37,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
     private const string CommandName = "/repricer";
     private const string CommandAlias = "/rr";
-    private const string CommandHelp = "help | start [price|sell] | stop | config";
+    private const string CommandHelp = "help|? | start [price|sell] | stop | config (default opens Sell List)";
     private const string ChatTag = "Retainer Repricer";
     private const ushort InfoTagColor = 34;
     private const ushort ErrorTagColor = 14;
@@ -783,6 +783,8 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
     public void ToggleConfigUi() => ConfigWindow.Toggle();
     private void OpenMainUi() => ToggleConfigUi();
+    internal void OpenSellListTab() => ConfigWindow.OpenSellListTab();
+    internal void OpenSettingsTab() => ConfigWindow.OpenSettingsTab();
 
     internal bool SmartSortEnabled => _smartSorter.IsEnabled;
     internal bool SmartSortIsSorting => _smartSorter.IsSorting;

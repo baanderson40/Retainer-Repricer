@@ -147,26 +147,49 @@ internal sealed class ContextMenuManager : IDisposable
                 .AddUiForeground(AddLabel, PrefixColor)
                 .Build(),
 
-                OnClicked = clickedArgs =>
+            OnClicked = clickedArgs =>
             {
-                var clickPosition = ImGui.GetMousePos();
                 var defaultPriority = _config.GetAppendSortOrder();
                 var allowPreserveToggle = _config.AutoPruneMissingInventory;
+
+                if (!_config.EnableContextMenuPopup)
+                {
+                    AddSellListEntryFromMenu(itemId, isHq, itemName, 1, defaultPriority, keepPreserved: false, allowPreserveToggle);
+                    return;
+                }
+
+                var clickPosition = ImGui.GetMousePos();
                 _minCountPopup.Show(itemId, isHq, itemName, (id, hq, minCount, priority, keep) =>
                 {
-                    if (_config.TryAddSellItemWithMinCount(id, hq, itemName, minCount, priority))
-                    {
-                        if (allowPreserveToggle)
-                            _config.SetSellItemPreserveFlag(id, hq, keep);
-
-                        Plugin.Log.Information("[RR][ContextMenu] Added item {ItemId} (HQ={IsHq}, minCount={MinCount}) to Sell List", id, hq, minCount);
-                        _config.Save();
-                        if (_plugin.SmartSortEnabled)
-                            _ = _plugin.RequestSmartSortAsync("item_added", force: true);
-                    }
+                    AddSellListEntryFromMenu(id, hq, itemName, minCount, priority, keep, allowPreserveToggle);
                 }, clickPosition, defaultPriority, _plugin.SmartSortEnabled, allowPreserveToggle);
             }
         });
+    }
+
+    #endregion
+
+    #region Helpers
+
+    private void AddSellListEntryFromMenu(
+        uint itemId,
+        bool isHq,
+        string itemName,
+        int minCount,
+        int priority,
+        bool keepPreserved,
+        bool allowPreserveToggle)
+    {
+        if (!_config.TryAddSellItemWithMinCount(itemId, isHq, itemName, minCount, priority))
+            return;
+
+        if (allowPreserveToggle)
+            _config.SetSellItemPreserveFlag(itemId, isHq, keepPreserved);
+
+        Plugin.Log.Information("[RR][ContextMenu] Added item {ItemId} (HQ={IsHq}, minCount={MinCount}) to Sell List", itemId, isHq, minCount);
+        _config.Save();
+        if (_plugin.SmartSortEnabled)
+            _ = _plugin.RequestSmartSortAsync("item_added", force: true);
     }
 
     #endregion

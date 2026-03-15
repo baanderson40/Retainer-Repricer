@@ -21,6 +21,10 @@ public sealed partial class Plugin
         switch (primary)
         {
             case "":
+                OpenSellListTab();
+                return;
+
+            case "?":
             case "help":
                 PrintHelp();
                 return;
@@ -35,7 +39,7 @@ public sealed partial class Plugin
 
             case "config":
             case "c":
-                ToggleConfigUi();
+                OpenSettingsTab();
                 return;
 
             case "debuguniv":
@@ -157,10 +161,11 @@ public sealed partial class Plugin
 
     private void PrintHelp()
     {
-        PrintInfo("/repricer, /rr - Show this help");
+        PrintInfo("/repricer, /rr - Open the MB Sell List tab.");
+        PrintInfo("/repricer help or /repricer ? - Show this help (aliases work for /rr).");
         PrintInfo("/repricer start [mode] - Begin automation (omit mode to run both).");
         PrintInfo("--Modes: price = reprice listings only, sell = Sell List only");
         PrintInfo("/repricer stop - Stop the current run and unwind open UI");
-        PrintInfo("/repricer config | c - Open or close the configuration window");
+        PrintInfo("/repricer config | c - Open the Settings tab of the configuration window");
     }
 }
