@@ -17,9 +17,11 @@ internal sealed class MinCountPopup : Window, IDisposable
     private const float ItemLabelWidth = 47f;
     private const float MinValueColumnWidth = 100f;
     private const float BaseMinWidth = 220f;
-    private const float BaseMaxWidth = 640f;
-    private const float BaseMinHeight = 190f;
+    private const float BaseMaxWidth = 720f;
+    private const float BaseMinHeight = 160f;
     private const float BaseMaxHeight = 320f;
+    private const float NumericInputWidth = 40f;
+    private const float HeightPadding = 12f;
 
     private readonly Configuration _config;
     private uint _pendingItemId;
@@ -41,11 +43,10 @@ internal sealed class MinCountPopup : Window, IDisposable
     public MinCountPopup(Configuration config)
         : base(
             "Set Minimum Count##RR_MinCount",
-            ImGuiWindowFlags.AlwaysAutoResize
+            ImGuiWindowFlags.None
         )
     {
         _config = config;
-        Size = new(285, 160);
         SizeConstraints = new WindowSizeConstraints
         {
             MinimumSize = new(BaseMinWidth, BaseMinHeight),
@@ -104,6 +105,8 @@ internal sealed class MinCountPopup : Window, IDisposable
         ImGui.Dummy(new Vector2(0, spacingY));
 
         DrawCenteredButtons();
+
+        AdjustWindowHeightToContent();
     }
 
     private void DrawCenteredButtons()
@@ -134,6 +137,17 @@ internal sealed class MinCountPopup : Window, IDisposable
         ImGui.PopStyleVar();
 
         ImGui.Unindent(indent);
+    }
+
+    private void AdjustWindowHeightToContent()
+    {
+        var style = ImGui.GetStyle();
+        var usedHeight = ImGui.GetCursorPosY() + style.WindowPadding.Y;
+        var windowSize = ImGui.GetWindowSize();
+        var desiredHeight = Math.Clamp(usedHeight + HeightPadding, BaseMinHeight, BaseMaxHeight);
+
+        if (Math.Abs(windowSize.Y - desiredHeight) > 0.5f)
+            ImGui.SetWindowSize(new Vector2(windowSize.X, desiredHeight));
     }
 
     public void Dispose()
@@ -169,13 +183,21 @@ internal sealed class MinCountPopup : Window, IDisposable
     private void DrawInputTable()
     {
         var columnCount = _showKeepToggle ? 3 : 2;
-        if (!ImGui.BeginTable("##min_popup_table", columnCount, ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.SizingStretchProp))
+        var style = ImGui.GetStyle();
+        var cellPaddingX = style.CellPadding.X;
+        var contentWidth = ImGui.GetContentRegionAvail().X;
+        var targetColumnWidth = MathF.Max(1f, contentWidth / columnCount);
+
+        if (!ImGui.BeginTable(
+                "##min_popup_table",
+                columnCount,
+                ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.SizingFixedSame))
             return;
 
-        ImGui.TableSetupColumn("Min Inv", ImGuiTableColumnFlags.WidthStretch | ImGuiTableColumnFlags.DefaultHide, 1f);
-        ImGui.TableSetupColumn("Priority", ImGuiTableColumnFlags.WidthStretch | ImGuiTableColumnFlags.DefaultHide, 1f);
+        ImGui.TableSetupColumn("Min Inv", ImGuiTableColumnFlags.WidthFixed, targetColumnWidth);
+        ImGui.TableSetupColumn("Priority", ImGuiTableColumnFlags.WidthFixed, targetColumnWidth);
         if (_showKeepToggle)
-            ImGui.TableSetupColumn("Keep", ImGuiTableColumnFlags.WidthFixed | ImGuiTableColumnFlags.DefaultHide, 70f);
+            ImGui.TableSetupColumn("Keep", ImGuiTableColumnFlags.WidthFixed, targetColumnWidth);
 
         ImGui.TableNextRow(ImGuiTableRowFlags.Headers);
         DrawHeaderCell("Min Inv", 0);
@@ -187,7 +209,12 @@ internal sealed class MinCountPopup : Window, IDisposable
 
         // Min inventory column
         ImGui.TableSetColumnIndex(0);
-        ImGui.SetNextItemWidth(-1);
+        var minColumnCursorX = ImGui.GetCursorPosX();
+        var minColumnWidth = ImGui.GetColumnWidth();
+        var minColumnInnerWidth = Math.Max(0f, minColumnWidth - (cellPaddingX * 2f));
+        var minColumnHalfDiff = Math.Max(0f, (minColumnInnerWidth - NumericInputWidth) * 0.5f);
+        ImGui.SetCursorPosX(minColumnCursorX + minColumnHalfDiff);
+        ImGui.SetNextItemWidth(NumericInputWidth);
         ApplyInputFocusIfNeeded();
         if (ImGui.InputTextWithHint(
                 "##mincount_input",
@@ -214,7 +241,12 @@ internal sealed class MinCountPopup : Window, IDisposable
         // Priority column
         ImGui.TableSetColumnIndex(1);
         ImGui.BeginDisabled(_smartSortEnabled);
-        ImGui.SetNextItemWidth(-1);
+        var priorityColumnCursorX = ImGui.GetCursorPosX();
+        var priorityColumnWidth = ImGui.GetColumnWidth();
+        var priorityColumnInnerWidth = Math.Max(0f, priorityColumnWidth - (cellPaddingX * 2f));
+        var priorityColumnHalfDiff = Math.Max(0f, (priorityColumnInnerWidth - NumericInputWidth) * 0.5f);
+        ImGui.SetCursorPosX(priorityColumnCursorX + priorityColumnHalfDiff);
+        ImGui.SetNextItemWidth(NumericInputWidth);
         if (ImGui.InputTextWithHint("##priority_input", _priorityMax.ToString(), ref _priorityText, 8, ImGuiInputTextFlags.CharsDecimal)
             && string.IsNullOrWhiteSpace(_priorityText))
         {
@@ -231,14 +263,17 @@ internal sealed class MinCountPopup : Window, IDisposable
         }
 
         // Keep column (optional)
+        var keepColumnWidthValue = 0f;
         if (_showKeepToggle)
         {
             ImGui.TableSetColumnIndex(2);
-            var cursorX = ImGui.GetCursorPosX();
-            var columnWidth = ImGui.GetColumnWidth();
+            var keepColumnCursorX = ImGui.GetCursorPosX();
+            var keepColumnWidth = ImGui.GetColumnWidth();
+            keepColumnWidthValue = keepColumnWidth;
             var checkboxWidth = ImGui.GetFrameHeight();
-            var padding = Math.Max(0f, (columnWidth - checkboxWidth) * 0.5f);
-            ImGui.SetCursorPosX(cursorX + padding);
+            var keepInnerWidth = Math.Max(0f, keepColumnWidth - (cellPaddingX * 2f));
+            var keepHalfDiff = Math.Max(0f, (keepInnerWidth - checkboxWidth) * 0.5f);
+            ImGui.SetCursorPosX(keepColumnCursorX + keepHalfDiff);
             ImGui.Checkbox("##keep_checkbox", ref _keepPreserved);
 
             if (ImGui.IsItemHovered())
@@ -256,7 +291,9 @@ internal sealed class MinCountPopup : Window, IDisposable
         var width = ImGui.GetColumnWidth();
         var textWidth = ImGui.CalcTextSize(label).X;
         var cursor = ImGui.GetCursorPos();
-        var padding = Math.Max(0f, (width - textWidth) * 0.5f);
+        var cellPaddingX = ImGui.GetStyle().CellPadding.X;
+        var innerWidth = Math.Max(0f, width - (cellPaddingX * 2f));
+        var padding = Math.Max(0f, (innerWidth - textWidth) * 0.5f);
         ImGui.SetCursorPosX(cursor.X + padding);
         ImGui.TextUnformatted(label);
     }
@@ -359,7 +396,7 @@ internal sealed class MinCountPopup : Window, IDisposable
 
         if (_pendingWindowSize.HasValue)
         {
-            ImGui.SetNextWindowSize(_pendingWindowSize.Value, ImGuiCond.Appearing);
+            ImGui.SetNextWindowSize(_pendingWindowSize.Value, ImGuiCond.Always);
             _pendingWindowSize = null;
         }
     }
@@ -382,7 +419,9 @@ internal sealed class MinCountPopup : Window, IDisposable
     {
         var style = ImGui.GetStyle();
         var spacingX = style.ItemSpacing.X;
+        var spacingY = style.ItemSpacing.Y;
         var paddingX = style.WindowPadding.X * 2f;
+        var paddingY = style.WindowPadding.Y * 2f;
         var textWidth = ImGui.CalcTextSize(label).X;
         var desiredValueWidth = Math.Max(MinValueColumnWidth, textWidth);
         var requiredWidth = ItemLabelWidth + spacingX + desiredValueWidth + paddingX;
@@ -391,11 +430,19 @@ internal sealed class MinCountPopup : Window, IDisposable
         var availableValueWidth = Math.Max(1f, width - ItemLabelWidth - spacingX - paddingX);
         var lineCount = Math.Max(1, (int)MathF.Ceiling(textWidth / availableValueWidth));
         var extraLines = Math.Max(0, lineCount - 1);
-        var lineHeight = ImGui.GetTextLineHeightWithSpacing();
-        var extraHeight = (extraLines + 1) * lineHeight; // always reserve one extra line
+        var lineHeight = ImGui.GetTextLineHeight();
+        var labelHeight = lineHeight + (extraLines * lineHeight);
 
-        var minHeight = BaseMinHeight + extraHeight;
-        var maxHeight = Math.Max(minHeight, BaseMaxHeight + extraHeight);
+        var tableHeaderHeight = ImGui.GetTextLineHeight();
+        var tableRowHeight = ImGui.GetFrameHeight();
+        var tablePaddingY = style.CellPadding.Y * 2f;
+        var tableHeight = tableHeaderHeight + tableRowHeight + tablePaddingY;
+        var buttonHeight = ImGui.GetFrameHeight();
+
+        var computedHeight = paddingY + labelHeight + (spacingY * 2f) + tableHeight + buttonHeight + HeightPadding;
+
+        var minHeight = Math.Max(BaseMinHeight, computedHeight);
+        var maxHeight = Math.Max(minHeight, BaseMaxHeight + (extraLines * lineHeight));
 
         var minSize = new Vector2(width, minHeight);
         var maxSize = new Vector2(BaseMaxWidth, maxHeight);
