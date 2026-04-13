@@ -704,15 +704,15 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
             for (int i = 0; i < max; i++)
             {
                 if (!TryReadMarketRow(i, out var price, out var seller, out var isHq)) continue;
-                if (isHq) continue;
 
                 if (price < gateFloor.Value)
                 {
-                    Log.Debug($"[RR][Gate] NQ row {i} price {price} below floor {gateFloor.Value}; skipping row.");
+                    Log.Debug($"[RR][Gate] Row {i} price {price} below floor {gateFloor.Value}; skipping row.");
                     continue;
                 }
 
-                Log.Debug($"[RR] Market NQ gated ref row={i} price={price} seller='{seller}'");
+                var qualityLabel = isHq ? "HQ" : "NQ";
+                Log.Debug($"[RR] Market gated ref row={i} price={price} seller='{seller}' quality={qualityLabel}");
                 lowestPrice = price;
                 lowestSeller = seller;
                 return true;
@@ -724,11 +724,11 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
             if (fallbackSellerNq == "[UniversalisAverage]")
             {
-                Log.Information($"[RR][Gate] No NQ listings met the floor {gateFloor.Value}; using Universalis average {lowestPrice}.");
+                Log.Information($"[RR][Gate] No listings met the floor {gateFloor.Value}; using Universalis average {lowestPrice}.");
             }
             else
             {
-                Log.Information($"[RR][Gate] No NQ listings met the floor {gateFloor.Value}; using floor price.");
+                Log.Information($"[RR][Gate] No listings met the floor {gateFloor.Value}; using floor price.");
             }
 
             return true;
