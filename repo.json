@@ -14,7 +14,7 @@
     "AssemblyVersion": "1.1.1.0",
     "IsTestingExclusive": false,
     "ApplicableVersion": "any",
-    "DalamudApiLevel": 14,
+    "DalamudApiLevel": 15,
     "DownloadCount": 1,
     "DownloadLinkInstall": "https://github.com/baanderson40/Retainer-Repricer/releases/download/v1.1.1/latest.zip",
     "DownloadLinkUpdate": "https://github.com/baanderson40/Retainer-Repricer/releases/download/v1.1.1/latest.zip",
