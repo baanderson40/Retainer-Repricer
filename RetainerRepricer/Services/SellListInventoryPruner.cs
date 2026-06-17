@@ -13,6 +13,7 @@ internal unsafe sealed class SellListInventoryPruner
         InventoryType.Inventory2,
         InventoryType.Inventory3,
         InventoryType.Inventory4,
+        InventoryType.Crystals,
     };
 
     private readonly Configuration _config;
