@@ -140,12 +140,6 @@ public unsafe sealed partial class Plugin
 
     private List<SellCandidate> _sellQueue => _sellState.SellQueue;
 
-    private int _sellQueuePos
-    {
-        get => _sellState.SellQueuePos;
-        set => _sellState.SellQueuePos = value;
-    }
-
     private int _sellCapacityThisRetainer
     {
         get => _sellState.SellCapacityThisRetainer;
@@ -397,7 +391,6 @@ public unsafe sealed partial class Plugin
         public int ListedCountThisRetainer { get; set; }
         public int SlotIndexToOpen { get; set; }
         public List<SellCandidate> SellQueue { get; } = new();
-        public int SellQueuePos { get; set; }
         public int SellCapacityThisRetainer { get; set; }
         public int SoldThisRetainer { get; set; }
         public bool ProcessingListedItem { get; set; } = true;

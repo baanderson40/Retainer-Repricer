@@ -127,8 +127,6 @@ public unsafe sealed partial class Plugin
                             StackSizeMax = stackCap,
                         });
                     }
-                    _sellQueuePos = 0;
-
                     _sellCapacityThisRetainer = 0;
                     _soldThisRetainer = 0;
 
@@ -1246,11 +1244,8 @@ public unsafe sealed partial class Plugin
                     var normalizedRetainerName = Configuration.NormalizeRetainerName(_currentRetainerName);
                     var hasRetainerName = Configuration.EnablePerRetainerCaps && normalizedRetainerName.Length > 0;
 
-                    while (_sellQueuePos < _sellQueue.Count)
+                    foreach (var c in _sellQueue)
                     {
-                        var c = _sellQueue[_sellQueuePos];
-                        _sellQueuePos++;
-
                         if (c.ItemId == 0)
                             continue;
 
@@ -1312,7 +1307,7 @@ public unsafe sealed partial class Plugin
 
                     }
 
-                    Log.Information("[RR] Sell complete: none of the SellList items were found in inventory.");
+                    Log.Information("[RR] Sell complete: no eligible SellList items remain for this retainer.");
                     TransitionToExitToRetainerList();
                     _lastActionUtc = now;
                     return;

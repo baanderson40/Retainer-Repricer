@@ -400,7 +400,6 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         _slotIndexToOpen = 0;
 
         _sellQueue.Clear();
-        _sellQueuePos = 0;
         _pendingSmartSortTask = null;
         _smartSortKickoffDone = false;
         _autoPruneRunThisCycle = false;
@@ -439,7 +438,6 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         _slotIndexToOpen = 0;
 
         _sellQueue.Clear();
-        _sellQueuePos = 0;
         _pendingSmartSortTask = null;
         _smartSortKickoffDone = false;
         _autoPruneRunThisCycle = false;
