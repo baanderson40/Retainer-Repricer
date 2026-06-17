@@ -50,7 +50,7 @@ body:
     attributes:
       label: World / Data Center
       description: Which world and data center were you on when the issue happened?
-      placeholder: "Example: Gilgamesh / Aether"
+      placeholder: "Example: Carbuncle / Elemental"
     validations:
       required: false
 
