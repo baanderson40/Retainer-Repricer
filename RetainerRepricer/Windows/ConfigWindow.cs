@@ -606,7 +606,7 @@ public sealed class ConfigWindow : Window, IDisposable
                     }
                 }
                 if (ImGui.IsItemHovered())
-                    TooltipHelper.Show(_config, "0 = no limit; 1 = default; 20 = use every slot");
+                    TooltipHelper.Show(_config, "0 - don't list\n1 - default listing\nN - post N listings");
 
                 ImGui.TableSetColumnIndex(2);
                 var stackValue = entry.GetRetainerStackSize(name);
