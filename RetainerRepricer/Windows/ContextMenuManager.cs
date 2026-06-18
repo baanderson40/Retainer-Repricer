@@ -6,9 +6,11 @@ using Dalamud.Game.Text.SeStringHandling;
 using ECommons;
 using ECommons.DalamudServices;
 using ECommons.Interop;
+using FFXIVClientStructs.FFXIV.Client.Game;
 using Lumina.Excel.Sheets;
 using System;
 
+using RetainerRepricer.Ui;
 using RetainerRepricer.Windows;
 
 namespace RetainerRepricer;
@@ -59,7 +61,7 @@ internal sealed class ContextMenuManager : IDisposable
 
     #region Context menu injection
 
-    private void OnMenuOpened(IMenuOpenedArgs args)
+    private unsafe void OnMenuOpened(IMenuOpenedArgs args)
     {
         if (!_config.PluginEnabled)
             return;
@@ -84,17 +86,24 @@ internal sealed class ContextMenuManager : IDisposable
         // Pull Lumina once (name + tradable/marketable gate).
         var itemRow = Svc.Data.GetExcelSheet<Item>()?.GetRowOrDefault(itemId);
         var itemName = itemRow?.Name.ToString().Trim() ?? string.Empty;
+        var containerType = (InventoryType)inv.TargetItem.Value.ContainerType;
+        var slotIndex = unchecked((int)inv.TargetItem.Value.InventorySlot);
+        var hasInventorySlot = _plugin.UiReader.TryGetInventorySlot(containerType, slotIndex, out var inventorySlot);
 
-        // Match the usual behavior: untradable items get a disabled entry.
-        // If we can't read the row, treat it as not sellable.
-        var isSellable = itemRow.HasValue && !itemRow.Value.IsUntradable;
+        // Match the usual behavior: static untradable items and live spiritbond-bound gear get a disabled entry.
+        // If the target slot can't be resolved, fall back to the static item-sheet gate.
+        var isSellable = hasInventorySlot
+            ? UiReader.IsInventorySlotSellable(inventorySlot, itemRow)
+            : itemRow.HasValue && !itemRow.Value.IsUntradable;
 
         Plugin.Log.Verbose(
-            "[RR][ContextMenu] Inventory menu opened: itemId={ItemId}, hq={IsHq}, inSellList={IsInSellList}, sellable={IsSellable}, modifier={Modifier}, svcLShift={SvcLShift}, svcRShift={SvcRShift}, svcLCtrl={SvcLCtrl}, svcRCtrl={SvcRCtrl}, svcLAlt={SvcLAlt}, svcRAlt={SvcRAlt}, winLShift={WinLShift}, winRShift={WinRShift}, winLCtrl={WinLCtrl}, winRCtrl={WinRCtrl}, winLAlt={WinLAlt}, winRAlt={WinRAlt}",
+            "[RR][ContextMenu] Inventory menu opened: itemId={ItemId}, hq={IsHq}, inSellList={IsInSellList}, sellable={IsSellable}, slotResolved={SlotResolved}, spiritbondOrCollectability={SpiritbondOrCollectability}, modifier={Modifier}, svcLShift={SvcLShift}, svcRShift={SvcRShift}, svcLCtrl={SvcLCtrl}, svcRCtrl={SvcRCtrl}, svcLAlt={SvcLAlt}, svcRAlt={SvcRAlt}, winLShift={WinLShift}, winRShift={WinRShift}, winLCtrl={WinLCtrl}, winRCtrl={WinRCtrl}, winLAlt={WinLAlt}, winRAlt={WinRAlt}",
             itemId,
             isHq,
             isInSellList,
             isSellable,
+            hasInventorySlot,
+            hasInventorySlot ? inventorySlot->GetSpiritbondOrCollectability() : 0,
             _config.ContextMenuQuickAddModifier,
             Svc.KeyState[VirtualKey.LSHIFT],
             Svc.KeyState[VirtualKey.RSHIFT],

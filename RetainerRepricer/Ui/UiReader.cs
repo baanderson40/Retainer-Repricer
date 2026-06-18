@@ -55,6 +55,42 @@ internal sealed unsafe class UiReader
         OtherMessage,
     }
 
+    public enum InventoryLookupStatus
+    {
+        NotFound = 0,
+        FoundOnlyUnsellable = 1,
+        FoundSellable = 2,
+    }
+
+    public readonly struct InventoryLookupResult
+    {
+        public InventoryLookupResult(
+            InventoryLookupStatus status,
+            int container,
+            int slot,
+            int totalCount,
+            uint firstUnsellableSpiritbondOrCollectability)
+        {
+            Status = status;
+            Container = container;
+            Slot = slot;
+            TotalCount = totalCount;
+            FirstUnsellableSpiritbondOrCollectability = firstUnsellableSpiritbondOrCollectability;
+        }
+
+        public InventoryLookupStatus Status { get; }
+
+        public int Container { get; }
+
+        public int Slot { get; }
+
+        public int TotalCount { get; }
+
+        public uint FirstUnsellableSpiritbondOrCollectability { get; }
+
+        public bool FoundSellable => Status == InventoryLookupStatus.FoundSellable;
+    }
+
     #endregion
 
     #region Fields / lifecycle
@@ -407,20 +443,26 @@ internal sealed unsafe class UiReader
     /// <summary>
     /// Does a single pass over the four bag containers and returns the first slot plus total count for that item/quality.
     /// </summary>
-    public bool TryFindItemInInventory(uint baseItemId, bool isHq, out int container, out int slot, out int totalCount)
+    public InventoryLookupResult FindItemInInventory(uint baseItemId, bool isHq)
     {
-        container = 0;
-        slot = 0;
-        totalCount = 0;
+        var container = 0;
+        var slot = 0;
+        var totalCount = 0;
 
         if (baseItemId == 0)
-            return false;
+            return new InventoryLookupResult(InventoryLookupStatus.NotFound, 0, 0, 0, 0);
+
+        var itemRow = Svc.Data.GetExcelSheet<Item>()?.GetRowOrDefault(baseItemId);
+        if (!itemRow.HasValue)
+            return new InventoryLookupResult(InventoryLookupStatus.NotFound, 0, 0, 0, 0);
 
         var inv = InventoryManager.Instance();
         if (inv == null)
-            return false;
+            return new InventoryLookupResult(InventoryLookupStatus.NotFound, 0, 0, 0, 0);
 
-        bool found = false;
+        var foundSellable = false;
+        var foundMatchingUnsellable = false;
+        uint firstUnsellableSpiritbondOrCollectability = 0;
 
         foreach (var type in SellScanContainers)
         {
@@ -442,20 +484,71 @@ internal sealed unsafe class UiReader
                 var slotIsHq = IsSlotHq(s);
                 if (slotIsHq != isHq) continue;
 
+                if (!IsInventorySlotSellable(s, itemRow))
+                {
+                    if (!foundMatchingUnsellable)
+                    {
+                        foundMatchingUnsellable = true;
+                        firstUnsellableSpiritbondOrCollectability = s->GetSpiritbondOrCollectability();
+                    }
+
+                    continue;
+                }
+
                 totalCount += (int)s->Quantity;
                 if (totalCount >= 999999)
                     totalCount = 999999;
 
-                if (!found)
+                if (!foundSellable)
                 {
                     container = (int)type;
                     slot = i;
-                    found = true;
+                    foundSellable = true;
                 }
             }
         }
 
-        return found;
+        if (foundSellable)
+            return new InventoryLookupResult(InventoryLookupStatus.FoundSellable, container, slot, totalCount, 0);
+
+        if (foundMatchingUnsellable)
+            return new InventoryLookupResult(InventoryLookupStatus.FoundOnlyUnsellable, 0, 0, 0,
+                firstUnsellableSpiritbondOrCollectability);
+
+        return new InventoryLookupResult(InventoryLookupStatus.NotFound, 0, 0, 0, 0);
+    }
+
+    public bool TryGetInventorySlot(InventoryType containerType, int slotIndex, out InventoryItem* inventorySlot)
+    {
+        inventorySlot = null;
+
+        if (slotIndex < 0)
+            return false;
+
+        var inv = InventoryManager.Instance();
+        if (inv == null)
+            return false;
+
+        var container = inv->GetInventoryContainer(containerType);
+        if (container == null || !container->IsLoaded || slotIndex >= container->Size)
+            return false;
+
+        inventorySlot = container->GetInventorySlot(slotIndex);
+        return inventorySlot != null;
+    }
+
+    public static bool IsInventorySlotSellable(InventoryItem* inventorySlot, Item? itemRow)
+    {
+        if (inventorySlot == null)
+            return false;
+
+        if (!itemRow.HasValue)
+            return false;
+
+        if (itemRow.Value.IsUntradable)
+            return false;
+
+        return inventorySlot->IsCollectable() || inventorySlot->GetSpiritbondOrCollectability() == 0;
     }
 
     private static bool IsSlotHq(FFXIVClientStructs.FFXIV.Client.Game.InventoryItem* s)

@@ -4,6 +4,7 @@ using ECommons.Automation;
 using ECommons.UIHelpers.AddonMasterImplementations;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using RetainerRepricer.Services;
+using RetainerRepricer.Ui;
 
 namespace RetainerRepricer;
 
@@ -1281,11 +1282,22 @@ public unsafe sealed partial class Plugin
                             }
                         }
 
-                        if (!TryFindItemInInventory(c.ItemId, c.IsHq, out var slotRef, out var totalCount))
+                        var inventoryLookup = FindItemInInventory(c.ItemId, c.IsHq, out var slotRef);
+                        if (!inventoryLookup.FoundSellable)
                         {
-                            Log.Verbose($"[RR] Sell candidate not in inventory: itemId={c.ItemId} hq={c.IsHq}");
+                            if (inventoryLookup.Status == UiReader.InventoryLookupStatus.FoundOnlyUnsellable)
+                            {
+                                Log.Verbose($"[RR] Sell candidate skipped: itemId={c.ItemId} hq={c.IsHq} present but not sellable (spiritbondOrCollectability={inventoryLookup.FirstUnsellableSpiritbondOrCollectability})");
+                            }
+                            else
+                            {
+                                Log.Verbose($"[RR] Sell candidate not in inventory: itemId={c.ItemId} hq={c.IsHq}");
+                            }
+
                             continue;
                         }
+
+                        var totalCount = inventoryLookup.TotalCount;
 
                         if (totalCount < threshold)
                         {

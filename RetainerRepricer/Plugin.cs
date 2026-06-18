@@ -91,6 +91,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
     private ContextMenuManager ContextMenu { get; }
 
     private readonly Ui.UiReader _uiReader;
+    internal Ui.UiReader UiReader => _uiReader;
 
     #endregion
 
@@ -586,18 +587,17 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
     /// - totalCount across all stacks found
     /// - first sellable slotRef (container, slot) if any
     /// </summary>
-    private bool TryFindItemInInventory(uint baseItemId, bool isHq, out InventorySlotRef slotRef, out int totalCount)
+    private Ui.UiReader.InventoryLookupResult FindItemInInventory(uint baseItemId, bool isHq, out InventorySlotRef slotRef)
     {
         slotRef = default;
-        totalCount = 0;
+        var result = _uiReader.FindItemInInventory(baseItemId, isHq);
 
-        if (_uiReader.TryFindItemInInventory(baseItemId, isHq, out var container, out var slot, out totalCount))
+        if (result.FoundSellable)
         {
-            slotRef = new InventorySlotRef { Container = container, Slot = slot };
-            return true;
+            slotRef = new InventorySlotRef { Container = result.Container, Slot = result.Slot };
         }
 
-        return false;
+        return result;
     }
 
     /// <summary>
