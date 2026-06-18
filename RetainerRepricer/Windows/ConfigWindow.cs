@@ -30,6 +30,8 @@ public sealed class ConfigWindow : Window, IDisposable
     private bool _showAdvancedResetConfirmation;
     private DateTime _advancedResetConfirmationUtc;
     private static readonly Configuration DefaultConfig = new();
+    private static readonly ContextMenuQuickAddModifier[] QuickAddModifierOptions =
+        Enum.GetValues<ContextMenuQuickAddModifier>();
     private bool _sellListTabWasOpenLastFrame;
     private bool _forceCollapseSellListRows;
     private bool _perRetainerCapsLastEnabled;
@@ -935,6 +937,10 @@ public sealed class ConfigWindow : Window, IDisposable
 
         ImGui.Spacing();
 
+        DrawContextMenuQuickAddModifierSetting();
+
+        ImGui.Spacing();
+
         var showTooltips = _config.ShowTooltips;
         if (ImGui.Checkbox("Show UI tooltips", ref showTooltips))
         {
@@ -965,6 +971,45 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         ImGui.Spacing();
+    }
+
+    private void DrawContextMenuQuickAddModifierSetting()
+    {
+        var modifier = SanitizeContextMenuQuickAddModifier(_config.ContextMenuQuickAddModifier);
+        if (modifier != _config.ContextMenuQuickAddModifier)
+        {
+            _config.ContextMenuQuickAddModifier = modifier;
+            SaveConfig();
+        }
+
+        var preview = GetContextMenuQuickAddModifierLabel(modifier);
+        ImGui.SetNextItemWidth(190f);
+        if (ImGui.BeginCombo("Quick add modifier key", preview))
+        {
+            foreach (var option in QuickAddModifierOptions)
+            {
+                var isSelected = modifier == option;
+                if (ImGui.Selectable(GetContextMenuQuickAddModifierLabel(option), isSelected))
+                {
+                    _config.ContextMenuQuickAddModifier = option;
+                    Plugin.Log.Information("[RR][Config] Context quick add modifier={Modifier}", option);
+                    SaveConfig();
+                    modifier = option;
+                }
+
+                if (isSelected)
+                    ImGui.SetItemDefaultFocus();
+            }
+
+            ImGui.EndCombo();
+        }
+
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+        {
+            TooltipHelper.Show(_config,
+                "Hold this modifier while right-clicking an inventory item to add it directly to the sell list."
+            );
+        }
     }
 
     private void DrawPerRetainerToggle()
@@ -1716,6 +1761,25 @@ public sealed class ConfigWindow : Window, IDisposable
     #region Save helpers
 
     private void SaveConfig() => _config.Save();
+
+    private static ContextMenuQuickAddModifier SanitizeContextMenuQuickAddModifier(ContextMenuQuickAddModifier modifier)
+        => Enum.IsDefined(modifier) ? modifier : ContextMenuQuickAddModifier.None;
+
+    private static string GetContextMenuQuickAddModifierLabel(ContextMenuQuickAddModifier modifier)
+        => modifier switch
+        {
+            ContextMenuQuickAddModifier.None => "Disabled",
+            ContextMenuQuickAddModifier.Shift => "Shift",
+            ContextMenuQuickAddModifier.LeftShift => "Left Shift",
+            ContextMenuQuickAddModifier.RightShift => "Right Shift",
+            ContextMenuQuickAddModifier.Ctrl => "Ctrl",
+            ContextMenuQuickAddModifier.LeftCtrl => "Left Ctrl",
+            ContextMenuQuickAddModifier.RightCtrl => "Right Ctrl",
+            ContextMenuQuickAddModifier.Alt => "Alt",
+            ContextMenuQuickAddModifier.LeftAlt => "Left Alt",
+            ContextMenuQuickAddModifier.RightAlt => "Right Alt",
+            _ => "Disabled",
+        };
 
     #endregion
 }

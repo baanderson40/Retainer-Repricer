@@ -6,6 +6,20 @@ using System.Linq;
 
 namespace RetainerRepricer;
 
+public enum ContextMenuQuickAddModifier
+{
+    None = 0,
+    Shift = 1,
+    Ctrl = 2,
+    Alt = 3,
+    LeftShift = 4,
+    RightShift = 5,
+    LeftCtrl = 6,
+    RightCtrl = 7,
+    LeftAlt = 8,
+    RightAlt = 9,
+}
+
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
@@ -41,6 +55,9 @@ public sealed class Configuration : IPluginConfiguration
 
     // Shows the Min Count popup when adding via context menu; when off, items add instantly with defaults.
     public bool EnableContextMenuPopup { get; set; } = true;
+
+    // Optional modifier that turns inventory right-click into an immediate add-to-sell-list action.
+    public ContextMenuQuickAddModifier ContextMenuQuickAddModifier { get; set; } = ContextMenuQuickAddModifier.None;
 
     #endregion
 

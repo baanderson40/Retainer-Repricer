@@ -1,8 +1,11 @@
 using Dalamud.Bindings.ImGui;
+using Dalamud.Game.ClientState.Keys;
 using Dalamud.Game.Gui.ContextMenu;
 using Dalamud.Game.Text;
 using Dalamud.Game.Text.SeStringHandling;
+using ECommons;
 using ECommons.DalamudServices;
+using ECommons.Interop;
 using Lumina.Excel.Sheets;
 using System;
 
@@ -85,6 +88,29 @@ internal sealed class ContextMenuManager : IDisposable
         // Match the usual behavior: untradable items get a disabled entry.
         // If we can't read the row, treat it as not sellable.
         var isSellable = itemRow.HasValue && !itemRow.Value.IsUntradable;
+
+        Plugin.Log.Verbose(
+            "[RR][ContextMenu] Inventory menu opened: itemId={ItemId}, hq={IsHq}, inSellList={IsInSellList}, sellable={IsSellable}, modifier={Modifier}, svcLShift={SvcLShift}, svcRShift={SvcRShift}, svcLCtrl={SvcLCtrl}, svcRCtrl={SvcRCtrl}, svcLAlt={SvcLAlt}, svcRAlt={SvcRAlt}, winLShift={WinLShift}, winRShift={WinRShift}, winLCtrl={WinLCtrl}, winRCtrl={WinRCtrl}, winLAlt={WinLAlt}, winRAlt={WinRAlt}",
+            itemId,
+            isHq,
+            isInSellList,
+            isSellable,
+            _config.ContextMenuQuickAddModifier,
+            Svc.KeyState[VirtualKey.LSHIFT],
+            Svc.KeyState[VirtualKey.RSHIFT],
+            Svc.KeyState[VirtualKey.LCONTROL],
+            Svc.KeyState[VirtualKey.RCONTROL],
+            Svc.KeyState[VirtualKey.LMENU],
+            Svc.KeyState[VirtualKey.RMENU],
+            GenericHelpers.IsKeyPressed(LimitedKeys.LeftShiftKey),
+            GenericHelpers.IsKeyPressed(LimitedKeys.RightShiftKey),
+            GenericHelpers.IsKeyPressed(LimitedKeys.LeftControlKey),
+            GenericHelpers.IsKeyPressed(LimitedKeys.RightControlKey),
+            GenericHelpers.IsKeyPressed(LimitedKeys.LeftAltKey),
+            GenericHelpers.IsKeyPressed(LimitedKeys.RightAltKey));
+
+        if (!isInSellList && isSellable && TryQuickAddFromModifier(itemId, isHq, itemName))
+            isInSellList = true;
 
         // If it's already tracked, always allow removing it (even if untradable).
         if (isInSellList)
@@ -171,25 +197,67 @@ internal sealed class ContextMenuManager : IDisposable
 
     #region Helpers
 
-    private void AddSellListEntryFromMenu(
+    private bool TryQuickAddFromModifier(uint itemId, bool isHq, string itemName)
+    {
+        if (!IsQuickAddModifierHeld())
+        {
+            Plugin.Log.Verbose("[RR][ContextMenu] Quick add skipped: configured modifier not held for item {ItemId} (HQ={IsHq})",
+                itemId, isHq);
+            return false;
+        }
+
+        var defaultPriority = _config.GetAppendSortOrder();
+        Plugin.Log.Verbose("[RR][ContextMenu] Quick add triggered for item {ItemId} (HQ={IsHq}) with priority {Priority}",
+            itemId, isHq, defaultPriority);
+        return AddSellListEntryFromMenu(itemId, isHq, itemName, 1, defaultPriority, keepPreserved: false, allowPreserveToggle: false,
+            source: "quick_add");
+    }
+
+    private bool IsQuickAddModifierHeld()
+        => _config.ContextMenuQuickAddModifier switch
+        {
+            ContextMenuQuickAddModifier.None => false,
+            ContextMenuQuickAddModifier.Shift => IsAnyWinApiKeyHeld(LimitedKeys.LeftShiftKey, LimitedKeys.RightShiftKey),
+            ContextMenuQuickAddModifier.LeftShift => IsWinApiKeyHeld(LimitedKeys.LeftShiftKey),
+            ContextMenuQuickAddModifier.RightShift => IsWinApiKeyHeld(LimitedKeys.RightShiftKey),
+            ContextMenuQuickAddModifier.Ctrl => IsAnyWinApiKeyHeld(LimitedKeys.LeftControlKey, LimitedKeys.RightControlKey),
+            ContextMenuQuickAddModifier.LeftCtrl => IsWinApiKeyHeld(LimitedKeys.LeftControlKey),
+            ContextMenuQuickAddModifier.RightCtrl => IsWinApiKeyHeld(LimitedKeys.RightControlKey),
+            ContextMenuQuickAddModifier.Alt => IsAnyWinApiKeyHeld(LimitedKeys.LeftAltKey, LimitedKeys.RightAltKey),
+            ContextMenuQuickAddModifier.LeftAlt => IsWinApiKeyHeld(LimitedKeys.LeftAltKey),
+            ContextMenuQuickAddModifier.RightAlt => IsWinApiKeyHeld(LimitedKeys.RightAltKey),
+            _ => false,
+        };
+
+    private static bool IsAnyWinApiKeyHeld(LimitedKeys firstKey, LimitedKeys secondKey)
+        => IsWinApiKeyHeld(firstKey) || IsWinApiKeyHeld(secondKey);
+
+    private static bool IsWinApiKeyHeld(LimitedKeys key)
+        => GenericHelpers.IsKeyPressed(key);
+
+    private bool AddSellListEntryFromMenu(
         uint itemId,
         bool isHq,
         string itemName,
         int minCount,
         int priority,
         bool keepPreserved,
-        bool allowPreserveToggle)
+        bool allowPreserveToggle,
+        string source = "menu")
     {
         if (!_config.TryAddSellItemWithMinCount(itemId, isHq, itemName, minCount, priority))
-            return;
+            return false;
 
         if (allowPreserveToggle)
             _config.SetSellItemPreserveFlag(itemId, isHq, keepPreserved);
 
-        Plugin.Log.Information("[RR][ContextMenu] Added item {ItemId} (HQ={IsHq}, minCount={MinCount}) to Sell List", itemId, isHq, minCount);
+        Plugin.Log.Information("[RR][ContextMenu] Added item {ItemId} (HQ={IsHq}, minCount={MinCount}, source={Source}) to Sell List",
+            itemId, isHq, minCount, source);
         _config.Save();
         if (_plugin.SmartSortEnabled)
             _ = _plugin.RequestSmartSortAsync("item_added", force: true);
+
+        return true;
     }
 
     #endregion
