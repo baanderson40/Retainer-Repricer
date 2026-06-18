@@ -16,7 +16,7 @@ Retainer Repricer handles the tedious work of repricing your retainer sales at t
 - Pulls live market data from Universalis to set competitive prices, with a configurable undercut amount.
 - Smart Sort keeps your Sell List organized by prioritizing items that sell fast and for good prices—you can trigger it manually or let it run on a schedule.
 - Settings apply instantly—no need to reload or restart anything.
-- Right-click items in your inventory to add them to your Sell List directly from the game.
+- Right-click items in your inventory to add them to your Sell List directly from the game, with an optional modifier-key quick add.
 - Checks that each game menu is ready before acting, keeping everything running smoothly.
 
 ---
@@ -61,6 +61,7 @@ The items you want the plugin to list or reprice live here.
 - **Show tooltips** – Turns on helpful tooltips when hovering over settings controls.
 - **Close RetainerList on finish** – Automatically closes the Retainer List when a run completes.
 - **Overlay** – Toggle the overlay that appears near bell menus (Start, Stop, Config buttons).
+- **Quick add modifier key** – Lets you hold a configured modifier while right-clicking an inventory item to add it directly to the Sell List.
 - **Universalis options** – Enable or disable price floor, Smart Sort, and fallback pricing when the board is empty.
 - **Advanced** – Flip on this toggle to see more options if you need them.
 
@@ -82,6 +83,8 @@ These are fine-tuning options for users who want more control:
 When the plugin is on, right-clicking items in your inventory gives you extra options:
 
 - Add to Sell List – choose how many you need before listing and optionally set a priority.
+- Hold your configured modifier while right-clicking to add an item directly without selecting the menu entry.
+- Quick add supports either-side and left/right-specific variants for `Shift`, `Ctrl`, and `Alt`.
 - Items you can't sell (like items bound to your character) show as "Not Sellable."
 - Items already in your list show a remove option instead.
 - If Smart Sort is enabled, adding a new item can automatically reorganize your list.
@@ -130,7 +133,7 @@ The overlay near the retainer list has the same Start, Stop, and Config buttons.
 - **Stops partway through** – Check the Dalamud logs (/xllog) for messages starting with `[RR]`; usually a menu didn't open in time or something blocked it.
 - **Smart Sort button is grayed out** – Universalis or Smart Sort might be turned off in Settings, or a sort is already running.
 - **Prices seem wrong** – Make sure Universalis is enabled in Settings and reachable; otherwise the plugin uses whatever price is currently listed on the marketboard.
-- **Items not listing** – Check that you actually have enough of the item in your inventory (your min-count setting) and that it's the right quality (HQ vs NQ).
+- **Items not listing** – Check that you actually have enough of the item in your inventory (your min-count setting), that it's the right quality (HQ vs NQ), and that it is not currently market prohibited or spiritbond-bound.
 - **Overlay isn't showing** – Make sure the plugin is enabled and the Retainer List is open.
 
 ---
