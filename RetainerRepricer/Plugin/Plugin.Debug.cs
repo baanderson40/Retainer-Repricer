@@ -112,7 +112,7 @@ public unsafe sealed partial class Plugin
             bool passes = floor <= 0 || price >= floor;
             var status = passes ? "PASS" : "SKIP (below floor)";
 
-            Log.Information($"[RR][TestGate] Row {i}: price={price:N0} hq={isHq} seller='{seller}' => {status}");
+            Log.Information($"[RR][TestGate] Row {i}: price={price:N0} hq={isHq} seller='{GetSellerLabelForLog(seller)}' => {status}");
 
             if (selectedRow < 0 && passes)
             {
@@ -180,7 +180,7 @@ public unsafe sealed partial class Plugin
             var unit = Ui.UiReader.ParseGil(unitRaw);
             var qty = int.TryParse(qtyRaw, out var q) ? q : 0;
 
-            Log.Information($"[MB] row {i}: seller={seller} unit={unit} qty={qty} hq={(isHq ? "HQ" : "NQ")}");
+            Log.Information($"[MB] row {i}: seller={GetSellerLabelForLog(seller ?? string.Empty)} unit={unit} qty={qty} hq={(isHq ? "HQ" : "NQ")}");
         }
     }
 
@@ -202,8 +202,7 @@ public unsafe sealed partial class Plugin
             var r = list->GetItemRenderer(i);
             if (r == null) continue;
 
-            var name = _uiReader.ReadRendererText(r, Ui.NodePaths.RetainerNameNodeId);
-            Log.Information($"[RL] row {i}: name='{name}'");
+            Log.Information($"[RL] row {i}: {GetRetainerLabelForLog(i)}");
         }
     }
 }

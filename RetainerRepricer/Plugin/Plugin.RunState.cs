@@ -214,6 +214,8 @@ public unsafe sealed partial class Plugin
 
     private HashSet<string> _myRetainers => _marketState.MyRetainers;
 
+    private Dictionary<string, string> _myRetainerLabels => _marketState.MyRetainerLabels;
+
     private bool _currentIsHq
     {
         get => _marketState.CurrentIsHq;
@@ -336,14 +338,25 @@ public unsafe sealed partial class Plugin
 
     private string DescribeCurrentRetainerForLog()
     {
-        var rowLabel = _currentRetainerRowIndex < 0
-            ? "?"
-            : _currentRetainerRowIndex.ToString(CultureInfo.InvariantCulture);
+        return GetRetainerLabelForLog(_currentRetainerRowIndex);
+    }
 
-        if (string.IsNullOrWhiteSpace(_currentRetainerName))
-            return rowLabel;
+    private static string GetRetainerLabelForLog(int rowIndex)
+        => rowIndex < 0
+            ? "retainer?"
+            : $"retainer{(rowIndex + 1).ToString(CultureInfo.InvariantCulture)}";
 
-        return $"{rowLabel}:{_currentRetainerName}";
+    private string GetSellerLabelForLog(string seller)
+    {
+        if (string.IsNullOrWhiteSpace(seller))
+            return string.Empty;
+
+        if (_myRetainerLabels.TryGetValue(seller, out var retainerLabel))
+            return retainerLabel;
+
+        return _myRetainers.Contains(seller)
+            ? "retainer?"
+            : seller;
     }
 
     private int? _universalisPriceFloor
@@ -409,6 +422,7 @@ public unsafe sealed partial class Plugin
     private sealed class MarketContextState
     {
         public HashSet<string> MyRetainers { get; } = new(StringComparer.Ordinal);
+        public Dictionary<string, string> MyRetainerLabels { get; } = new(StringComparer.Ordinal);
         public bool CurrentIsHq { get; set; }
         public int? StagedDesiredPrice { get; set; }
         public string StagedReferenceSeller { get; set; } = string.Empty;

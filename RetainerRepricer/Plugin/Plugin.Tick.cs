@@ -146,7 +146,7 @@ public unsafe sealed partial class Plugin
                     _currentRetainerRowIndex = entry.RowIndex;
                     _currentRetainerName = entry.Name ?? string.Empty;
 
-                    Log.Information($"[RR] Opening retainer {DescribeCurrentRetainerForLog()} ({_retainerRowPos + 1}/{_retainerRowOrder.Count})");
+                    Log.Information($"[RR] Opening retainer {_retainerRowPos + 1}/{_retainerRowOrder.Count}");
 
                     TryClickRetainerListEntry(_currentRetainerRowIndex);
 
@@ -933,7 +933,7 @@ public unsafe sealed partial class Plugin
                     _stagedReferenceIsMine = referenceIsMine;
                     _hasAppliedStagedPrice = false;
 
-                    Log.Information($"[RR] Stage apply: current={current} desired={desired} seller='{lowestSeller}' mine={referenceIsMine}");
+                    Log.Information($"[RR] Stage apply: current={current} desired={desired} seller='{GetSellerLabelForLog(lowestSeller)}' mine={referenceIsMine}");
 
                     CloseMarketWindows();
 
@@ -1262,7 +1262,7 @@ public unsafe sealed partial class Plugin
                             var capValue = Math.Clamp(requestedCap, 0, Configuration.RetainerCapMax);
                             if (capValue <= 0)
                             {
-                                Log.Verbose($"[RR][Sell] Retainer cap blocks itemId={c.ItemId} hq={c.IsHq} on '{normalizedRetainerName}' (cap=0).");
+                                Log.Verbose($"[RR][Sell] Retainer cap blocks itemId={c.ItemId} hq={c.IsHq} on {DescribeCurrentRetainerForLog()} (cap=0).");
                                 continue;
                             }
 
@@ -1277,7 +1277,7 @@ public unsafe sealed partial class Plugin
 
                             if (usedCount >= capValue)
                             {
-                                Log.Verbose($"[RR][Sell] Retainer cap reached for itemId={c.ItemId} hq={c.IsHq} on '{normalizedRetainerName}': {usedCount}/{capValue} (existing={existingCount}, new={newCountSoFar}).");
+                                Log.Verbose($"[RR][Sell] Retainer cap reached for itemId={c.ItemId} hq={c.IsHq} on {DescribeCurrentRetainerForLog()}: {usedCount}/{capValue} (existing={existingCount}, new={newCountSoFar}).");
                                 continue;
                             }
                         }

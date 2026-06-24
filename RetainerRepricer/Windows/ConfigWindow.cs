@@ -196,6 +196,7 @@ public sealed class ConfigWindow : Window, IDisposable
         DrawAutoPruneSettings();
         DrawPricingGateSettings();
         DrawAdvancedTabToggle();
+        DrawOpenLogsButton();
     }
 
     private void DrawAdvancedTab()
@@ -602,7 +603,8 @@ public sealed class ConfigWindow : Window, IDisposable
                         if (clamped != capValue)
                         {
                             entry.SetRetainerCap(name, clamped);
-                            Plugin.Log.Information("[RR][Config] Retainer cap updated itemId={ItemId} HQ={IsHq} retainer='{Retainer}' cap={Cap}", entry.ItemId, entry.IsHq, name, clamped);
+                            Plugin.Log.Information("[RR][Config] Retainer cap updated itemId={ItemId} HQ={IsHq} retainer={Retainer} cap={Cap}",
+                                entry.ItemId, entry.IsHq, GetRetainerLabelForLog(i), clamped);
                             SaveConfig();
                         }
                     }
@@ -627,7 +629,8 @@ public sealed class ConfigWindow : Window, IDisposable
                         if (clampedStack != stackValue)
                         {
                             entry.SetRetainerStackSize(name, clampedStack, stackCap);
-                            Plugin.Log.Information("[RR][Config] Retainer stack size updated itemId={ItemId} HQ={IsHq} retainer='{Retainer}' stack={Stack}", entry.ItemId, entry.IsHq, name, clampedStack);
+                            Plugin.Log.Information("[RR][Config] Retainer stack size updated itemId={ItemId} HQ={IsHq} retainer={Retainer} stack={Stack}",
+                                entry.ItemId, entry.IsHq, GetRetainerLabelForLog(i), clampedStack);
                             SaveConfig();
                         }
                     }
@@ -761,8 +764,9 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.TableSetColumnIndex(3);
         DrawHeaderLabel("Sell", center: true);
 
-        foreach (var name in names)
+        for (var row = 0; row < names.Count; row++)
         {
+            var name = names[row];
             var behavior = _config.GetRetainerBehavior(name);
             ImGui.TableNextRow();
             ImGui.PushID(name);
@@ -772,7 +776,7 @@ public sealed class ConfigWindow : Window, IDisposable
             if (DrawCenteredCheckbox("##retainer_enable", ref enabled))
             {
                 _config.SetRetainerEnabled(name, enabled);
-                Plugin.Log.Information("[RR][Config] Retainer '{Name}' enabled={Enabled}", name, enabled);
+                Plugin.Log.Information("[RR][Config] Retainer {Retainer} enabled={Enabled}", GetRetainerLabelForLog(row), enabled);
                 SaveConfig();
             }
 
@@ -796,7 +800,7 @@ public sealed class ConfigWindow : Window, IDisposable
             if (DrawCenteredCheckbox("##retainer_reprice", ref allowReprice))
             {
                 _config.SetRetainerRepriceEnabled(name, allowReprice);
-                Plugin.Log.Information("[RR][Config] Retainer '{Name}' reprice={Reprice}", name, allowReprice);
+                Plugin.Log.Information("[RR][Config] Retainer {Retainer} reprice={Reprice}", GetRetainerLabelForLog(row), allowReprice);
                 SaveConfig();
             }
             if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
@@ -807,7 +811,7 @@ public sealed class ConfigWindow : Window, IDisposable
             if (DrawCenteredCheckbox("##retainer_sell", ref allowSell))
             {
                 _config.SetRetainerSellEnabled(name, allowSell);
-                Plugin.Log.Information("[RR][Config] Retainer '{Name}' sell={Sell}", name, allowSell);
+                Plugin.Log.Information("[RR][Config] Retainer {Retainer} sell={Sell}", GetRetainerLabelForLog(row), allowSell);
                 SaveConfig();
             }
             if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
@@ -1756,6 +1760,15 @@ public sealed class ConfigWindow : Window, IDisposable
             return;
     }
 
+    private void DrawOpenLogsButton()
+    {
+
+        if (ImGui.Button("Open Logs"))
+            _plugin.OpenLogWindow();
+
+        ImGui.Spacing();
+    }
+
     #endregion
 
     #region Save helpers
@@ -1780,6 +1793,11 @@ public sealed class ConfigWindow : Window, IDisposable
             ContextMenuQuickAddModifier.RightAlt => "Right Alt",
             _ => "Disabled",
         };
+
+    private static string GetRetainerLabelForLog(int rowIndex)
+        => rowIndex < 0
+            ? "retainer?"
+            : $"retainer{rowIndex + 1}";
 
     #endregion
 }

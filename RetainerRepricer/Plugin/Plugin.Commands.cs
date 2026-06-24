@@ -42,6 +42,11 @@ public sealed partial class Plugin
                 OpenSettingsTab();
                 return;
 
+            case "logs":
+            case "log":
+                OpenLogWindow();
+                return;
+
             case "debuguniv":
             case "debuguniversalis":
                 HandleDebugUniversalisCommand(tokens);
@@ -167,5 +172,6 @@ public sealed partial class Plugin
         PrintInfo("--Modes: price = reprice listings only, sell = Sell List only");
         PrintInfo("/repricer stop - Stop the current run and unwind open UI");
         PrintInfo("/repricer config | c - Open the Settings tab of the configuration window");
+        PrintInfo("/repricer logs | log - Open the plugin log window");
     }
 }

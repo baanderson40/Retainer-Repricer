@@ -1,4 +1,3 @@
-using Dalamud.Plugin.Services;
 using System;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
@@ -11,7 +10,7 @@ using System.Threading.Tasks;
 
 namespace RetainerRepricer.Services;
 
-public sealed class UniversalisApiClient : IDisposable
+internal sealed class UniversalisApiClient : IDisposable
 {
     // Default aggregated endpoint used for deterministic Universalis lookups.
     internal const string AggregatedBaseUrl = "https://universalis.app/api/v2/aggregated";
@@ -23,12 +22,12 @@ public sealed class UniversalisApiClient : IDisposable
     };
 
     private readonly HttpClient _httpClient;
-    private readonly IPluginLog _log;
+    private readonly PluginLogger _log;
     private readonly bool _ownsClient;
     private bool _disposed;
     private readonly ConcurrentDictionary<StatsCacheKey, StatsCacheEntry> _statsCache = new();
 
-    public UniversalisApiClient(IPluginLog log, HttpClient? httpClient = null)
+    public UniversalisApiClient(PluginLogger log, HttpClient? httpClient = null)
     {
         _log = log;
         _ownsClient = httpClient is null;
