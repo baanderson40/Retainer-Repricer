@@ -202,23 +202,26 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
     internal void SyncRetainersIntoConfig(IEnumerable<string> names)
     {
         var changed = false;
-        var addedNames = new List<string>();
+        var addedRetainerLabels = new List<string>();
+        var rowIndex = -1;
 
         foreach (var n in names)
         {
+            rowIndex++;
             var behavior = Configuration.GetRetainerBehavior(n);
 
             if (!Configuration.RetainersEnabled.ContainsKey(n))
             {
                 Configuration.SetRetainerEnabled(n, behavior.Enabled);
-                addedNames.Add(n);
+                addedRetainerLabels.Add(GetRetainerLabelForLog(rowIndex));
                 changed = true;
             }
         }
 
-        if (addedNames.Count > 0)
+        if (addedRetainerLabels.Count > 0)
         {
-            Log.Information("[RR] Sync: Added {Count} new retainer(s) to configuration: {Names}", addedNames.Count, string.Join(", ", addedNames));
+            Log.Information("[RR] Sync: Added {Count} new retainer(s) to configuration: {Retainers}",
+                addedRetainerLabels.Count, string.Join(", ", addedRetainerLabels));
         }
 
         if (changed) Configuration.Save();
@@ -249,10 +252,18 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
     internal void RebuildMyRetainersSet()
     {
         _myRetainers.Clear();
+        _myRetainerLabels.Clear();
+
+        var rowIndex = 0;
         foreach (var name in Configuration.GetAllRetainerNames())
         {
             if (Configuration.IsRetainerEnabled(name))
+            {
                 _myRetainers.Add(name);
+                _myRetainerLabels[name] = GetRetainerLabelForLog(rowIndex);
+            }
+
+            rowIndex++;
         }
     }
 
@@ -668,7 +679,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
                     continue;
                 }
 
-                Log.Debug($"[RR] Market HQ ref row={i} price={price} seller='{seller}'");
+                Log.Debug($"[RR] Market HQ ref row={i} price={price} seller='{GetSellerLabelForLog(seller)}'");
                 lowestPrice = price;
                 lowestSeller = seller;
                 return true;
@@ -710,7 +721,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
                 }
 
                 var qualityLabel = isHq ? "HQ" : "NQ";
-                Log.Debug($"[RR] Market gated ref row={i} price={price} seller='{seller}' quality={qualityLabel}");
+                Log.Debug($"[RR] Market gated ref row={i} price={price} seller='{GetSellerLabelForLog(seller)}' quality={qualityLabel}");
                 lowestPrice = price;
                 lowestSeller = seller;
                 return true;
@@ -735,7 +746,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         // NQ without gate: row 0 is the reference.
         if (!TryReadMarketRow(0, out var p0, out var s0, out _)) return false;
 
-        Log.Debug($"[RR] Market NQ ref row0 price={p0} seller='{s0}'");
+        Log.Debug($"[RR] Market NQ ref row0 price={p0} seller='{GetSellerLabelForLog(s0)}'");
         lowestPrice = p0;
         lowestSeller = s0;
         return true;
