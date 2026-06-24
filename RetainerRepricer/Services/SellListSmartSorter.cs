@@ -1,4 +1,3 @@
-using Dalamud.Plugin.Services;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -12,7 +11,7 @@ internal sealed class SellListSmartSorter : IDisposable
 
     private readonly Configuration _config;
     private readonly UniversalisApiClient _universalis;
-    private readonly IPluginLog _log;
+    private readonly PluginLogger _log;
     private readonly Func<string?> _regionProvider;
     private readonly SemaphoreSlim _sortLock = new(1, 1);
 
@@ -21,7 +20,7 @@ internal sealed class SellListSmartSorter : IDisposable
     public SellListSmartSorter(
         Configuration config,
         UniversalisApiClient universalis,
-        IPluginLog log,
+        PluginLogger log,
         Func<string?> regionProvider)
     {
         _config = config;

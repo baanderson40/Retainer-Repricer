@@ -26,7 +26,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
     [PluginService] internal static IDalamudPluginInterface PluginInterface { get; private set; } = null!;
     [PluginService] internal static ICommandManager CommandManager { get; private set; } = null!;
-    [PluginService] internal static IPluginLog Log { get; private set; } = null!;
+    internal static PluginLogger Log { get; private set; } = null!;
     [PluginService] internal static IGameGui GameGui { get; private set; } = null!;
     [PluginService] internal static IChatGui ChatGui { get; private set; } = null!;
     [PluginService] internal static IFramework Framework { get; private set; } = null!;
@@ -37,7 +37,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
     private const string CommandName = "/repricer";
     private const string CommandAlias = "/rr";
-    private const string CommandHelp = "help|? | start [price|sell] | stop | config (default opens Sell List)";
+    private const string CommandHelp = "help|? | start [price|sell] | stop | config | logs (default opens Sell List)";
     private const string ChatTag = "Retainer Repricer";
     private const ushort InfoTagColor = 34;
     private const ushort ErrorTagColor = 14;
@@ -75,6 +75,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
     private readonly UniversalisApiClient _universalisClient;
     private readonly SellListSmartSorter _smartSorter;
     private readonly SellListInventoryPruner _sellListPruner;
+    private readonly PluginLogBuffer _pluginLogBuffer;
     private Task<bool>? _pendingSmartSortTask;
     private bool _smartSortKickoffDone;
     private SellListInventoryPruner.SellListInventoryPruneResult? _lastPruneResult;
@@ -87,11 +88,13 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
     private ConfigWindow ConfigWindow { get; }
     private MainWindow MainWindow { get; }
+    private LogWindow LogWindow { get; }
     private MinCountPopup MinCountPopup { get; }
     private ContextMenuManager ContextMenu { get; }
 
     private readonly Ui.UiReader _uiReader;
     internal Ui.UiReader UiReader => _uiReader;
+    internal PluginLogBuffer PluginLogBuffer => _pluginLogBuffer;
 
     #endregion
 
@@ -105,7 +108,6 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
     {
         PluginInterface = pi;
         CommandManager = commandManager;
-        Log = log;
         GameGui = gameGui;
 
         ECommonsMain.Init(pi, this);
@@ -113,17 +115,22 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         Configuration = pi.GetPluginConfig() as Configuration ?? new Configuration();
         Configuration.Initialize(pi);
 
-        _universalisClient = new UniversalisApiClient(log);
-        _smartSorter = new SellListSmartSorter(Configuration, _universalisClient, log, GetWorldDcRegionKey);
-        _sellListPruner = new SellListInventoryPruner(Configuration, log);
+        _pluginLogBuffer = new PluginLogBuffer();
+        Log = new PluginLogger(log, _pluginLogBuffer);
+
+        _universalisClient = new UniversalisApiClient(Log);
+        _smartSorter = new SellListSmartSorter(Configuration, _universalisClient, Log, GetWorldDcRegionKey);
+        _sellListPruner = new SellListInventoryPruner(Configuration, Log);
 
         ConfigWindow = new ConfigWindow(this);
         MainWindow = new MainWindow(this);
+        LogWindow = new LogWindow(this);
         MinCountPopup = new MinCountPopup(Configuration);
         ContextMenu = new ContextMenuManager(this, Configuration, MinCountPopup);
 
         WindowSystem.AddWindow(ConfigWindow);
         WindowSystem.AddWindow(MainWindow);
+        WindowSystem.AddWindow(LogWindow);
         WindowSystem.AddWindow(MinCountPopup);
 
         _uiReader = new Ui.UiReader(GameGui);
@@ -159,6 +166,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
         ConfigWindow.Dispose();
         MainWindow.Dispose();
+        LogWindow.Dispose();
         MinCountPopup.Dispose();
         ContextMenu.Dispose();
 
@@ -257,11 +265,8 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         var rowIndex = 0;
         foreach (var name in Configuration.GetAllRetainerNames())
         {
-            if (Configuration.IsRetainerEnabled(name))
-            {
-                _myRetainers.Add(name);
-                _myRetainerLabels[name] = GetRetainerLabelForLog(rowIndex);
-            }
+            _myRetainers.Add(name);
+            _myRetainerLabels[name] = GetRetainerLabelForLog(rowIndex);
 
             rowIndex++;
         }
@@ -794,6 +799,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
     private void OpenMainUi() => ToggleConfigUi();
     internal void OpenSellListTab() => ConfigWindow.OpenSellListTab();
     internal void OpenSettingsTab() => ConfigWindow.OpenSettingsTab();
+    internal void OpenLogWindow() => LogWindow.Open();
 
     internal bool SmartSortEnabled => _smartSorter.IsEnabled;
     internal bool SmartSortIsSorting => _smartSorter.IsSorting;

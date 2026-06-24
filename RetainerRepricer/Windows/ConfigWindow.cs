@@ -196,6 +196,7 @@ public sealed class ConfigWindow : Window, IDisposable
         DrawAutoPruneSettings();
         DrawPricingGateSettings();
         DrawAdvancedTabToggle();
+        DrawOpenLogsButton();
     }
 
     private void DrawAdvancedTab()
@@ -1757,6 +1758,15 @@ public sealed class ConfigWindow : Window, IDisposable
 
         if (!smartSortEnabled)
             return;
+    }
+
+    private void DrawOpenLogsButton()
+    {
+
+        if (ImGui.Button("Open Logs"))
+            _plugin.OpenLogWindow();
+
+        ImGui.Spacing();
     }
 
     #endregion

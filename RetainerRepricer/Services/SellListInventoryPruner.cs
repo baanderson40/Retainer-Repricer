@@ -1,4 +1,3 @@
-using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game;
 using System;
 using System.Collections.Generic;
@@ -17,9 +16,9 @@ internal unsafe sealed class SellListInventoryPruner
     };
 
     private readonly Configuration _config;
-    private readonly IPluginLog _log;
+    private readonly PluginLogger _log;
 
-    public SellListInventoryPruner(Configuration config, IPluginLog log)
+    public SellListInventoryPruner(Configuration config, PluginLogger log)
     {
         _config = config;
         _log = log;
