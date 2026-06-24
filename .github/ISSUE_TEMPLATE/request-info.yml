@@ -8,7 +8,7 @@ body:
       value: |
         Thanks for reporting an issue with Retainer Repricer.
 
-        Please fill out the fields below as completely as possible. The most helpful reports include exact reproduction steps and filtered `RetainerRepricer` logs from Dalamud.
+        Please fill out the fields below as completely as possible. The most helpful reports include exact reproduction steps and logs from the in-game log viewer (`/repricer logs`).
 
   - type: dropdown
     id: issue_type
@@ -135,25 +135,17 @@ body:
   - type: markdown
     attributes:
       value: |
-        ### How to collect Retainer Repricer logs from Dalamud
+        ### How to collect Retainer Repricer logs
 
-        Please attach filtered logs if possible. Use these exact steps:
-
-        1. Open Dalamud console with `/xllog`
-        2. Click **Clear logs** / trash can
-        3. Change the log level to **Verbose+**
-        4. Click **Show filter toolbar** / magnifying glass
-        5. Add `RetainerRepricer` as a filter
-        6. Set `RetainerRepricer` logs to **Verbose+**
-        7. Run Retainer Repricer and reproduce the issue
-        8. Click **Enable Copy Mode**
-        9. Right-click **Enable Copy Mode** to copy the entire logs
+        Please attach logs if possible:
+        1. During or after reproducing the issue, open `/repricer logs` or click **Open Logs** in plugin settings
+        2. Click **Copy Visible** in the log window and paste below
 
   - type: textarea
     id: logs
     attributes:
       label: Filtered Dalamud logs
-      description: Paste the filtered `RetainerRepricer` logs here using the steps above.
+      description: Paste logs using **Copy Visible** from the in-game log viewer (`/repricer logs`).
       render: shell
     validations:
       required: true

@@ -18,6 +18,7 @@ Retainer Repricer handles the tedious work of repricing your retainer sales at t
 - Settings apply instantly—no need to reload or restart anything.
 - Right-click items in your inventory to add them to your Sell List directly from the game, with an optional modifier-key quick add.
 - Checks that each game menu is ready before acting, keeping everything running smoothly.
+- Built-in log viewer (`/repricer logs`) shows runtime messages for troubleshooting.
 
 ---
 
@@ -113,6 +114,7 @@ When the plugin is on, right-clicking items in your inventory gives you extra op
 - `/repricer start sell` — only list new items from your Sell List.
 - `/repricer stop` — stop and close any open menus.
 - `/repricer config` or `/repricer c` — open the settings window.
+- `/repricer logs` or `/repricer log` — open the in-game log viewer.
 
 The overlay near the retainer list has the same Start, Stop, and Config buttons.
 
@@ -130,7 +132,7 @@ The overlay near the retainer list has the same Start, Stop, and Config buttons.
 ## Troubleshooting
 
 - **Start button does nothing** – Make sure the plugin is enabled in Settings and you have at least one retainer checked in the Retainers tab.
-- **Stops partway through** – Check the Dalamud logs (/xllog) for messages starting with `[RR]`; usually a menu didn't open in time or something blocked it.
+- **Stops partway through** – Open `/repricer logs` and use **Copy Visible** to check the plugin log; messages starting with `[RR]` explain what went wrong (usually a menu didn't open in time or something blocked it).
 - **Smart Sort button is grayed out** – Universalis or Smart Sort might be turned off in Settings, or a sort is already running.
 - **Prices seem wrong** – Make sure Universalis is enabled in Settings and reachable; otherwise the plugin uses whatever price is currently listed on the marketboard.
 - **Items not listing** – Check that you actually have enough of the item in your inventory (your min-count setting), that it's the right quality (HQ vs NQ), and that it is not currently market prohibited or spiritbond-bound.
