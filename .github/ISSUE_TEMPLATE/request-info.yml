@@ -144,8 +144,8 @@ body:
   - type: textarea
     id: logs
     attributes:
-      label: Filtered Dalamud logs
-      description: Paste logs using **Copy Visible** from the in-game log viewer (`/repricer logs`).
+      label: Retainer Repricer logs
+      description: Paste logs using **Copy Visible** from `/repricer logs`.
       render: shell
     validations:
       required: true
