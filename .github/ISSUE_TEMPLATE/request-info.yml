@@ -139,7 +139,7 @@ body:
 
         Please attach filtered logs if possible. Use these exact steps:
 
-        1. Open Dalamud console with `/xllogs`
+        1. Open Dalamud console with `/xllog`
         2. Click **Clear logs** / trash can
         3. Change the log level to **Verbose+**
         4. Click **Show filter toolbar** / magnifying glass
