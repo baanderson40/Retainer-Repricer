@@ -779,7 +779,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
                 return true;
             }
 
-            Log.Information("[RR] HQ item but no HQ rows found in first page.");
+            Log.Information("[RR] HQ item has no visible HQ rows on the first page.");
             return false;
         }
 

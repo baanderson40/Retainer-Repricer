@@ -154,6 +154,12 @@ public unsafe sealed partial class Plugin
 
     private void DumpMarketRows()
     {
+        if (!IsAddonOpen("ItemSearchResult"))
+        {
+            Log.Information("[MB] ItemSearchResult is not open. Open market board listings first.");
+            return;
+        }
+
         var list = _uiReader.GetMarketList();
         if (list == null)
         {
@@ -163,6 +169,12 @@ public unsafe sealed partial class Plugin
 
         var count = list->GetItemCount();
         Log.Information($"[MB] renderer count = {count}");
+
+        int visibleCount = 0;
+        int hiddenCount = 0;
+        int drawZeroCount = 0;
+        int drawHundredCount = 0;
+        int drawHundredTwoCount = 0;
 
         var max = Math.Min(count, 10);
         for (int i = 0; i < max; i++)
@@ -174,14 +186,34 @@ public unsafe sealed partial class Plugin
             var unitRaw = _uiReader.ReadRendererText(r, Ui.NodePaths.UnitPriceNodeId);
             var qtyRaw = _uiReader.ReadRendererText(r, Ui.NodePaths.QuantityNodeId);
 
-            _uiReader.DumpHqIconState(r, i, s => Log.Verbose(s));
+            var hqState = _uiReader.DumpHqIconState(r, i, s => Log.Information(s));
             var isHq = _uiReader.RowIsHq(r);
+
+            if (hqState.HasValue)
+            {
+                var state = hqState.Value;
+                if (state.Visible)
+                    visibleCount++;
+                else
+                    hiddenCount++;
+
+                if (state.DrawFlags == 0)
+                    drawZeroCount++;
+
+                if (state.DrawFlags == 0x100)
+                    drawHundredCount++;
+
+                if (state.DrawFlags == 0x102)
+                    drawHundredTwoCount++;
+            }
 
             var unit = Ui.UiReader.ParseGil(unitRaw);
             var qty = int.TryParse(qtyRaw, out var q) ? q : 0;
 
             Log.Information($"[MB] row {i}: seller={GetSellerLabelForLog(seller ?? string.Empty)} unit={unit} qty={qty} hq={(isHq ? "HQ" : "NQ")}");
         }
+
+        Log.Information($"[MB][HQ] summary: visible={visibleCount} hidden={hiddenCount} draw0={drawZeroCount} draw100={drawHundredCount} draw102={drawHundredTwoCount}");
     }
 
     private void DumpRetainerRows()

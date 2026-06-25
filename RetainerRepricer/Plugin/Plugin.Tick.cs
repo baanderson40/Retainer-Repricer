@@ -648,7 +648,15 @@ public unsafe sealed partial class Plugin
                         }
                         else
                         {
-                            Log.Information($"[RR] ISR: '{msg}' -> no competing listings; skipping repricing.");
+                            if (_isrHqFilterApplied)
+                            {
+                                Log.Information($"[RR] ISR: '{msg}' -> HQ filter found no HQ competitors; skipping repricing.");
+                            }
+                            else
+                            {
+                                Log.Information($"[RR] ISR: '{msg}' -> no competing listings; skipping repricing.");
+                            }
+
                             _runPhase = RunPhase.CleanupAfterItem;
                         }
                         _lastActionUtc = now;
@@ -789,7 +797,15 @@ public unsafe sealed partial class Plugin
                         var rows = listCheck != null ? listCheck->GetItemCount() : 0;
                         if (rows <= 0)
                         {
-                            Log.Information($"[RR] ISR: '{msg}' -> no competing listings; skipping repricing.");
+                            if (_isrHqFilterApplied)
+                            {
+                                Log.Information($"[RR] ISR: '{msg}' -> HQ filter found no HQ competitors; skipping repricing.");
+                            }
+                            else
+                            {
+                                Log.Information($"[RR] ISR: '{msg}' -> no competing listings; skipping repricing.");
+                            }
+
                             _runPhase = RunPhase.CleanupAfterItem;
                             _lastActionUtc = now;
                             return;
@@ -861,7 +877,7 @@ public unsafe sealed partial class Plugin
                                 return; // next tick TryPickReferenceListing will succeed
                             }
 
-                            Log.Information("[RR] HQ not visible in first page; applying HQ filter fallback once.");
+                            Log.Information("[RR] HQ item has no visible HQ rows on the first page; applying HQ filter fallback once.");
 
                             _isrHqFilterFallbackTried = true;
 
