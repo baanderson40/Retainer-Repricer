@@ -429,6 +429,8 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         _currentSellItemIsHq = false;
         _currentSellStackSize = 0;
         _hasPendingSellSlot = false;
+        ResetNewListingAttempt();
+        _failedSellSlotKeys.Clear();
         if (Configuration.EnablePerRetainerCaps)
         {
             _retainerSellCounts.Clear();
@@ -467,6 +469,8 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         _currentSellItemIsHq = false;
         _currentSellStackSize = 0;
         _hasPendingSellSlot = false;
+        ResetNewListingAttempt();
+        _failedSellSlotKeys.Clear();
         if (Configuration.EnablePerRetainerCaps)
         {
             _retainerSellCounts.Clear();
@@ -606,7 +610,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
     private Ui.UiReader.InventoryLookupResult FindItemInInventory(uint baseItemId, bool isHq, out InventorySlotRef slotRef)
     {
         slotRef = default;
-        var result = _uiReader.FindItemInInventory(baseItemId, isHq);
+        var result = _uiReader.FindItemInInventory(baseItemId, isHq, _failedSellSlotKeys);
 
         if (result.FoundSellable)
         {
@@ -622,6 +626,73 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
     /// </summary>
     private unsafe bool TryOpenRetainerSellFromInventory(InventorySlotRef slotRef)
         => _uiReader.TryOpenRetainerSellFromInventory(slotRef.Container, slotRef.Slot);
+
+    private bool TryReadInventorySlotState(InventorySlotRef slotRef, out uint baseItemId, out bool isHq, out int quantity)
+    {
+        baseItemId = 0;
+        isHq = false;
+        quantity = 0;
+
+        if (!_uiReader.TryGetInventorySlot((InventoryType)slotRef.Container, slotRef.Slot, out var inventorySlot) || inventorySlot == null)
+            return false;
+
+        if (inventorySlot->Quantity <= 0)
+            return false;
+
+        baseItemId = inventorySlot->GetBaseItemId();
+        isHq = inventorySlot->IsHighQuality();
+        quantity = (int)inventorySlot->Quantity;
+        return true;
+    }
+
+    private static long GetInventorySlotKey(InventorySlotRef slotRef)
+        => ((long)(uint)slotRef.Container << 32) | (uint)slotRef.Slot;
+
+    private int GetCurrentExpectedListedCount()
+        => Math.Clamp(_listedCountThisRetainer + _soldThisRetainer, 0, 20);
+
+    private int? ReadCurrentRetainerSellListCount()
+    {
+        var listed = _uiReader.ReadRetainerSellListListedCount();
+        return listed.HasValue
+            ? Math.Clamp(listed.Value, 0, 20)
+            : null;
+    }
+
+    private void ResetNewListingAttempt()
+    {
+        _newListingAttemptState = NewListingAttemptState.None;
+        _attemptedSellSlot = default;
+        _hasAttemptedSellSlot = false;
+        _attemptedSellItemId = 0;
+        _attemptedSellItemIsHq = false;
+        _attemptedSellStackSize = 0;
+        _attemptedSellSlotQuantityBefore = -1;
+        _attemptedListedCountBefore = 0;
+        _attemptedSellStartedUtc = DateTime.MinValue;
+    }
+
+    private void BeginNewListingAttempt(InventorySlotRef slotRef, uint itemId, bool isHq, int stackSize, int listedCountBefore,
+        int slotQuantityBefore, DateTime now)
+    {
+        _newListingAttemptState = NewListingAttemptState.PendingOpen;
+        _attemptedSellSlot = slotRef;
+        _hasAttemptedSellSlot = true;
+        _attemptedSellItemId = itemId;
+        _attemptedSellItemIsHq = isHq;
+        _attemptedSellStackSize = stackSize;
+        _attemptedListedCountBefore = listedCountBefore;
+        _attemptedSellSlotQuantityBefore = slotQuantityBefore;
+        _attemptedSellStartedUtc = now;
+    }
+
+    private void RememberFailedAttemptedSlot()
+    {
+        if (!_hasAttemptedSellSlot)
+            return;
+
+        _failedSellSlotKeys.Add(GetInventorySlotKey(_attemptedSellSlot));
+    }
 
     #endregion
 
@@ -708,7 +779,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
                 return true;
             }
 
-            Log.Information("[RR] HQ item but no HQ rows found in first page.");
+            Log.Information("[RR] HQ item has no visible HQ rows on the first page.");
             return false;
         }
 

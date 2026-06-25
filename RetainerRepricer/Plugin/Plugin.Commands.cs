@@ -52,6 +52,10 @@ public sealed partial class Plugin
                 HandleDebugUniversalisCommand(tokens);
                 return;
 
+            case "debughq":
+                HandleDebugHqCommand();
+                return;
+
             default:
                 PrintHelp();
                 return;
@@ -98,6 +102,12 @@ public sealed partial class Plugin
 
         PrintInfo($"Running Universalis debug for item {itemId} (HQ={isHq}); results will be logged.");
         _ = DumpUniversalisDebugAsync(itemId, isHq);
+    }
+
+    private void HandleDebugHqCommand()
+    {
+        PrintInfo("Running HQ icon debug for current ItemSearchResult; results will be logged.");
+        DumpMarketRows();
     }
 
     private async Task DumpUniversalisDebugAsync(uint itemId, bool isHq)
