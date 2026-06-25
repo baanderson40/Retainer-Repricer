@@ -188,6 +188,63 @@ public unsafe sealed partial class Plugin
         set => _sellState.HasPendingSellSlot = value;
     }
 
+    private NewListingAttemptState _newListingAttemptState
+    {
+        get => _sellState.ListingAttemptState;
+        set => _sellState.ListingAttemptState = value;
+    }
+
+    private InventorySlotRef _attemptedSellSlot
+    {
+        get => _sellState.AttemptedSellSlot;
+        set => _sellState.AttemptedSellSlot = value;
+    }
+
+    private bool _hasAttemptedSellSlot
+    {
+        get => _sellState.HasAttemptedSellSlot;
+        set => _sellState.HasAttemptedSellSlot = value;
+    }
+
+    private uint _attemptedSellItemId
+    {
+        get => _sellState.AttemptedSellItemId;
+        set => _sellState.AttemptedSellItemId = value;
+    }
+
+    private bool _attemptedSellItemIsHq
+    {
+        get => _sellState.AttemptedSellItemIsHq;
+        set => _sellState.AttemptedSellItemIsHq = value;
+    }
+
+    private int _attemptedSellStackSize
+    {
+        get => _sellState.AttemptedSellStackSize;
+        set => _sellState.AttemptedSellStackSize = value;
+    }
+
+    private int _attemptedSellSlotQuantityBefore
+    {
+        get => _sellState.AttemptedSellSlotQuantityBefore;
+        set => _sellState.AttemptedSellSlotQuantityBefore = value;
+    }
+
+    private int _attemptedListedCountBefore
+    {
+        get => _sellState.AttemptedListedCountBefore;
+        set => _sellState.AttemptedListedCountBefore = value;
+    }
+
+    private DateTime _attemptedSellStartedUtc
+    {
+        get => _sellState.AttemptedSellStartedUtc;
+        set => _sellState.AttemptedSellStartedUtc = value;
+    }
+
+    private HashSet<long> _failedSellSlotKeys
+        => _sellState.FailedSellSlotKeys;
+
     private bool _awaitingRetainerContextMenu
     {
         get => _sellState.AwaitingRetainerContextMenu;
@@ -382,6 +439,16 @@ public unsafe sealed partial class Plugin
         public int Slot;
     }
 
+    private enum NewListingAttemptState
+    {
+        None,
+        PendingOpen,
+        PendingConfirm,
+        AwaitingResult,
+        Succeeded,
+        Failed,
+    }
+
     private sealed class RetainerCycleState
     {
         public List<RetainerRowEntry> RowOrder { get; } = new();
@@ -412,6 +479,16 @@ public unsafe sealed partial class Plugin
         public int CurrentSellStackSize { get; set; }
         public InventorySlotRef PendingSellSlot { get; set; }
         public bool HasPendingSellSlot { get; set; }
+        public NewListingAttemptState ListingAttemptState { get; set; }
+        public InventorySlotRef AttemptedSellSlot { get; set; }
+        public bool HasAttemptedSellSlot { get; set; }
+        public uint AttemptedSellItemId { get; set; }
+        public bool AttemptedSellItemIsHq { get; set; }
+        public int AttemptedSellStackSize { get; set; }
+        public int AttemptedSellSlotQuantityBefore { get; set; }
+        public int AttemptedListedCountBefore { get; set; }
+        public DateTime AttemptedSellStartedUtc { get; set; } = DateTime.MinValue;
+        public HashSet<long> FailedSellSlotKeys { get; } = new();
         public bool AwaitingRetainerContextMenu { get; set; }
         public DateTime RetainerContextMenuRequestedUtc { get; set; } = DateTime.MinValue;
         public Dictionary<ulong, int> RetainerSellCounts { get; } = new();

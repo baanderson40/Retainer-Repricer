@@ -443,7 +443,7 @@ internal sealed unsafe class UiReader
     /// <summary>
     /// Does a single pass over the four bag containers and returns the first slot plus total count for that item/quality.
     /// </summary>
-    public InventoryLookupResult FindItemInInventory(uint baseItemId, bool isHq)
+    public InventoryLookupResult FindItemInInventory(uint baseItemId, bool isHq, HashSet<long>? excludedSlotKeys = null)
     {
         var container = 0;
         var slot = 0;
@@ -499,7 +499,8 @@ internal sealed unsafe class UiReader
                 if (totalCount >= 999999)
                     totalCount = 999999;
 
-                if (!foundSellable)
+                var slotKey = ((long)(uint)type << 32) | (uint)i;
+                if (!foundSellable && (excludedSlotKeys == null || !excludedSlotKeys.Contains(slotKey)))
                 {
                     container = (int)type;
                     slot = i;

@@ -134,7 +134,10 @@ public unsafe sealed partial class Plugin
                     _processingListedItem = true;
                     _currentSellItemId = 0;
                     _currentSellItemIsHq = false;
+                    _currentSellStackSize = 0;
                     _hasPendingSellSlot = false;
+                    ResetNewListingAttempt();
+                    _failedSellSlotKeys.Clear();
 
                     // Reset pacing per retainer so a throttle hit doesn't poison the next retainer.
                     _mbIntervalSec = MbBaseIntervalSeconds;
@@ -1122,6 +1125,9 @@ public unsafe sealed partial class Plugin
 
                     Callback.Fire(unit, updateState: true, 0);
 
+                    if (!_processingListedItem)
+                        _newListingAttemptState = NewListingAttemptState.AwaitingResult;
+
                     _stagedDesiredPrice = null;
                     _hasAppliedStagedPrice = false;
 
@@ -1158,26 +1164,91 @@ public unsafe sealed partial class Plugin
 
                     if (!_processingListedItem)
                     {
+                        var listedNow = ReadCurrentRetainerSellListCount();
+                        if (!listedNow.HasValue)
+                        {
+                            Log.Verbose("[RR][Sell] RetainerSellList returned but listed count is not readable yet.");
+                            _lastActionUtc = now;
+                            return;
+                        }
+
+                        var listedBefore = _attemptedListedCountBefore;
+                        var listedAfter = listedNow.Value;
+                        var succeeded = false;
+
+                        if (listedAfter > listedBefore)
+                        {
+                            succeeded = true;
+                            Log.Information($"[RR][Sell] Listing confirmed by count change: {listedBefore} -> {listedAfter}.");
+                        }
+                        else if (_hasAttemptedSellSlot)
+                        {
+                            if (TryReadInventorySlotState(_attemptedSellSlot, out var slotItemId, out var slotIsHq, out var slotQuantity))
+                            {
+                                if (slotItemId == _attemptedSellItemId && slotIsHq == _attemptedSellItemIsHq)
+                                {
+                                    if (_attemptedSellSlotQuantityBefore >= 0 && slotQuantity < _attemptedSellSlotQuantityBefore)
+                                    {
+                                        succeeded = true;
+                                        Log.Information($"[RR][Sell] Listing confirmed by slot quantity change on container={_attemptedSellSlot.Container} slot={_attemptedSellSlot.Slot}: {_attemptedSellSlotQuantityBefore} -> {slotQuantity}.");
+                                    }
+                                    else if (_attemptedSellSlotQuantityBefore >= 0)
+                                    {
+                                        Log.Warning($"[RR][Sell] Listing failed: listed count stayed at {listedAfter} and attempted slot still holds itemId={slotItemId} hq={slotIsHq} qty={slotQuantity}.");
+                                    }
+                                    else
+                                    {
+                                        Log.Warning($"[RR][Sell] Listing result ambiguous: listed count stayed at {listedAfter} and attempted slot still holds itemId={slotItemId} hq={slotIsHq}, but pre-attempt quantity was unavailable.");
+                                    }
+                                }
+                                else
+                                {
+                                    succeeded = true;
+                                    Log.Information($"[RR][Sell] Listing confirmed by slot content change on container={_attemptedSellSlot.Container} slot={_attemptedSellSlot.Slot}.");
+                                }
+                            }
+                            else
+                            {
+                                succeeded = true;
+                                Log.Information($"[RR][Sell] Listing confirmed because attempted slot container={_attemptedSellSlot.Container} slot={_attemptedSellSlot.Slot} no longer contains the original stack.");
+                            }
+                        }
+                        else
+                        {
+                            Log.Warning($"[RR][Sell] Listing result ambiguous: listed count stayed at {listedAfter} and no attempted slot snapshot exists.");
+                        }
+
                         _processingListedItem = true;
                         _hasPendingSellSlot = false;
                         ClearRetainerContextMenuExpectation();
 
-                        if (Configuration.EnablePerRetainerCaps && _currentSellItemId != 0)
+                        if (succeeded)
                         {
-                            var sellKey = Configuration.MakeSellKey(_currentSellItemId, _currentSellItemIsHq);
-                            var updated = _retainerSellCounts.TryGetValue(sellKey, out var existing)
-                                ? existing + 1
-                                : 1;
-                            _retainerSellCounts[sellKey] = updated;
-                            Log.Debug($"[RR][Sell] Incremented retainer cap counter for itemId={_currentSellItemId} hq={_currentSellItemIsHq}: {updated}.");
+                            _newListingAttemptState = NewListingAttemptState.Succeeded;
+
+                            if (Configuration.EnablePerRetainerCaps && _attemptedSellItemId != 0)
+                            {
+                                var sellKey = Configuration.MakeSellKey(_attemptedSellItemId, _attemptedSellItemIsHq);
+                                var updated = _retainerSellCounts.TryGetValue(sellKey, out var existing)
+                                    ? existing + 1
+                                    : 1;
+                                _retainerSellCounts[sellKey] = updated;
+                                Log.Debug($"[RR][Sell] Incremented retainer cap counter for itemId={_attemptedSellItemId} hq={_attemptedSellItemIsHq}: {updated}.");
+                            }
+
+                            _soldThisRetainer++;
+                            Log.Information($"[RR] New listings: {_soldThisRetainer}/{_sellCapacityThisRetainer}");
+                        }
+                        else
+                        {
+                            _newListingAttemptState = NewListingAttemptState.Failed;
+                            RememberFailedAttemptedSlot();
                         }
 
                         _currentSellItemId = 0;
                         _currentSellItemIsHq = false;
                         _currentSellStackSize = 0;
-
-                        _soldThisRetainer++;
-                        Log.Information($"[RR] New listings: {_soldThisRetainer}/{_sellCapacityThisRetainer}");
+                        ResetNewListingAttempt();
 
                         _runPhase = RunPhase.Sell_FindNextItemInInventory;
                         _lastActionUtc = now;
@@ -1311,6 +1382,21 @@ public unsafe sealed partial class Plugin
                         _pendingSellSlot = slotRef;
                         _hasPendingSellSlot = true;
 
+                        var listedCountBefore = GetCurrentExpectedListedCount();
+                        if (retainerSellListVisible)
+                        {
+                            var listedSnapshot = ReadCurrentRetainerSellListCount();
+                            if (listedSnapshot.HasValue)
+                                listedCountBefore = listedSnapshot.Value;
+                        }
+
+                        var slotQuantityBefore = -1;
+                        if (!TryReadInventorySlotState(slotRef, out _, out _, out slotQuantityBefore))
+                            slotQuantityBefore = -1;
+
+                        BeginNewListingAttempt(slotRef, c.ItemId, c.IsHq, desiredQuantity, listedCountBefore,
+                            slotQuantityBefore, now);
+
                         Log.Debug($"[RR] Sell candidate: itemId={c.ItemId} hq={c.IsHq} count={totalCount} threshold={threshold} container={slotRef.Container} slot={slotRef.Slot} (cap {_soldThisRetainer}/{_sellCapacityThisRetainer})");
 
                         _runPhase = RunPhase.Sell_OpenRetainerSellFromInventory;
@@ -1347,15 +1433,33 @@ public unsafe sealed partial class Plugin
                     _processingListedItem = false;
                     ClearRetainerContextMenuExpectation();
 
+                    if (_newListingAttemptState == NewListingAttemptState.None)
+                    {
+                        var listedCountBefore = GetCurrentExpectedListedCount();
+                        var slotQuantityBefore = -1;
+                        if (!TryReadInventorySlotState(_pendingSellSlot, out var slotItemId, out var slotIsHq, out slotQuantityBefore))
+                        {
+                            slotItemId = _currentSellItemId;
+                            slotIsHq = _currentSellItemIsHq;
+                            slotQuantityBefore = -1;
+                        }
+
+                        BeginNewListingAttempt(_pendingSellSlot, slotItemId, slotIsHq, _currentSellStackSize,
+                            listedCountBefore, slotQuantityBefore, now);
+                    }
+
                     var ok = TryOpenRetainerSellFromInventory(_pendingSellSlot);
                     if (!ok)
                     {
                         Log.Information($"[RR] Sell_Open: failed to open RetainerSell from inventory (itemId={_currentSellItemId}); skipping.");
+                        _newListingAttemptState = NewListingAttemptState.Failed;
+                        RememberFailedAttemptedSlot();
                         _hasPendingSellSlot = false;
                         _pendingSellSlot = default;
                         _currentSellItemId = 0;
                         _currentSellItemIsHq = false;
                         _currentSellStackSize = 0;
+                        ResetNewListingAttempt();
 
                         _runPhase = RunPhase.Sell_FindNextItemInInventory;
                         _lastActionUtc = now;
@@ -1363,6 +1467,8 @@ public unsafe sealed partial class Plugin
                     }
 
                     Log.Debug($"[RR] Sell_Open: requested RetainerSell from inventory (itemId={_currentSellItemId}).");
+
+                    _newListingAttemptState = NewListingAttemptState.PendingConfirm;
 
                     _hasPendingSellSlot = false;
                     _pendingSellSlot = default;
