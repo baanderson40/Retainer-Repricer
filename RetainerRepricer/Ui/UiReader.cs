@@ -20,6 +20,8 @@ namespace RetainerRepricer.Ui;
 /// </summary>
 internal sealed unsafe class UiReader
 {
+    public readonly record struct HqIconState(bool Visible, NodeFlags Flags, uint DrawFlags, byte Alpha);
+
     #region Constants
 
     // Observed HQ marker glyph inside RetainerSell item-name payload.
@@ -287,25 +289,38 @@ internal sealed unsafe class UiReader
     /// </summary>
     public bool RowIsHq(AtkComponentListItemRenderer* renderer)
     {
-        var n = GetRendererNodeById(renderer, NodePaths.HqIconNodeId);
-        if (n == null) return false;
+        var state = GetHqIconState(renderer);
+        if (!state.HasValue)
+            return false;
 
-        // Observed:
-        // HQ -> DrawFlags = 0x0
-        // NQ -> DrawFlags = 0x100
-        return n->DrawFlags == 0;
+        return state.Value.Visible;
     }
 
-    public void DumpHqIconState(AtkComponentListItemRenderer* renderer, int rowIndex, Action<string> log)
+    public HqIconState? GetHqIconState(AtkComponentListItemRenderer* renderer)
     {
         var n = GetRendererNodeById(renderer, NodePaths.HqIconNodeId);
         if (n == null)
+            return null;
+
+        return new HqIconState(
+            Visible: n->IsVisible(),
+            Flags: n->NodeFlags,
+            DrawFlags: n->DrawFlags,
+            Alpha: n->Color.A);
+    }
+
+    public HqIconState? DumpHqIconState(AtkComponentListItemRenderer* renderer, int rowIndex, Action<string> log)
+    {
+        var state = GetHqIconState(renderer);
+        if (!state.HasValue)
         {
             log($"[HQ] row {rowIndex}: node {NodePaths.HqIconNodeId} not found");
-            return;
+            return null;
         }
 
-        log($"[HQ] row {rowIndex}: draw=0x{n->DrawFlags:X} a={n->Color.A}");
+        var value = state.Value;
+        log($"[HQ] row {rowIndex}: visible={value.Visible} flags=0x{value.Flags:X} draw=0x{value.DrawFlags:X} alpha={value.Alpha}");
+        return value;
     }
 
     public string GetItemSearchResultErrorMessage()
@@ -443,7 +458,7 @@ internal sealed unsafe class UiReader
     /// <summary>
     /// Does a single pass over the four bag containers and returns the first slot plus total count for that item/quality.
     /// </summary>
-    public InventoryLookupResult FindItemInInventory(uint baseItemId, bool isHq)
+    public InventoryLookupResult FindItemInInventory(uint baseItemId, bool isHq, HashSet<long>? excludedSlotKeys = null)
     {
         var container = 0;
         var slot = 0;
@@ -499,7 +514,8 @@ internal sealed unsafe class UiReader
                 if (totalCount >= 999999)
                     totalCount = 999999;
 
-                if (!foundSellable)
+                var slotKey = ((long)(uint)type << 32) | (uint)i;
+                if (!foundSellable && (excludedSlotKeys == null || !excludedSlotKeys.Contains(slotKey)))
                 {
                     container = (int)type;
                     slot = i;
