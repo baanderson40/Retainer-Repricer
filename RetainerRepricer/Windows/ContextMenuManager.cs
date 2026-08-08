@@ -29,8 +29,10 @@ internal sealed class ContextMenuManager : IDisposable
     private const ushort PrefixColor = 31;        // orange/gold
     private const ushort RemoveColor = 539;       // brighter red
     private const ushort DisabledColor = 703;     // grey
+    private const ushort QuickListColor = 31;     // orange/gold
 
     private const string AddLabel = " + Add to Sell List";
+    private const string QuickListLabel = " + Quick List";
     private const string RemoveLabel = "- Remove from Sell List";
     private const string NotSellableLabel = " Not Sellable";
 
@@ -118,6 +120,11 @@ internal sealed class ContextMenuManager : IDisposable
             GenericHelpers.IsKeyPressed(LimitedKeys.LeftAltKey),
             GenericHelpers.IsKeyPressed(LimitedKeys.RightAltKey));
 
+        var quickListVisible = isSellable && _plugin.IsQuickListVisible();
+        if (quickListVisible && IsQuickListModifierHeld() && _plugin.CanStartQuickList()
+            && _plugin.StartQuickListFromInventory((int)containerType, slotIndex))
+            return;
+
         if (!isInSellList && isSellable && TryQuickAddFromModifier(itemId, isHq, itemName))
             isInSellList = true;
 
@@ -146,6 +153,9 @@ internal sealed class ContextMenuManager : IDisposable
                     }
                 }
             });
+
+            if (quickListVisible)
+                AddQuickListMenuItem(args, containerType, slotIndex);
 
             return;
         }
@@ -200,6 +210,9 @@ internal sealed class ContextMenuManager : IDisposable
                 }, clickPosition, defaultPriority, _plugin.SmartSortEnabled, allowPreserveToggle);
             }
         });
+
+        if (quickListVisible)
+            AddQuickListMenuItem(args, containerType, slotIndex);
     }
 
     #endregion
@@ -237,6 +250,41 @@ internal sealed class ContextMenuManager : IDisposable
             ContextMenuQuickAddModifier.RightAlt => IsWinApiKeyHeld(LimitedKeys.RightAltKey),
             _ => false,
         };
+
+    private bool IsQuickListModifierHeld()
+        => _config.ContextMenuQuickListModifier switch
+        {
+            ContextMenuQuickListModifier.None => false,
+            ContextMenuQuickListModifier.Shift => IsAnyWinApiKeyHeld(LimitedKeys.LeftShiftKey, LimitedKeys.RightShiftKey),
+            ContextMenuQuickListModifier.LeftShift => IsWinApiKeyHeld(LimitedKeys.LeftShiftKey),
+            ContextMenuQuickListModifier.RightShift => IsWinApiKeyHeld(LimitedKeys.RightShiftKey),
+            ContextMenuQuickListModifier.Ctrl => IsAnyWinApiKeyHeld(LimitedKeys.LeftControlKey, LimitedKeys.RightControlKey),
+            ContextMenuQuickListModifier.LeftCtrl => IsWinApiKeyHeld(LimitedKeys.LeftControlKey),
+            ContextMenuQuickListModifier.RightCtrl => IsWinApiKeyHeld(LimitedKeys.RightControlKey),
+            ContextMenuQuickListModifier.Alt => IsAnyWinApiKeyHeld(LimitedKeys.LeftAltKey, LimitedKeys.RightAltKey),
+            ContextMenuQuickListModifier.LeftAlt => IsWinApiKeyHeld(LimitedKeys.LeftAltKey),
+            ContextMenuQuickListModifier.RightAlt => IsWinApiKeyHeld(LimitedKeys.RightAltKey),
+            _ => false,
+        };
+
+    private void AddQuickListMenuItem(IMenuOpenedArgs args, InventoryType containerType, int slotIndex)
+    {
+        args.AddMenuItem(new MenuItem
+        {
+            IsEnabled = _plugin.CanStartQuickList(),
+            IsReturn = false,
+            IsSubmenu = false,
+
+            Prefix = PrefixIcon,
+            PrefixColor = QuickListColor,
+
+            Name = new SeStringBuilder()
+                .AddUiForeground(QuickListLabel, QuickListColor)
+                .Build(),
+
+            OnClicked = _ => _plugin.StartQuickListFromInventory((int)containerType, slotIndex),
+        });
+    }
 
     private static bool IsAnyWinApiKeyHeld(LimitedKeys firstKey, LimitedKeys secondKey)
         => IsWinApiKeyHeld(firstKey) || IsWinApiKeyHeld(secondKey);
