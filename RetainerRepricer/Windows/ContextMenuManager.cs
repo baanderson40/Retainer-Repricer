@@ -121,11 +121,13 @@ internal sealed class ContextMenuManager : IDisposable
             GenericHelpers.IsKeyPressed(LimitedKeys.RightAltKey));
 
         var quickListVisible = isSellable && _plugin.IsQuickListVisible();
-        if (quickListVisible && IsQuickListModifierHeld() && _plugin.CanStartQuickList()
+        var quickListModifierHeld = IsQuickListModifierHeld();
+        if (quickListVisible && quickListModifierHeld && _plugin.CanStartQuickList()
             && _plugin.StartQuickListFromInventory((int)containerType, slotIndex))
             return;
 
-        if (!isInSellList && isSellable && TryQuickAddFromModifier(itemId, isHq, itemName))
+        if (!isInSellList && isSellable && (!quickListVisible || !quickListModifierHeld)
+            && TryQuickAddFromModifier(itemId, isHq, itemName))
             isInSellList = true;
 
         // If it's already tracked, always allow removing it (even if untradable).
@@ -231,8 +233,12 @@ internal sealed class ContextMenuManager : IDisposable
         var defaultPriority = _config.GetAppendSortOrder();
         Plugin.Log.Verbose("[RR][ContextMenu] Quick add triggered for item {ItemId} (HQ={IsHq}) with priority {Priority}",
             itemId, isHq, defaultPriority);
-        return AddSellListEntryFromMenu(itemId, isHq, itemName, 1, defaultPriority, keepPreserved: false, allowPreserveToggle: false,
+        var added = AddSellListEntryFromMenu(itemId, isHq, itemName, 1, defaultPriority, keepPreserved: false, allowPreserveToggle: false,
             source: "quick_add");
+        if (added)
+            _plugin.DismissContextMenuIfOpen();
+
+        return added;
     }
 
     private bool IsQuickAddModifierHeld()

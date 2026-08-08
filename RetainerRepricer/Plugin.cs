@@ -71,6 +71,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
     public readonly WindowSystem WindowSystem = new("RetainerRepricer");
 
     internal bool IsRunning;
+    private bool _dismissContextMenuNextTick;
 
     private readonly UniversalisApiClient _universalisClient;
     private readonly SellListSmartSorter _smartSorter;
