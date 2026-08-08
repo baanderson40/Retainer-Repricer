@@ -132,17 +132,15 @@ fi
 gh release view "$NEW_TAG" --repo "$SOURCE_REPO" >/dev/null 2>&1 && \
     fail "GitHub release $NEW_TAG already exists"
 
+DOWNLOAD_COUNT="$CURRENT_MANIFEST_COUNT"
 PREVIOUS_DOWNLOAD_COUNT="$(gh release view "$PREVIOUS_TAG" \
     --repo "$SOURCE_REPO" \
     --json assets \
     --jq '.assets[] | select(.name == "latest.zip") | .downloadCount' \
-    2>/dev/null)" || fail "could not read download count for release $PREVIOUS_TAG"
-[[ "$PREVIOUS_DOWNLOAD_COUNT" =~ ^[0-9]+$ ]] || \
-    fail "release $PREVIOUS_TAG has no latest.zip download count"
-
-DOWNLOAD_COUNT="$PREVIOUS_DOWNLOAD_COUNT"
-if (( CURRENT_MANIFEST_COUNT > DOWNLOAD_COUNT )); then
-    DOWNLOAD_COUNT="$CURRENT_MANIFEST_COUNT"
+    2>/dev/null || true)"
+if [[ "$PREVIOUS_DOWNLOAD_COUNT" =~ ^[0-9]+$ ]] \
+    && (( PREVIOUS_DOWNLOAD_COUNT > DOWNLOAD_COUNT )); then
+    DOWNLOAD_COUNT="$PREVIOUS_DOWNLOAD_COUNT"
 fi
 
 NEW_DOWNLOAD_URL="https://github.com/$SOURCE_REPO/releases/download/$NEW_TAG/latest.zip"
@@ -152,7 +150,6 @@ printf '  Source branch:       %s\n' "$CURRENT_BRANCH"
 printf '  Source version:      %s -> %s\n' "$CURRENT_SOURCE_VERSION" "$VERSION"
 printf '  Git tag:             %s\n' "$NEW_TAG"
 printf '  Previous release:    %s\n' "$PREVIOUS_TAG"
-printf '  Previous asset count: %s\n' "$PREVIOUS_DOWNLOAD_COUNT"
 printf '  Manifest count:      %s\n' "$DOWNLOAD_COUNT"
 printf '  New download URL:    %s\n' "$NEW_DOWNLOAD_URL"
 
@@ -174,6 +171,7 @@ if [[ "$CURRENT_SOURCE_VERSION" != "$VERSION" ]]; then
     sed -i "0,/<Version>[0-9.]*<\/Version>/{s/<Version>[0-9.]*<\/Version>/<Version>$VERSION<\/Version>/}" "$PROJECT_FILE"
     git add "$PROJECT_FILE"
     git commit -m "Version: $VERSION"
+    git restore --worktree -- "$PROJECT_FILE"
     git push origin master
 fi
 
