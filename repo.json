@@ -11,7 +11,7 @@
     ],
     "InternalName": "RetainerRepricer",
     "RepoUrl": "https://github.com/baanderson40/Retainer-Repricer",
-    "AssemblyVersion": "1.3.0.1,
+    "AssemblyVersion": "1.3.0.1",
     "IsTestingExclusive": false,
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
