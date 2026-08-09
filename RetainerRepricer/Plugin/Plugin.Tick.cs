@@ -1266,6 +1266,14 @@ public unsafe sealed partial class Plugin
                         _currentSellStackSize = 0;
                         ResetNewListingAttempt();
 
+                        if (_quickListRun)
+                        {
+                            Log.Information($"[RR][QuickList] Completed success={succeeded}.");
+                            StopRun();
+                            _lastActionUtc = now;
+                            return;
+                        }
+
                         _runPhase = RunPhase.Sell_FindNextItemInInventory;
                         _lastActionUtc = now;
                         return;
@@ -1433,6 +1441,13 @@ public unsafe sealed partial class Plugin
 
                     if (_sellCapacityThisRetainer <= 0 || _soldThisRetainer >= _sellCapacityThisRetainer)
                     {
+                        if (_quickListRun)
+                        {
+                            StopRun();
+                            _lastActionUtc = now;
+                            return;
+                        }
+
                         TransitionToExitToRetainerList();
                         _lastActionUtc = now;
                         return;
@@ -1441,6 +1456,13 @@ public unsafe sealed partial class Plugin
                     if (!_hasPendingSellSlot)
                     {
                         Log.Warning("[RR] Sell_Open: no pending slot; returning to scan.");
+                        if (_quickListRun)
+                        {
+                            StopRun();
+                            _lastActionUtc = now;
+                            return;
+                        }
+
                         _runPhase = RunPhase.Sell_FindNextItemInInventory;
                         _lastActionUtc = now;
                         return;
@@ -1468,6 +1490,13 @@ public unsafe sealed partial class Plugin
                     if (!ok)
                     {
                         Log.Information($"[RR] Sell_Open: failed to open RetainerSell from inventory (itemId={_currentSellItemId}); skipping.");
+                        if (_quickListRun)
+                        {
+                            StopRun();
+                            _lastActionUtc = now;
+                            return;
+                        }
+
                         _newListingAttemptState = NewListingAttemptState.Failed;
                         RememberFailedAttemptedSlot();
                         _hasPendingSellSlot = false;
