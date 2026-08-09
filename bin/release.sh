@@ -61,7 +61,7 @@ fi
 if [[ "$DRY_RUN" != true ]]; then
     gh auth status >/dev/null 2>&1 || fail "GitHub CLI is not authenticated"
     git show-ref --verify --quiet refs/heads/dev || fail "local dev branch does not exist"
-    git fetch origin master dev --tags
+    git fetch origin master dev
     read -r REMOTE_ONLY LOCAL_ONLY < <(git rev-list --left-right --count origin/master...HEAD)
     [[ "$LOCAL_ONLY" -eq 0 ]] || fail "master has unpushed commits; push or resolve them before releasing"
     if [[ "$REMOTE_ONLY" -gt 0 ]]; then
@@ -102,7 +102,7 @@ if [[ "$DRY_RUN" != true ]]; then
         [[ "$PR_STATE" == "MERGED" ]] || \
             fail "pull request #$PR_NUMBER was not merged"
 
-        git fetch origin master dev --tags
+        git fetch origin master dev
         git merge --ff-only origin/master
     fi
     git merge-base --is-ancestor origin/dev origin/master || \
