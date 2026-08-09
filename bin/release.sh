@@ -68,8 +68,45 @@ if [[ "$DRY_RUN" != true ]]; then
         printf 'Fast-forwarding master to origin/master...\n'
         git merge --ff-only origin/master
     fi
+    if ! git merge-base --is-ancestor origin/dev origin/master; then
+        PR_NUMBER="$(gh pr list \
+            --repo "$SOURCE_REPO" \
+            --base master \
+            --head dev \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')"
+        [[ -n "$PR_NUMBER" ]] || \
+            fail "dev is ahead of master and has no open dev-to-master pull request"
+
+        printf 'Waiting for checks on pull request #%s...\n' "$PR_NUMBER"
+        gh pr checks "$PR_NUMBER" --repo "$SOURCE_REPO" --watch || \
+            fail "checks failed for pull request #$PR_NUMBER"
+
+        printf 'Merging pull request #%s...\n' "$PR_NUMBER"
+        gh pr merge "$PR_NUMBER" \
+            --repo "$SOURCE_REPO" \
+            --merge \
+            --delete-branch=false || \
+            fail "could not merge pull request #$PR_NUMBER"
+
+        PR_STATE=""
+        for _ in {1..60}; do
+            PR_STATE="$(gh pr view "$PR_NUMBER" \
+                --repo "$SOURCE_REPO" \
+                --json state \
+                --jq '.state' 2>/dev/null || true)"
+            [[ "$PR_STATE" == "MERGED" ]] && break
+            sleep 5
+        done
+        [[ "$PR_STATE" == "MERGED" ]] || \
+            fail "pull request #$PR_NUMBER was not merged"
+
+        git fetch origin master dev --tags
+        git merge --ff-only origin/master
+    fi
     git merge-base --is-ancestor origin/dev origin/master || \
-        fail "origin/dev is not merged into origin/master; complete the pull request before releasing"
+        fail "origin/dev is not merged into origin/master after pull request"
     git merge-base --is-ancestor dev origin/master || \
         fail "local dev contains commits not merged into origin/master"
 else
