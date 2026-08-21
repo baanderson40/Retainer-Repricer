@@ -37,7 +37,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
     private const string CommandName = "/repricer";
     private const string CommandAlias = "/rr";
-    private const string CommandHelp = "help|? | start [price|sell] | stop | config | logs (default opens Sell List)";
+    private const string CommandHelp = "help|? | start [price|sell] | stop | config | logs | debug (default opens Sell List)";
     private const string ChatTag = "Retainer Repricer";
     private const ushort InfoTagColor = 34;
     private const ushort ErrorTagColor = 14;
@@ -90,6 +90,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
     private ConfigWindow ConfigWindow { get; }
     private MainWindow MainWindow { get; }
     private LogWindow LogWindow { get; }
+    private DebugWindow DebugWindow { get; }
     private MinCountPopup MinCountPopup { get; }
     private ContextMenuManager ContextMenu { get; }
 
@@ -126,12 +127,14 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         ConfigWindow = new ConfigWindow(this);
         MainWindow = new MainWindow(this);
         LogWindow = new LogWindow(this);
+        DebugWindow = new DebugWindow(this);
         MinCountPopup = new MinCountPopup(Configuration);
         ContextMenu = new ContextMenuManager(this, Configuration, MinCountPopup);
 
         WindowSystem.AddWindow(ConfigWindow);
         WindowSystem.AddWindow(MainWindow);
         WindowSystem.AddWindow(LogWindow);
+        WindowSystem.AddWindow(DebugWindow);
         WindowSystem.AddWindow(MinCountPopup);
 
         _uiReader = new Ui.UiReader(GameGui);
@@ -168,6 +171,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         ConfigWindow.Dispose();
         MainWindow.Dispose();
         LogWindow.Dispose();
+        DebugWindow.Dispose();
         MinCountPopup.Dispose();
         ContextMenu.Dispose();
 
@@ -941,6 +945,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
     internal void OpenSellListTab() => ConfigWindow.OpenSellListTab();
     internal void OpenSettingsTab() => ConfigWindow.OpenSettingsTab();
     internal void OpenLogWindow() => LogWindow.Open();
+    internal void OpenDebugWindow() => DebugWindow.Open();
 
     internal bool SmartSortEnabled => _smartSorter.IsEnabled;
     internal bool SmartSortIsSorting => _smartSorter.IsSorting;
