@@ -936,13 +936,14 @@ public sealed class Configuration : IPluginConfiguration
             changed = true;
         }
 
-        if (BlacklistedRetainers is { } blacklisted &&
+        var blacklisted = BlacklistedRetainers;
+        if (blacklisted != null &&
             !blacklisted.Contains(scopedKey) && blacklisted.Remove(normalizedName))
         {
             blacklisted.Add(scopedKey);
             changed = true;
         }
-        else if (blacklisted?.Remove(normalizedName) == true)
+        else if (blacklisted != null && blacklisted.Remove(normalizedName))
         {
             changed = true;
         }
