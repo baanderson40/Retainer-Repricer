@@ -88,14 +88,14 @@ public unsafe sealed partial class Plugin
                     {
                         Log.Information("[RR] Finished: processed all enabled retainers.");
 
-                        if (Configuration.CloseRetainerListAddon)
+                        if (Configuration.CloseRetainerListAddon && !_autoRetainerHandoffActive)
                         {
                             Log.Information("[RR] Closing RetainerList (CloseRetainerListAddon enabled).");
                             CloseAddonIfOpen("RetainerList");
                         }
 
                         PrintSuccess(GetCompletionMessage());
-                        StopRun();
+                        StopRun(RunStopReason.Completed);
                         return;
                     }
 
@@ -1279,7 +1279,7 @@ public unsafe sealed partial class Plugin
                         if (_quickListRun)
                         {
                             Log.Information($"[RR][QuickList] Completed success={succeeded}.");
-                            StopRun();
+                            StopRun(succeeded ? RunStopReason.Completed : RunStopReason.Error);
                             _lastActionUtc = now;
                             return;
                         }
@@ -1361,8 +1361,12 @@ public unsafe sealed partial class Plugin
                         {
                             var requestedCap = Configuration.RetainerCapDefault;
 
-                            if (c.RetainerCaps is { Count: > 0 } caps && caps.TryGetValue(normalizedRetainerName, out var storedCap))
-                                requestedCap = storedCap;
+                            if (c.RetainerCaps is { Count: > 0 } caps)
+                            {
+                                if (caps.TryGetValue(Configuration.MakeRetainerKey(CurrentCharacterId, normalizedRetainerName), out var storedCap) ||
+                                    caps.TryGetValue(normalizedRetainerName, out storedCap))
+                                    requestedCap = storedCap;
+                            }
 
                             var capValue = Math.Clamp(requestedCap, 0, Configuration.RetainerCapMax);
                             if (capValue <= 0)
@@ -1453,7 +1457,7 @@ public unsafe sealed partial class Plugin
                     {
                         if (_quickListRun)
                         {
-                            StopRun();
+                            StopRun(RunStopReason.Completed);
                             _lastActionUtc = now;
                             return;
                         }
@@ -1466,9 +1470,9 @@ public unsafe sealed partial class Plugin
                     if (!_hasPendingSellSlot)
                     {
                         Log.Warning("[RR] Sell_Open: no pending slot; returning to scan.");
-                        if (_quickListRun)
+                        if (_quickListRun || _autoRetainerHandoffActive)
                         {
-                            StopRun();
+                            StopRun(RunStopReason.Error);
                             _lastActionUtc = now;
                             return;
                         }
@@ -1500,9 +1504,9 @@ public unsafe sealed partial class Plugin
                     if (!ok)
                     {
                         Log.Information($"[RR] Sell_Open: failed to open RetainerSell from inventory (itemId={_currentSellItemId}); skipping.");
-                        if (_quickListRun)
+                        if (_quickListRun || _autoRetainerHandoffActive)
                         {
-                            StopRun();
+                            StopRun(RunStopReason.Error);
                             _lastActionUtc = now;
                             return;
                         }
@@ -1573,6 +1577,15 @@ public unsafe sealed partial class Plugin
 
                     if (selectStringVisible)
                     {
+                        if (_autoRetainerHandoffActive &&
+                            _retainerRowPos >= _retainerRowOrder.Count - 1)
+                        {
+                            RunPendingSellPrune();
+                            Log.Information("[RR][AR] Final retainer cleanup complete; preserving AutoRetainer Quit menu.");
+                            StopRun(RunStopReason.Completed);
+                            return;
+                        }
+
                         Log.Debug("[RR] Exit: closing SelectString.");
                         CloseAddonIfOpen("SelectString");
                         _lastActionUtc = now;
@@ -1632,10 +1645,10 @@ public unsafe sealed partial class Plugin
         _currentSellStackSize = 0;
         ResetNewListingAttempt();
 
-        if (_quickListRun)
+        if (_quickListRun || _autoRetainerHandoffActive)
         {
-            Log.Information("[RR][QuickList] Completed success=False after RetainerSell timeout.");
-            StopRun();
+            Log.Information("[RR] Run stopped after RetainerSell timeout.");
+            StopRun(RunStopReason.Error);
             _lastActionUtc = now;
             return;
         }
@@ -1692,7 +1705,9 @@ public unsafe sealed partial class Plugin
         if (!Configuration.EnablePerRetainerCaps || string.IsNullOrEmpty(normalizedRetainerName) || candidate.RetainerStackSizes is not { Count: > 0 })
             return (baseline, 0);
 
-        if (!candidate.RetainerStackSizes.TryGetValue(normalizedRetainerName, out var overrideValue))
+        if (!candidate.RetainerStackSizes.TryGetValue(
+                Configuration.MakeRetainerKey(CurrentCharacterId, normalizedRetainerName), out var overrideValue) &&
+            !candidate.RetainerStackSizes.TryGetValue(normalizedRetainerName, out overrideValue))
             return (baseline, 0);
 
         if (overrideValue <= 0)

@@ -11,13 +11,18 @@ public unsafe sealed partial class Plugin
 {
     private void OnFrameworkUpdate(IFramework framework)
     {
+        TickAutoRetainerIntegration();
+
         if (_dismissContextMenuNextTick)
         {
             _dismissContextMenuNextTick = false;
             FireContextMenuDismiss();
         }
 
-        if (!IsRunning) return;
+        if (!IsRunning)
+        {
+            return;
+        }
 
         var now = DateTime.UtcNow;
         if ((now - _lastFrameworkTickUtc).TotalSeconds < FrameworkTickIntervalSeconds)

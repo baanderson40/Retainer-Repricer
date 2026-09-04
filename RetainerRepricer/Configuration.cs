@@ -2,6 +2,7 @@ using Dalamud.Configuration;
 using Dalamud.Plugin;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 
 namespace RetainerRepricer;
@@ -40,7 +41,7 @@ public sealed class Configuration : IPluginConfiguration
     #region Dalamud config versioning
 
     // Dalamud serialization schema version; bump when config layout changes.
-    public int Version { get; set; } = 1;
+    public int Version { get; set; } = 2;
 
     [NonSerialized]
     private IDalamudPluginInterface? _pluginInterface;
@@ -116,8 +117,32 @@ public sealed class Configuration : IPluginConfiguration
         }
     }
 
+    public IEnumerable<string> GetAllRetainerNames(ulong cid)
+    {
+        EnsureRetainerDictionaries();
+        var prefix = MakeRetainerKeyPrefix(cid);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var key in RetainersEnabled.Keys.Concat(RetainerSettings.Keys))
+        {
+            if (!key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+            var name = key[prefix.Length..];
+            if (name.Length > 0 && seen.Add(name)) yield return name;
+        }
+    }
+
+    public bool HasScopedRetainerConfiguration(ulong cid, string name)
+    {
+        EnsureRetainerDictionaries();
+        var key = MakeRetainerKey(cid, name);
+        return RetainersEnabled.ContainsKey(key) || RetainerSettings.ContainsKey(key);
+    }
+
     public bool IsRetainerEnabled(string name)
         => GetRetainerBehavior(name).Enabled;
+
+    public bool IsRetainerEnabled(ulong cid, string name)
+        => GetRetainerBehavior(cid, name).Enabled;
 
     public void SetRetainerEnabled(string name, bool enabled)
     {
@@ -128,9 +153,24 @@ public sealed class Configuration : IPluginConfiguration
         behavior.Enabled = enabled;
     }
 
+    public void SetRetainerEnabled(ulong cid, string name, bool enabled)
+    {
+        EnsureRetainerDictionaries();
+        var key = MakeRetainerKey(cid, name);
+        RetainersEnabled[key] = enabled;
+        var behavior = EnsureRetainerBehavior(cid, name);
+        behavior.Enabled = enabled;
+    }
+
     public bool RetainerAllowsSell(string name)
     {
         var behavior = GetRetainerBehavior(name);
+        return behavior.Enabled && behavior.AllowSell;
+    }
+
+    public bool RetainerAllowsSell(ulong cid, string name)
+    {
+        var behavior = GetRetainerBehavior(cid, name);
         return behavior.Enabled && behavior.AllowSell;
     }
 
@@ -140,11 +180,20 @@ public sealed class Configuration : IPluginConfiguration
         return behavior.Enabled && behavior.AllowReprice;
     }
 
+    public bool RetainerAllowsReprice(ulong cid, string name)
+    {
+        var behavior = GetRetainerBehavior(cid, name);
+        return behavior.Enabled && behavior.AllowReprice;
+    }
+
     public void SetRetainerSellEnabled(string name, bool allowSell)
     {
         var behavior = EnsureRetainerBehavior(name);
         behavior.AllowSell = allowSell;
     }
+
+    public void SetRetainerSellEnabled(ulong cid, string name, bool allowSell)
+        => EnsureRetainerBehavior(cid, name).AllowSell = allowSell;
 
     public void SetRetainerRepriceEnabled(string name, bool allowReprice)
     {
@@ -152,8 +201,14 @@ public sealed class Configuration : IPluginConfiguration
         behavior.AllowReprice = allowReprice;
     }
 
+    public void SetRetainerRepriceEnabled(ulong cid, string name, bool allowReprice)
+        => EnsureRetainerBehavior(cid, name).AllowReprice = allowReprice;
+
     public RetainerBehavior GetRetainerBehavior(string name)
         => EnsureRetainerBehavior(name);
+
+    public RetainerBehavior GetRetainerBehavior(ulong cid, string name)
+        => EnsureRetainerBehavior(cid, name);
 
     private RetainerBehavior EnsureRetainerBehavior(string name)
     {
@@ -172,6 +227,34 @@ public sealed class Configuration : IPluginConfiguration
                 AllowReprice = true,
             };
 
+            RetainerSettings[key] = behavior;
+        }
+
+        behavior.Normalize();
+        return behavior;
+    }
+
+    private RetainerBehavior EnsureRetainerBehavior(ulong cid, string name)
+    {
+        EnsureRetainerDictionaries();
+        var key = MakeRetainerKey(cid, name);
+        if (!RetainerSettings.TryGetValue(key, out var behavior) || behavior == null)
+        {
+            var legacyKey = NormalizeRetainerName(name);
+            var legacyBehavior = RetainerSettings.TryGetValue(legacyKey, out var existingBehavior)
+                ? existingBehavior
+                : null;
+            var enabled = RetainersEnabled.TryGetValue(key, out var scopedEnabled)
+                ? scopedEnabled
+                : RetainersEnabled.TryGetValue(legacyKey, out var legacyEnabled)
+                    ? legacyEnabled
+                    : legacyBehavior?.Enabled ?? true;
+            behavior = new RetainerBehavior
+            {
+                Enabled = enabled,
+                AllowSell = legacyBehavior?.AllowSell ?? true,
+                AllowReprice = legacyBehavior?.AllowReprice ?? true,
+            };
             RetainerSettings[key] = behavior;
         }
 
@@ -270,6 +353,7 @@ public sealed class Configuration : IPluginConfiguration
     public double IsrHqFilterOpenRetrySeconds { get; set; } = 0.30d;
     public double IsrHqFilterPostOpenSeconds { get; set; } = 0.15d;
     public double FrameworkTickIntervalSeconds { get; set; } = 0.075d;
+    public double AutoRetainerHandoffTimeoutSeconds { get; set; } = 10.0d;
 
     // Smart sort scoring constants.
     public double SmartSortVelocityCap { get; set; } = 100.0d;
@@ -339,9 +423,29 @@ public sealed class Configuration : IPluginConfiguration
             return false;
         }
 
+        public bool TryGetRetainerCap(ulong cid, string name, out int cap)
+        {
+            EnsureRetainerCaps();
+            var key = MakeRetainerKey(cid, name);
+            if (RetainerCaps.TryGetValue(key, out cap))
+                return true;
+
+            if (RetainerCaps.TryGetValue(NormalizeRetainerName(name), out cap))
+                return true;
+
+            cap = RetainerCapDefault;
+            return false;
+        }
+
         public int GetRetainerCapOrDefault(string name)
         {
             TryGetRetainerCap(name, out var cap);
+            return cap;
+        }
+
+        public int GetRetainerCapOrDefault(ulong cid, string name)
+        {
+            TryGetRetainerCap(cid, name, out var cap);
             return cap;
         }
 
@@ -360,6 +464,14 @@ public sealed class Configuration : IPluginConfiguration
                 return;
             }
 
+            RetainerCaps[key] = clamped;
+        }
+
+        public void SetRetainerCap(ulong cid, string name, int value)
+        {
+            EnsureRetainerCaps();
+            var key = MakeRetainerKey(cid, name);
+            var clamped = Math.Clamp(value, 0, RetainerCapMax);
             RetainerCaps[key] = clamped;
         }
 
@@ -383,6 +495,14 @@ public sealed class Configuration : IPluginConfiguration
             return RetainerStackSizes.TryGetValue(key, out var value) ? value : 0;
         }
 
+        public int GetRetainerStackSize(ulong cid, string name)
+        {
+            EnsureRetainerStackSizes();
+            if (RetainerStackSizes.TryGetValue(MakeRetainerKey(cid, name), out var value))
+                return value;
+            return RetainerStackSizes.TryGetValue(NormalizeRetainerName(name), out value) ? value : 0;
+        }
+
         public void SetRetainerStackSize(string name, int value, int stackCap)
         {
             EnsureRetainerStackSizes();
@@ -397,6 +517,15 @@ public sealed class Configuration : IPluginConfiguration
             else
                 RetainerStackSizes[key] = clamped;
 
+            RefreshMinCountFromStackSizes();
+        }
+
+        public void SetRetainerStackSize(ulong cid, string name, int value, int stackCap)
+        {
+            EnsureRetainerStackSizes();
+            var key = MakeRetainerKey(cid, name);
+            var clamped = Math.Clamp(value, 0, stackCap);
+            RetainerStackSizes[key] = clamped;
             RefreshMinCountFromStackSizes();
         }
 
@@ -421,10 +550,7 @@ public sealed class Configuration : IPluginConfiguration
             foreach (var kvp in RetainerStackSizes)
             {
                 if (kvp.Value <= 0)
-                {
-                    minPositive = int.MaxValue;
-                    break;
-                }
+                    continue;
 
                 if (kvp.Value < minPositive)
                     minPositive = kvp.Value;
@@ -675,6 +801,332 @@ public sealed class Configuration : IPluginConfiguration
     #endregion
 
     #region Retainer behavior model
+
+    [Serializable]
+    public sealed class CharacterSettings
+    {
+        public string Name { get; set; } = string.Empty;
+        public string World { get; set; } = string.Empty;
+        public bool ProcessAfterAutoRetainer { get; set; }
+    }
+
+    // Character settings are keyed by AutoRetainer's stable content ID.
+    public Dictionary<ulong, CharacterSettings> Characters { get; set; } = new();
+    public HashSet<ulong> BlacklistedCharacters { get; set; } = new();
+    public HashSet<string> BlacklistedRetainers { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public CharacterSettings GetCharacterSettings(ulong cid, string? name = null, string? world = null)
+    {
+        Characters ??= new();
+        if (!Characters.TryGetValue(cid, out var settings) || settings == null)
+        {
+            settings = new CharacterSettings();
+            Characters[cid] = settings;
+        }
+
+        if (!string.IsNullOrWhiteSpace(name)) settings.Name = name.Trim();
+        if (!string.IsNullOrWhiteSpace(world)) settings.World = world.Trim();
+        return settings;
+    }
+
+    public bool IsCharacterBlacklisted(ulong cid)
+        => BlacklistedCharacters?.Contains(cid) == true;
+
+    public void SetCharacterBlacklisted(ulong cid, bool blacklisted)
+    {
+        BlacklistedCharacters ??= new();
+        if (blacklisted) BlacklistedCharacters.Add(cid);
+        else BlacklistedCharacters.Remove(cid);
+    }
+
+    public static string MakeRetainerKey(ulong cid, string name)
+        => $"{cid.ToString("X16", CultureInfo.InvariantCulture)}:{NormalizeRetainerName(name)}";
+
+    public static string MakeRetainerKeyPrefix(ulong cid)
+        => $"{cid.ToString("X16", CultureInfo.InvariantCulture)}:";
+
+    public bool IsRetainerBlacklisted(ulong cid, string name)
+        => BlacklistedRetainers?.Contains(MakeRetainerKey(cid, name)) == true;
+
+    public void SetRetainerBlacklisted(ulong cid, string name, bool blacklisted)
+    {
+        BlacklistedRetainers ??= new(StringComparer.OrdinalIgnoreCase);
+        var key = MakeRetainerKey(cid, name);
+        if (blacklisted) BlacklistedRetainers.Add(key);
+        else BlacklistedRetainers.Remove(key);
+    }
+
+    public void RemoveCharacterConfiguration(ulong cid)
+    {
+        Characters?.Remove(cid);
+        BlacklistedCharacters?.Remove(cid);
+        var prefix = MakeRetainerKeyPrefix(cid);
+        RetainersEnabled?.Keys.Where(x => x.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList()
+            .ForEach(x => RetainersEnabled.Remove(x));
+        RetainerSettings?.Keys.Where(x => x.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList()
+            .ForEach(x => RetainerSettings.Remove(x));
+        BlacklistedRetainers?.RemoveWhere(x => x.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+
+        if (SellList != null)
+        {
+            foreach (var entry in SellList.Values)
+            {
+                if (entry?.RetainerCaps != null)
+                    entry.RetainerCaps.Keys.Where(x => x.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList()
+                        .ForEach(x => entry.RetainerCaps.Remove(x));
+                if (entry?.RetainerStackSizes != null)
+                    entry.RetainerStackSizes.Keys.Where(x => x.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList()
+                        .ForEach(x => entry.RetainerStackSizes.Remove(x));
+            }
+        }
+    }
+
+    public void RemoveRetainerConfiguration(ulong cid, string name)
+    {
+        var key = MakeRetainerKey(cid, name);
+        RetainersEnabled?.Remove(key);
+        RetainerSettings?.Remove(key);
+        BlacklistedRetainers?.Remove(key);
+
+        if (SellList != null)
+        {
+            foreach (var entry in SellList.Values)
+            {
+                entry?.RetainerCaps?.Remove(key);
+                entry?.RetainerStackSizes?.Remove(key);
+            }
+        }
+    }
+
+    public bool MigrateLegacyRetainerConfiguration(ulong cid, string name)
+    {
+        var normalizedName = NormalizeRetainerName(name);
+        if (normalizedName.Length == 0)
+            return false;
+
+        var scopedKey = MakeRetainerKey(cid, normalizedName);
+        var changed = false;
+        EnsureRetainerDictionaries();
+
+        if (!RetainersEnabled.ContainsKey(scopedKey) && RetainersEnabled.Remove(normalizedName, out var enabled))
+        {
+            RetainersEnabled[scopedKey] = enabled;
+            changed = true;
+        }
+        else if (RetainersEnabled.Remove(normalizedName))
+        {
+            changed = true;
+        }
+
+        if (!RetainerSettings.ContainsKey(scopedKey) && RetainerSettings.Remove(normalizedName, out var behavior))
+        {
+            if (behavior != null)
+            {
+                RetainerSettings[scopedKey] = new RetainerBehavior
+                {
+                    Enabled = behavior.Enabled,
+                    AllowSell = behavior.AllowSell,
+                    AllowReprice = behavior.AllowReprice,
+                };
+            }
+            changed = true;
+        }
+        else if (RetainerSettings.Remove(normalizedName))
+        {
+            changed = true;
+        }
+
+        if (BlacklistedRetainers is { } blacklisted &&
+            !blacklisted.Contains(scopedKey) && blacklisted.Remove(normalizedName))
+        {
+            blacklisted.Add(scopedKey);
+            changed = true;
+        }
+        else if (blacklisted?.Remove(normalizedName) == true)
+        {
+            changed = true;
+        }
+
+        if (SellList != null)
+        {
+            foreach (var entry in SellList.Values)
+            {
+                if (entry?.RetainerCaps != null &&
+                    !entry.RetainerCaps.ContainsKey(scopedKey) &&
+                    entry.RetainerCaps.Remove(normalizedName, out var cap))
+                {
+                    entry.RetainerCaps[scopedKey] = cap;
+                    changed = true;
+                }
+                else if (entry?.RetainerCaps?.Remove(normalizedName) == true)
+                {
+                    changed = true;
+                }
+
+                if (entry?.RetainerStackSizes != null &&
+                    !entry.RetainerStackSizes.ContainsKey(scopedKey) &&
+                    entry.RetainerStackSizes.Remove(normalizedName, out var stackSize))
+                {
+                    entry.RetainerStackSizes[scopedKey] = stackSize;
+                    changed = true;
+                }
+                else if (entry?.RetainerStackSizes?.Remove(normalizedName) == true)
+                {
+                    changed = true;
+                }
+            }
+        }
+
+        return changed;
+    }
+
+    public bool MigrateRetainerConfiguration(ulong cid, string name, IEnumerable<string> roster)
+    {
+        var canonicalName = NormalizeRetainerName(name);
+        if (canonicalName.Length == 0 || !canonicalName.EndsWith('\''))
+            return false;
+
+        var legacyName = canonicalName.TrimEnd('\'');
+        if (legacyName.Length == 0 || string.Equals(canonicalName, legacyName, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var rosterNames = roster
+            .Select(NormalizeRetainerName)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (!rosterNames.Contains(canonicalName) || rosterNames.Contains(legacyName))
+            return false;
+
+        var canonicalKey = MakeRetainerKey(cid, canonicalName);
+        var malformedScopedKey = MakeRetainerKey(cid, legacyName);
+        var changed = false;
+
+        EnsureRetainerDictionaries();
+        if (!RetainersEnabled.ContainsKey(canonicalKey))
+        {
+            if (RetainersEnabled.Remove(malformedScopedKey, out var scopedEnabled))
+            {
+                RetainersEnabled[canonicalKey] = scopedEnabled;
+                changed = true;
+            }
+            else if (RetainersEnabled.TryGetValue(legacyName, out var legacyEnabled))
+            {
+                RetainersEnabled[canonicalKey] = legacyEnabled;
+                RetainersEnabled.Remove(legacyName);
+                changed = true;
+            }
+        }
+        else if (RetainersEnabled.Remove(malformedScopedKey))
+        {
+            changed = true;
+        }
+
+        if (!RetainerSettings.ContainsKey(canonicalKey))
+        {
+            if (RetainerSettings.Remove(malformedScopedKey, out var scopedBehavior) && scopedBehavior != null)
+            {
+                RetainerSettings[canonicalKey] = new RetainerBehavior
+                {
+                    Enabled = scopedBehavior.Enabled,
+                    AllowSell = scopedBehavior.AllowSell,
+                    AllowReprice = scopedBehavior.AllowReprice,
+                };
+                changed = true;
+            }
+            else if (RetainerSettings.TryGetValue(legacyName, out var legacyBehavior) && legacyBehavior != null)
+            {
+                RetainerSettings[canonicalKey] = new RetainerBehavior
+                {
+                    Enabled = legacyBehavior.Enabled,
+                    AllowSell = legacyBehavior.AllowSell,
+                    AllowReprice = legacyBehavior.AllowReprice,
+                };
+                RetainerSettings.Remove(legacyName);
+                changed = true;
+            }
+        }
+        else if (RetainerSettings.Remove(malformedScopedKey))
+        {
+            changed = true;
+        }
+
+        if (RetainersEnabled.Remove(legacyName))
+            changed = true;
+        if (RetainerSettings.Remove(legacyName))
+            changed = true;
+
+        if (BlacklistedRetainers?.Contains(canonicalKey) != true)
+        {
+            if (BlacklistedRetainers is { } blacklistedRetainers && blacklistedRetainers.Remove(malformedScopedKey))
+            {
+                blacklistedRetainers.Add(canonicalKey);
+                changed = true;
+            }
+            else if (BlacklistedRetainers?.Contains(legacyName) == true)
+            {
+                BlacklistedRetainers ??= new(StringComparer.OrdinalIgnoreCase);
+                BlacklistedRetainers.Add(canonicalKey);
+                BlacklistedRetainers.Remove(legacyName);
+                changed = true;
+            }
+        }
+        else if (BlacklistedRetainers?.Remove(legacyName) == true)
+        {
+            changed = true;
+        }
+
+        if (SellList != null)
+        {
+            foreach (var entry in SellList.Values)
+            {
+                if (entry?.RetainerCaps != null)
+                {
+                    if (entry.RetainerCaps.ContainsKey(canonicalKey))
+                    {
+                        if (entry.RetainerCaps.Remove(malformedScopedKey))
+                            changed = true;
+                    }
+                    else if (entry.RetainerCaps.Remove(malformedScopedKey, out var scopedCap))
+                    {
+                        entry.RetainerCaps[canonicalKey] = scopedCap;
+                        changed = true;
+                    }
+                    else if (entry.RetainerCaps.TryGetValue(legacyName, out var legacyCap))
+                    {
+                        entry.RetainerCaps[canonicalKey] = legacyCap;
+                        entry.RetainerCaps.Remove(legacyName);
+                        changed = true;
+                    }
+                }
+
+                if (entry?.RetainerStackSizes != null)
+                {
+                    if (entry.RetainerStackSizes.ContainsKey(canonicalKey))
+                    {
+                        if (entry.RetainerStackSizes.Remove(malformedScopedKey))
+                            changed = true;
+                    }
+                    else if (entry.RetainerStackSizes.Remove(malformedScopedKey, out var scopedStack))
+                    {
+                        entry.RetainerStackSizes[canonicalKey] = scopedStack;
+                        changed = true;
+                    }
+                    else if (entry.RetainerStackSizes.TryGetValue(legacyName, out var legacyStack))
+                    {
+                        entry.RetainerStackSizes[canonicalKey] = legacyStack;
+                        entry.RetainerStackSizes.Remove(legacyName);
+                        changed = true;
+                    }
+                }
+
+                if (entry?.RetainerCaps?.Remove(legacyName) == true)
+                    changed = true;
+                if (entry?.RetainerStackSizes?.Remove(legacyName) == true)
+                    changed = true;
+            }
+        }
+
+        return changed;
+    }
 
     [Serializable]
     public sealed class RetainerBehavior
