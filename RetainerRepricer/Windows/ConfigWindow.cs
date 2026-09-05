@@ -1561,7 +1561,10 @@ public sealed class ConfigWindow : Window, IDisposable
 
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
         {
-            TooltipHelper.Show(_config, "Smart sort auto-refreshes if the last refresh was more than this many minutes ago when a run starts.");
+            TooltipHelper.Show(
+                _config,
+                "Refreshes Smart Sort data in the background while Retainer Repricer is idle. " +
+                "Runs use the most recently refreshed order and do not wait for a new refresh.");
         }
 
         ImGui.PopItemWidth();

@@ -16,6 +16,7 @@ using RetainerRepricer.Windows;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace RetainerRepricer;
@@ -88,8 +89,9 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
     private readonly SellListSmartSorter _smartSorter;
     private readonly SellListInventoryPruner _sellListPruner;
     private readonly PluginLogBuffer _pluginLogBuffer;
-    private Task<bool>? _pendingSmartSortTask;
-    private bool _smartSortKickoffDone;
+    private Task<bool>? _backgroundSmartSortTask;
+    private CancellationTokenSource? _backgroundSmartSortCancellation;
+    private DateTime _nextBackgroundSmartSortAttemptUtc = DateTime.MinValue;
     private SellListInventoryPruner.SellListInventoryPruneResult? _lastPruneResult;
     private bool _autoPruneRunThisCycle;
     private bool _pendingPostSellPrune;
@@ -179,6 +181,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.OpenMainUi -= OpenMainUi;
         Framework.Update -= OnFrameworkUpdate;
         DisposeAutoRetainerIntegration();
+        CancelBackgroundSmartSortRefresh();
 
         WindowSystem.RemoveAllWindows();
 
@@ -548,8 +551,6 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         _slotIndexToOpen = 0;
 
         _sellQueue.Clear();
-        _pendingSmartSortTask = null;
-        _smartSortKickoffDone = false;
         _autoPruneRunThisCycle = false;
         _pendingPostSellPrune = false;
         _sellCapacityThisRetainer = 0;
@@ -590,8 +591,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         _slotIndexToOpen = 0;
 
         _sellQueue.Clear();
-        _pendingSmartSortTask = null;
-        _smartSortKickoffDone = false;
+        CancelBackgroundSmartSortRefresh();
         _autoPruneRunThisCycle = false;
         _pendingPostSellPrune = false;
         _sellCapacityThisRetainer = 0;
@@ -1025,9 +1025,8 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
     internal void NotifySmartSortSettingChanged()
     {
-        // Reset pending state so a new run can force refresh immediately.
-        _pendingSmartSortTask = null;
-        _smartSortKickoffDone = false;
+        CancelBackgroundSmartSortRefresh();
+        _nextBackgroundSmartSortAttemptUtc = DateTime.MinValue;
     }
 
     internal SellListInventoryPruner.SellListInventoryPruneResult RunInventoryPruneManual(string reason = "manual_button")

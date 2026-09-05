@@ -52,37 +52,6 @@ public unsafe sealed partial class Plugin
 
                     RunAutoPruneIfEnabled("run_start", latchRun: true);
 
-                    if (SmartSortEnabled && !_smartSortKickoffDone)
-                    {
-                        if (_pendingSmartSortTask == null)
-                            _pendingSmartSortTask = _smartSorter.ForceSortAsync("run_start");
-
-                        if (_pendingSmartSortTask != null && !_pendingSmartSortTask.IsCompleted)
-                        {
-                            if (_pendingSmartSortTask.IsFaulted)
-                            {
-                                Log.Warning(_pendingSmartSortTask.Exception?.GetBaseException(), "[RR][SmartSort] Run-start sort failed.");
-                                _pendingSmartSortTask = null;
-                                _smartSortKickoffDone = true;
-                            }
-                            else
-                            {
-                                _lastActionUtc = now;
-                                return;
-                            }
-                        }
-
-                        if (_pendingSmartSortTask is { IsCompleted: true })
-                        {
-                            _pendingSmartSortTask = null;
-                            _smartSortKickoffDone = true;
-                        }
-                    }
-                    else if (!SmartSortEnabled)
-                    {
-                        _smartSortKickoffDone = true;
-                    }
-
                     _retainerRowPos++;
                     if (_retainerRowPos >= _retainerRowOrder.Count)
                     {

@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 
 using Dalamud.Plugin.Services;
 
@@ -12,6 +13,7 @@ public unsafe sealed partial class Plugin
     private void OnFrameworkUpdate(IFramework framework)
     {
         TickAutoRetainerIntegration();
+        TickBackgroundSmartSortRefresh();
 
         if (_dismissContextMenuNextTick)
         {
@@ -30,5 +32,42 @@ public unsafe sealed partial class Plugin
 
         TickRun();
         _lastFrameworkTickUtc = now;
+    }
+
+    private void TickBackgroundSmartSortRefresh()
+    {
+        var now = DateTime.UtcNow;
+        if (_backgroundSmartSortTask is { IsCompleted: true } completedTask)
+        {
+            if (completedTask.IsFaulted)
+            {
+                Log.Warning(completedTask.Exception?.GetBaseException(), "[RR][SmartSort] Background refresh failed.");
+                _nextBackgroundSmartSortAttemptUtc = now.AddMinutes(1);
+            }
+            else if (!completedTask.IsCanceled && !completedTask.Result)
+            {
+                _nextBackgroundSmartSortAttemptUtc = now.AddMinutes(1);
+            }
+
+            _backgroundSmartSortTask = null;
+            _backgroundSmartSortCancellation?.Dispose();
+            _backgroundSmartSortCancellation = null;
+        }
+
+        if (_backgroundSmartSortTask != null || now < _nextBackgroundSmartSortAttemptUtc || IsRunning ||
+            _autoRetainerHandoffActive || !SmartSortEnabled || SmartSortIsSorting || !SmartSortRefreshDue)
+        {
+            return;
+        }
+
+        _backgroundSmartSortCancellation = new CancellationTokenSource();
+        _backgroundSmartSortTask = _smartSorter.TrySortAsync(
+            "periodic_refresh",
+            cancellationToken: _backgroundSmartSortCancellation.Token);
+    }
+
+    private void CancelBackgroundSmartSortRefresh()
+    {
+        _backgroundSmartSortCancellation?.Cancel();
     }
 }
