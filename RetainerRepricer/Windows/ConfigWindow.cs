@@ -202,6 +202,7 @@ public sealed class ConfigWindow : Window, IDisposable
         DrawPerRetainerToggle();
         DrawAutoPruneSettings();
         DrawPricingGateSettings();
+        DrawAutoRetainerSettings();
         DrawAdvancedTabToggle();
         DrawOpenLogsButton();
     }
@@ -738,7 +739,10 @@ public sealed class ConfigWindow : Window, IDisposable
                     }
                     else if (ImGui.IsItemHovered())
                     {
-                        TooltipHelper.Show(_config, "Run Retainer Repricer after AutoRetainer finishes the final retainer.");
+                        TooltipHelper.Show(
+                            _config,
+                            "Run Retainer Repricer after AutoRetainer finishes its available retainers. " +
+                            "Near-due ventures can be grouped with this run using the AutoRetainer wait setting.");
                     }
 
                     if (names.Count == 0)
@@ -1349,6 +1353,36 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.Spacing();
     }
 
+    private void DrawAutoRetainerSettings()
+    {
+        ImGui.Separator();
+        ImGui.Spacing();
+        ImGui.TextUnformatted("AutoRetainer");
+
+        var nearVentureWaitMinutes = Math.Clamp(_config.AutoRetainerNearVentureWaitMinutes, 0, 30);
+        ImGui.PushItemWidth(200f);
+        if (ImGui.SliderInt(
+                "Wait for near-due AutoRetainer ventures##ar_near_venture_wait",
+                ref nearVentureWaitMinutes,
+                0,
+                30,
+                nearVentureWaitMinutes == 0 ? "No waiting" : "%d min"))
+        {
+            _config.AutoRetainerNearVentureWaitMinutes = nearVentureWaitMinutes;
+            SaveConfig();
+        }
+        ImGui.PopItemWidth();
+
+        if (ImGui.IsItemHovered())
+        {
+            TooltipHelper.Show(
+                _config,
+                "Wait for another selected retainer venture that finishes within this window, " +
+                "then run one combined repricing pass.");
+        }
+
+        ImGui.Spacing();
+    }
 
     private void DrawAdvancedTabToggle()
     {
@@ -1857,6 +1891,12 @@ public sealed class ConfigWindow : Window, IDisposable
         if (Math.Abs(_config.AutoRetainerHandoffTimeoutSeconds - DefaultConfig.AutoRetainerHandoffTimeoutSeconds) > 0.0001d)
         {
             _config.AutoRetainerHandoffTimeoutSeconds = DefaultConfig.AutoRetainerHandoffTimeoutSeconds;
+            changed = true;
+        }
+
+        if (_config.AutoRetainerNearVentureWaitMinutes != DefaultConfig.AutoRetainerNearVentureWaitMinutes)
+        {
+            _config.AutoRetainerNearVentureWaitMinutes = DefaultConfig.AutoRetainerNearVentureWaitMinutes;
             changed = true;
         }
 

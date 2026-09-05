@@ -354,6 +354,7 @@ public sealed class Configuration : IPluginConfiguration
     public double IsrHqFilterPostOpenSeconds { get; set; } = 0.15d;
     public double FrameworkTickIntervalSeconds { get; set; } = 0.075d;
     public double AutoRetainerHandoffTimeoutSeconds { get; set; } = 10.0d;
+    public int AutoRetainerNearVentureWaitMinutes { get; set; } = 5;
 
     // Smart sort scoring constants.
     public double SmartSortVelocityCap { get; set; } = 100.0d;

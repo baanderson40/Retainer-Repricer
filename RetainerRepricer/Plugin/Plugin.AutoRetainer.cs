@@ -213,6 +213,28 @@ public unsafe sealed partial class Plugin
             return;
         }
 
+        var waitSeconds = Math.Clamp(Configuration.AutoRetainerNearVentureWaitMinutes, 0, 30) * 60L;
+        if (waitSeconds > 0)
+        {
+            try
+            {
+                var closestVentureSeconds = PluginInterface.GetIpcSubscriber<ulong, long?>(
+                    "AutoRetainer.PluginState.GetClosestRetainerVentureSecondsRemaining").InvokeFunc(cid);
+                if (closestVentureSeconds is long seconds && seconds > 0 && seconds <= waitSeconds)
+                {
+                    Log.Information(
+                        "[RR][AR] Deferring automatic repricing; a selected retainer venture completes in {Seconds} seconds.",
+                        seconds);
+                    FinishAutoRetainerRetainerPostProcess();
+                    return;
+                }
+            }
+            catch (IpcError)
+            {
+                Log.Debug("[RR][AR] Could not query the closest retainer venture; starting automatic run.");
+            }
+        }
+
         _autoRetainerHandoffActive = true;
         _autoRetainerHandoffStartedUtc = DateTime.UtcNow;
         _autoRetainerSuppressionBeforeHandoff = false;
