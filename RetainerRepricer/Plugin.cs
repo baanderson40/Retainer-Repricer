@@ -16,12 +16,20 @@ using RetainerRepricer.Windows;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace RetainerRepricer;
 
 public unsafe sealed partial class Plugin : IDalamudPlugin
 {
+    internal enum RunStopReason
+    {
+        Manual,
+        Completed,
+        Error,
+    }
+
     #region Dalamud services
 
     [PluginService] internal static IDalamudPluginInterface PluginInterface { get; private set; } = null!;
@@ -70,15 +78,20 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
     public Configuration Configuration { get; }
     public readonly WindowSystem WindowSystem = new("RetainerRepricer");
 
+    internal ulong CurrentCharacterId => Player.CID;
+    internal string CurrentCharacterName => Player.Object?.Name.ToString() ?? string.Empty;
+
     internal bool IsRunning;
+    private RunStopReason _runStopReason = RunStopReason.Manual;
     private bool _dismissContextMenuNextTick;
 
     private readonly UniversalisApiClient _universalisClient;
     private readonly SellListSmartSorter _smartSorter;
     private readonly SellListInventoryPruner _sellListPruner;
     private readonly PluginLogBuffer _pluginLogBuffer;
-    private Task<bool>? _pendingSmartSortTask;
-    private bool _smartSortKickoffDone;
+    private Task<bool>? _backgroundSmartSortTask;
+    private CancellationTokenSource? _backgroundSmartSortCancellation;
+    private DateTime _nextBackgroundSmartSortAttemptUtc = DateTime.MinValue;
     private SellListInventoryPruner.SellListInventoryPruneResult? _lastPruneResult;
     private bool _autoPruneRunThisCycle;
     private bool _pendingPostSellPrune;
@@ -156,6 +169,8 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         pi.UiBuilder.OpenMainUi += OpenMainUi;
         Framework.Update += OnFrameworkUpdate;
 
+        InitializeAutoRetainerIntegration();
+
         Log.Information($"[{pi.Manifest.Name}] loaded.");
     }
 
@@ -165,6 +180,8 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.OpenConfigUi -= ToggleConfigUi;
         PluginInterface.UiBuilder.OpenMainUi -= OpenMainUi;
         Framework.Update -= OnFrameworkUpdate;
+        DisposeAutoRetainerIntegration();
+        CancelBackgroundSmartSortRefresh();
 
         WindowSystem.RemoveAllWindows();
 
@@ -206,7 +223,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
             var name = _uiReader.ReadRendererText(r, Ui.NodePaths.RetainerNameNodeId);
             if (string.IsNullOrWhiteSpace(name)) continue;
 
-            names.Add(name.Trim('\'', ' '));
+            names.Add(Configuration.NormalizeRetainerName(name));
         }
 
         return names;
@@ -214,18 +231,45 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
     internal void SyncRetainersIntoConfig(IEnumerable<string> names)
     {
+        var cid = CurrentCharacterId;
+        if (cid == 0 || Configuration.IsCharacterBlacklisted(cid))
+            return;
+
+        var retainerNames = names
+            .Select(Configuration.NormalizeRetainerName)
+            .ToList();
+
+        PersistCharacterRoster(new[]
+        {
+            new AutoRetainerAPI.Configuration.OfflineCharacterData
+            {
+                CID = cid,
+                Name = CurrentCharacterName,
+            },
+        });
         var changed = false;
         var addedRetainerLabels = new List<string>();
         var rowIndex = -1;
 
-        foreach (var n in names)
+        foreach (var n in retainerNames)
         {
             rowIndex++;
-            var behavior = Configuration.GetRetainerBehavior(n);
+            changed |= Configuration.MigrateLegacyRetainerConfiguration(cid, n);
+            changed |= Configuration.MigrateRetainerConfiguration(cid, n, retainerNames);
+            if (Configuration.IsRetainerBlacklisted(cid, n))
+                continue;
 
-            if (!Configuration.RetainersEnabled.ContainsKey(n))
+            var scopedKey = Configuration.MakeRetainerKey(cid, n);
+            var behavior = Configuration.HasScopedRetainerConfiguration(cid, n)
+                ? Configuration.GetRetainerBehavior(cid, n)
+                : Configuration.GetRetainerBehavior(n);
+
+            if (!Configuration.RetainersEnabled.ContainsKey(scopedKey))
             {
-                Configuration.SetRetainerEnabled(n, behavior.Enabled);
+                Configuration.SetRetainerEnabled(cid, n, behavior.Enabled);
+                var scopedBehavior = Configuration.GetRetainerBehavior(cid, n);
+                scopedBehavior.AllowReprice = behavior.AllowReprice;
+                scopedBehavior.AllowSell = behavior.AllowSell;
                 addedRetainerLabels.Add(GetRetainerLabelForLog(rowIndex));
                 changed = true;
             }
@@ -242,8 +286,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
     internal unsafe void TrySyncRetainersThrottled()
     {
-        var rl = GameGui.GetAddonByName("RetainerList", 1);
-        if (rl.IsNull) return;
+        if (!IsAddonVisible("RetainerList")) return;
 
         var now = DateTime.UtcNow;
         if ((now - _lastRetainerSyncUtc).TotalSeconds < RetainerSyncIntervalSeconds)
@@ -268,8 +311,11 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         _myRetainerLabels.Clear();
 
         var rowIndex = 0;
-        foreach (var name in Configuration.GetAllRetainerNames())
+        foreach (var name in Configuration.GetAllRetainerNames(CurrentCharacterId))
         {
+            if (Configuration.IsRetainerBlacklisted(CurrentCharacterId, name))
+                continue;
+
             _myRetainers.Add(name);
             _myRetainerLabels[name] = GetRetainerLabelForLog(rowIndex);
 
@@ -297,7 +343,8 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
     internal bool CanStartQuickList()
     {
-        if (IsRunning || !IsAddonVisible("RetainerSellList"))
+        if (IsRunning || Configuration.IsCharacterBlacklisted(CurrentCharacterId) ||
+            !IsAddonVisible("RetainerSellList"))
             return false;
 
         var listed = ReadCurrentRetainerSellListCount();
@@ -358,6 +405,12 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
     internal unsafe bool StartRunFromRetainerList(RunMode mode = RunMode.PriceAndSell, bool notifyChatOnFailure = false)
     {
+        if (Configuration.IsCharacterBlacklisted(CurrentCharacterId))
+        {
+            NotifyStartFailed("Current character is blacklisted.", notifyChatOnFailure);
+            return false;
+        }
+
         var list = _uiReader.GetRetainerList();
         if (list == null)
         {
@@ -365,6 +418,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
             return false;
         }
 
+        SyncRetainersIntoConfig(ReadRetainerNames());
         ResetRunState();
         _runMode = mode;
 
@@ -377,10 +431,10 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
             var name = _uiReader.ReadRendererText(r, Ui.NodePaths.RetainerNameNodeId);
             if (string.IsNullOrWhiteSpace(name)) continue;
 
-            name = name.Trim('\'', ' ');
+            name = Configuration.NormalizeRetainerName(name);
 
-            var behavior = Configuration.GetRetainerBehavior(name);
-            if (!behavior.Enabled)
+            var behavior = Configuration.GetRetainerBehavior(CurrentCharacterId, name);
+            if (!behavior.Enabled || Configuration.IsRetainerBlacklisted(CurrentCharacterId, name))
                 continue;
 
             _retainerRowOrder.Add(new RetainerRowEntry
@@ -410,6 +464,12 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
     private unsafe bool StartRun(RunMode mode = RunMode.PriceAndSell, bool notifyChatOnFailure = false)
     {
+        if (Configuration.IsCharacterBlacklisted(CurrentCharacterId))
+        {
+            NotifyStartFailed("Current character is blacklisted.", notifyChatOnFailure);
+            return false;
+        }
+
         if (IsRunning)
         {
             NotifyStartFailed("Already running.", notifyChatOnFailure);
@@ -422,15 +482,16 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
             return false;
         }
 
-        ResetRunState();
-        _runMode = mode;
-
         var list = _uiReader.GetRetainerList();
         if (list == null)
         {
             NotifyStartFailed("Retainer List is not readable right now.", notifyChatOnFailure);
             return false;
         }
+
+        SyncRetainersIntoConfig(ReadRetainerNames());
+        ResetRunState();
+        _runMode = mode;
 
         var count = list->GetItemCount();
         for (int i = 0; i < count; i++)
@@ -441,10 +502,10 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
             var name = _uiReader.ReadRendererText(r, Ui.NodePaths.RetainerNameNodeId);
             if (string.IsNullOrWhiteSpace(name)) continue;
 
-            name = name.Trim('\'', ' ');
+            name = Configuration.NormalizeRetainerName(name);
 
-            var behavior = Configuration.GetRetainerBehavior(name);
-            if (!behavior.Enabled)
+            var behavior = Configuration.GetRetainerBehavior(CurrentCharacterId, name);
+            if (!behavior.Enabled || Configuration.IsRetainerBlacklisted(CurrentCharacterId, name))
                 continue;
 
             _retainerRowOrder.Add(new RetainerRowEntry
@@ -471,9 +532,10 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         return true;
     }
 
-    internal void StopRun()
+    internal void StopRun(RunStopReason reason = RunStopReason.Manual)
     {
         IsRunning = false;
+        _runStopReason = reason;
         _runPhase = RunPhase.Idle;
         _runMode = RunMode.PriceAndSell;
 
@@ -489,8 +551,6 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         _slotIndexToOpen = 0;
 
         _sellQueue.Clear();
-        _pendingSmartSortTask = null;
-        _smartSortKickoffDone = false;
         _autoPruneRunThisCycle = false;
         _pendingPostSellPrune = false;
         _sellCapacityThisRetainer = 0;
@@ -518,6 +578,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
     private void ResetRunState()
     {
+        _runStopReason = RunStopReason.Manual;
         ResetUniversalisGateState();
 
         RebuildMyRetainersSet();
@@ -530,8 +591,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         _slotIndexToOpen = 0;
 
         _sellQueue.Clear();
-        _pendingSmartSortTask = null;
-        _smartSortKickoffDone = false;
+        CancelBackgroundSmartSortRefresh();
         _autoPruneRunThisCycle = false;
         _pendingPostSellPrune = false;
         _sellCapacityThisRetainer = 0;
@@ -965,9 +1025,8 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
     internal void NotifySmartSortSettingChanged()
     {
-        // Reset pending state so a new run can force refresh immediately.
-        _pendingSmartSortTask = null;
-        _smartSortKickoffDone = false;
+        CancelBackgroundSmartSortRefresh();
+        _nextBackgroundSmartSortAttemptUtc = DateTime.MinValue;
     }
 
     internal SellListInventoryPruner.SellListInventoryPruneResult RunInventoryPruneManual(string reason = "manual_button")

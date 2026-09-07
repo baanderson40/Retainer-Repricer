@@ -120,6 +120,7 @@ internal sealed class SellListSmartSorter : IDisposable
                 });
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             var ordered = scored
                 .OrderByDescending(s => s.Composite)
                 .ThenBy(s => s.Entry.SortOrder <= 0 ? int.MaxValue : s.Entry.SortOrder)
@@ -140,6 +141,7 @@ internal sealed class SellListSmartSorter : IDisposable
                 }
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             if (changed)
             {
                 _config.SetSmartSortLastRunUtc(DateTime.UtcNow);

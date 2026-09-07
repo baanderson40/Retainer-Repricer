@@ -44,14 +44,18 @@ The items you want the plugin to list or reprice live here.
 
 ---
 
-## Retainers
+## Characters
 
-- Shows every retainer currently visible in your Retainer List.
+- Shows all characters registered with AutoRetainer, including offline characters, and their configured retainers.
+- Enable **Process after AutoRetainer** to let Retainer Repricer run after AutoRetainer finishes the last available retainer.
+- Expand the character row to configure its retainers.
 - Each retainer has three checkboxes:
   - **Enabled** – Whether the plugin touches this retainer at all.
   - **Allow reprice** – Whether to reprice existing listings.
   - **Allow sell** – Whether to list new items from your Sell List.
-- Uncheck any retainer you don't want the plugin to touch.
+- Hold Ctrl while clicking a trash button to remove an entry. Right-click the button to blacklist it instead.
+- Blacklisted characters and retainers are never rediscovered or processed, including manual runs.
+- The **Blacklisted** section at the bottom of the tab restores entries with Ctrl-click.
 - Your choices save right away.
 
 ---
@@ -65,6 +69,7 @@ The items you want the plugin to list or reprice live here.
 - **Quick add modifier key** – Lets you hold a configured modifier while right-clicking an inventory item to add it directly to the Sell List.
 - **Universalis options** – Enable or disable price floor, Smart Sort, and fallback pricing when the board is empty.
 - **Advanced** – Flip on this toggle to see more options if you need them.
+- **AutoRetainer handoff timeout** – Maximum time allowed to return to RetainerList before AutoRetainer is released.
 
 ---
 
@@ -104,6 +109,8 @@ When the plugin is on, right-clicking items in your inventory gives you extra op
 5. When done, cleans up and goes back to idle, leaving the Retainer List open or closed based on your preference.
 6. Tells you what happened through chat messages.
 
+When AutoRetainer is processing retainers, Retainer Repricer can register for AutoRetainer's retainer post-process callback. After the final available retainer, it returns the UI to RetainerList, runs the configured character's repricing workflow, and releases AutoRetainer to continue its normal close or logout behavior.
+
 ---
 
 ## Commands
@@ -130,7 +137,7 @@ The overlay near the retainer list has the same Start, Stop, and Config buttons.
 
 ## Troubleshooting
 
-- **Start button does nothing** – Make sure the plugin is enabled in Settings and you have at least one retainer checked in the Retainers tab.
+- **Start button does nothing** – Make sure the plugin is enabled in Settings and you have at least one retainer checked in the Characters tab.
 - **Stops partway through** – Open `/repricer logs` and use **Copy Visible** to check the plugin log; messages starting with `[RR]` explain what went wrong (usually a menu didn't open in time or something blocked it).
 - **Smart Sort button is grayed out** – Universalis or Smart Sort might be turned off in Settings, or a sort is already running.
 - **Prices seem wrong** – Make sure Universalis is enabled in Settings and reachable; otherwise the plugin uses whatever price is currently listed on the marketboard.

@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Linq;
 using System.Numerics;
 
@@ -6,6 +7,7 @@ using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
 using Dalamud.Interface.Windowing;
 using FFXIVClientStructs.FFXIV.Common.Lua;
+using AutoRetainerAPI.Configuration;
 
 using RetainerRepricer.Ui;
 
@@ -90,6 +92,8 @@ public sealed class ConfigWindow : Window, IDisposable
 
     public override void Draw()
     {
+        _plugin.TrySyncRetainersThrottled();
+
         if (_perRetainerCapsLastEnabled != _config.EnablePerRetainerCaps)
         {
             if (_config.EnablePerRetainerCaps)
@@ -100,7 +104,7 @@ public sealed class ConfigWindow : Window, IDisposable
         if (!ImGui.BeginTabBar("##rr_cfg_tabs"))
             return;
 
-        // Order: Sell List, Retainers, Settings, Advanced (optional).
+        // Order: Sell List, Characters, Settings, Advanced (optional).
         var sellTabFlags = ConsumeTabFocus(ConfigTabFocus.SellList);
         var sellTabOpen = ImGui.BeginTabItem("MB Sell List", sellTabFlags);
         if (sellTabOpen)
@@ -112,7 +116,7 @@ public sealed class ConfigWindow : Window, IDisposable
         }
         _sellListTabWasOpenLastFrame = sellTabOpen;
 
-        if (BeginFocusedTab("Retainers", ConfigTabFocus.Retainers))
+        if (BeginFocusedTab("Characters", ConfigTabFocus.Retainers))
         {
             DrawRetainersTab();
             ImGui.EndTabItem();
@@ -157,12 +161,13 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.Spacing();
 
         var rows = BuildFilteredSellListRows();
-        var retainerNames = _config.GetAllRetainerNames()
+        var currentCid = _plugin.CurrentCharacterId;
+        var retainerNames = _config.GetAllRetainerNames(currentCid)
             .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
             .ToList();
         ImGui.TextDisabled($"{rows.Count} item(s)");
 
-        DrawSellListTable(rows, list.Count, retainerNames, _config.EnablePerRetainerCaps, _forceCollapseSellListRows);
+        DrawSellListTable(rows, list.Count, retainerNames, currentCid, _config.EnablePerRetainerCaps, _forceCollapseSellListRows);
         _forceCollapseSellListRows = false;
     }
 
@@ -197,6 +202,7 @@ public sealed class ConfigWindow : Window, IDisposable
         DrawPerRetainerToggle();
         DrawAutoPruneSettings();
         DrawPricingGateSettings();
+        DrawAutoRetainerSettings();
         DrawAdvancedTabToggle();
         DrawOpenLogsButton();
     }
@@ -350,6 +356,7 @@ public sealed class ConfigWindow : Window, IDisposable
         System.Collections.Generic.IReadOnlyList<Configuration.SellListEntry> rows,
         int totalItemCount,
         System.Collections.Generic.IReadOnlyList<string> retainerNames,
+        ulong currentCid,
         bool perRetainerEnabled,
         bool forceCollapseRows)
     {
@@ -455,7 +462,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
                 if (open)
                 {
-                    DrawRetainerCapEditor(e, retainerNames);
+                    DrawRetainerCapEditor(e, retainerNames, currentCid);
                     ImGui.TreePop();
                 }
             }
@@ -467,7 +474,7 @@ public sealed class ConfigWindow : Window, IDisposable
             var minColumnWidth = ImGui.GetColumnWidth();
             var minInputWidth = Math.Clamp(minColumnWidth - 8f, 30f, 70f);
             var hasRetainers = retainerNames.Count > 0;
-            var anyStacksCustom = perRetainerEnabled && hasRetainers && AnyRetainerUsesCustomStack(e, retainerNames);
+            var anyStacksCustom = perRetainerEnabled && hasRetainers && AnyRetainerUsesCustomStack(e, retainerNames, currentCid);
 
             if (anyStacksCustom)
             {
@@ -554,7 +561,7 @@ public sealed class ConfigWindow : Window, IDisposable
         }
     }
 
-    private void DrawRetainerCapEditor(Configuration.SellListEntry entry, System.Collections.Generic.IReadOnlyList<string> retainerNames)
+    private void DrawRetainerCapEditor(Configuration.SellListEntry entry, System.Collections.Generic.IReadOnlyList<string> retainerNames, ulong currentCid)
     {
         ImGui.PushID($"retainer_caps_{entry.ItemId}_{(entry.IsHq ? 1 : 0)}");
         ImGui.Indent();
@@ -592,7 +599,7 @@ public sealed class ConfigWindow : Window, IDisposable
                 ImGui.TextUnformatted(label);
 
                 ImGui.TableSetColumnIndex(1);
-                var capValue = entry.GetRetainerCapOrDefault(name);
+                var capValue = entry.GetRetainerCapOrDefault(currentCid, name);
                 var editorValue = capValue;
                 ImGui.PushID(i);
                 BeginCenteredElement(60f);
@@ -604,7 +611,7 @@ public sealed class ConfigWindow : Window, IDisposable
                         var clamped = Math.Clamp(editorValue, 0, Configuration.RetainerCapMax);
                         if (clamped != capValue)
                         {
-                            entry.SetRetainerCap(name, clamped);
+                            entry.SetRetainerCap(currentCid, name, clamped);
                             Plugin.Log.Information("[RR][Config] Retainer cap updated itemId={ItemId} HQ={IsHq} retainer={Retainer} cap={Cap}",
                                 entry.ItemId, entry.IsHq, GetRetainerLabelForLog(i), clamped);
                             SaveConfig();
@@ -615,7 +622,7 @@ public sealed class ConfigWindow : Window, IDisposable
                     TooltipHelper.Show(_config, "0 - don't list\n1 - default listing\nN - post N listings");
 
                 ImGui.TableSetColumnIndex(2);
-                var stackValue = entry.GetRetainerStackSize(name);
+                var stackValue = entry.GetRetainerStackSize(currentCid, name);
                 var stackEditorValue = stackValue;
                 var stackDisabled = capValue <= 0;
                 if (stackDisabled)
@@ -630,7 +637,7 @@ public sealed class ConfigWindow : Window, IDisposable
                         var clampedStack = Math.Clamp(stackEditorValue, 0, stackCap);
                         if (clampedStack != stackValue)
                         {
-                            entry.SetRetainerStackSize(name, clampedStack, stackCap);
+                            entry.SetRetainerStackSize(currentCid, name, clampedStack, stackCap);
                             Plugin.Log.Information("[RR][Config] Retainer stack size updated itemId={ItemId} HQ={IsHq} retainer={Retainer} stack={Stack}",
                                 entry.ItemId, entry.IsHq, GetRetainerLabelForLog(i), clampedStack);
                             SaveConfig();
@@ -661,11 +668,11 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.PopID();
     }
 
-    private static bool AnyRetainerUsesCustomStack(Configuration.SellListEntry entry, System.Collections.Generic.IReadOnlyList<string> retainerNames)
+    private static bool AnyRetainerUsesCustomStack(Configuration.SellListEntry entry, System.Collections.Generic.IReadOnlyList<string> retainerNames, ulong currentCid)
     {
         foreach (var name in retainerNames)
         {
-            if (entry.GetRetainerStackSize(name) > 0)
+            if (entry.GetRetainerStackSize(currentCid, name) > 0)
                 return true;
         }
 
@@ -678,35 +685,94 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawRetainerEnableList()
     {
-        var names = _config.GetAllRetainerNames()
-            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        if (names.Count == 0)
+        var characters = _plugin.GetAutoRetainerCharacters();
+        if (characters.Count == 0)
         {
-            ImGui.TextUnformatted("Open the summoning bell retainer list, then reopen this config.");
-            return;
+            ImGui.TextDisabled("No AutoRetainer characters are available.");
+        }
+        else
+        {
+            foreach (var data in characters)
+            {
+                if (data.CID == 0 || _config.IsCharacterBlacklisted(data.CID))
+                    continue;
+
+                var character = _config.GetCharacterSettings(data.CID, data.Name, data.World);
+                var names = data.RetainerData.Select(x => x.Name)
+                    .Concat(_config.GetAllRetainerNames(data.CID))
+                    .Where(x => !string.IsNullOrWhiteSpace(x) && !_config.IsRetainerBlacklisted(data.CID, x))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                ImGui.PushID(data.CID.ToString(CultureInfo.InvariantCulture));
+                var label = string.IsNullOrWhiteSpace(character.Name)
+                    ? $"Character {data.CID:X16}"
+                    : $"{character.Name}@{character.World}";
+                var open = ImGui.TreeNodeEx(label, ImGuiTreeNodeFlags.Framed | ImGuiTreeNodeFlags.SpanFullWidth);
+                ImGui.SameLine();
+                DrawRemoveButton("character", data.CID, string.Empty, () =>
+                {
+                    _config.RemoveCharacterConfiguration(data.CID);
+                    SaveConfig();
+                }, () =>
+                {
+                    _config.SetCharacterBlacklisted(data.CID, true);
+                    SaveConfig();
+                }, _plugin.IsRunning);
+
+                if (open)
+                {
+                    var processAfterAutoRetainer = character.ProcessAfterAutoRetainer;
+                    if (!_plugin.AutoRetainerAvailable)
+                        ImGui.BeginDisabled();
+                    if (ImGui.Checkbox("Process after AutoRetainer", ref processAfterAutoRetainer))
+                    {
+                        character.ProcessAfterAutoRetainer = processAfterAutoRetainer;
+                        SaveConfig();
+                    }
+                    if (!_plugin.AutoRetainerAvailable)
+                    {
+                        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                            TooltipHelper.Show(_config, "AutoRetainer is required for automatic post-processing.");
+                        ImGui.EndDisabled();
+                    }
+                    else if (ImGui.IsItemHovered())
+                    {
+                        TooltipHelper.Show(
+                            _config,
+                            "Run Retainer Repricer after AutoRetainer finishes its available retainers. " +
+                            "Near-due ventures can be grouped with this run using the AutoRetainer wait setting.");
+                    }
+
+                    if (names.Count == 0)
+                        ImGui.TextDisabled("No retainers are known for this character.");
+                    else
+                    {
+                        DrawRetainerBulkButtons(names, data.CID);
+                        ImGui.Spacing();
+                        DrawRetainerTable(names, data.CID);
+                    }
+
+                    ImGui.TreePop();
+                }
+                ImGui.PopID();
+            }
         }
 
-        ImGui.Spacing();
-
-        DrawRetainerBulkButtons(names);
-
-        ImGui.Spacing();
-
-        DrawRetainerTable(names);
+        DrawBlacklistSection();
     }
 
-    private void DrawRetainerBulkButtons(System.Collections.Generic.IReadOnlyList<string> names)
+    private void DrawRetainerBulkButtons(System.Collections.Generic.IReadOnlyList<string> names, ulong cid)
     {
         if (ImGui.Button("Enable all"))
         {
             var changed = false;
             foreach (var n in names)
             {
-                if (!_config.IsRetainerEnabled(n))
+                if (!_config.IsRetainerEnabled(cid, n))
                 {
-                    _config.SetRetainerEnabled(n, true);
+                    _config.SetRetainerEnabled(cid, n, true);
                     changed = true;
                 }
             }
@@ -725,9 +791,9 @@ public sealed class ConfigWindow : Window, IDisposable
             var changed = false;
             foreach (var n in names)
             {
-                if (_config.IsRetainerEnabled(n))
+                if (_config.IsRetainerEnabled(cid, n))
                 {
-                    _config.SetRetainerEnabled(n, false);
+                    _config.SetRetainerEnabled(cid, n, false);
                     changed = true;
                 }
             }
@@ -740,11 +806,11 @@ public sealed class ConfigWindow : Window, IDisposable
         }
     }
 
-    private void DrawRetainerTable(System.Collections.Generic.IReadOnlyList<string> names)
+    private void DrawRetainerTable(System.Collections.Generic.IReadOnlyList<string> names, ulong cid)
     {
         if (!ImGui.BeginTable(
                 "##rr_retainers_table",
-                4,
+                5,
                 ImGuiTableFlags.RowBg |
                 ImGuiTableFlags.BordersInnerH |
                 ImGuiTableFlags.BordersOuter |
@@ -755,6 +821,7 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.TableSetupColumn("Retainer", ImGuiTableColumnFlags.WidthStretch);
         ImGui.TableSetupColumn("Reprice", ImGuiTableColumnFlags.WidthFixed, 45f);
         ImGui.TableSetupColumn("Sell", ImGuiTableColumnFlags.WidthFixed, 45f);
+        ImGui.TableSetupColumn("##remove", ImGuiTableColumnFlags.WidthFixed, 30f);
 
         ImGui.TableNextRow(ImGuiTableRowFlags.Headers);
         ImGui.TableSetColumnIndex(0);
@@ -765,11 +832,13 @@ public sealed class ConfigWindow : Window, IDisposable
         DrawHeaderLabel("Reprice", center: true);
         ImGui.TableSetColumnIndex(3);
         DrawHeaderLabel("Sell", center: true);
+        ImGui.TableSetColumnIndex(4);
+        DrawHeaderLabel(string.Empty, center: true);
 
         for (var row = 0; row < names.Count; row++)
         {
             var name = names[row];
-            var behavior = _config.GetRetainerBehavior(name);
+            var behavior = _config.GetRetainerBehavior(cid, name);
             ImGui.TableNextRow();
             ImGui.PushID(name);
 
@@ -777,7 +846,7 @@ public sealed class ConfigWindow : Window, IDisposable
             var enabled = behavior.Enabled;
             if (DrawCenteredCheckbox("##retainer_enable", ref enabled))
             {
-                _config.SetRetainerEnabled(name, enabled);
+                _config.SetRetainerEnabled(cid, name, enabled);
                 Plugin.Log.Information("[RR][Config] Retainer {Retainer} enabled={Enabled}", GetRetainerLabelForLog(row), enabled);
                 SaveConfig();
             }
@@ -801,7 +870,7 @@ public sealed class ConfigWindow : Window, IDisposable
             var allowReprice = behavior.AllowReprice;
             if (DrawCenteredCheckbox("##retainer_reprice", ref allowReprice))
             {
-                _config.SetRetainerRepriceEnabled(name, allowReprice);
+                _config.SetRetainerRepriceEnabled(cid, name, allowReprice);
                 Plugin.Log.Information("[RR][Config] Retainer {Retainer} reprice={Reprice}", GetRetainerLabelForLog(row), allowReprice);
                 SaveConfig();
             }
@@ -812,7 +881,7 @@ public sealed class ConfigWindow : Window, IDisposable
             var allowSell = behavior.AllowSell;
             if (DrawCenteredCheckbox("##retainer_sell", ref allowSell))
             {
-                _config.SetRetainerSellEnabled(name, allowSell);
+                _config.SetRetainerSellEnabled(cid, name, allowSell);
                 Plugin.Log.Information("[RR][Config] Retainer {Retainer} sell={Sell}", GetRetainerLabelForLog(row), allowSell);
                 SaveConfig();
             }
@@ -822,10 +891,110 @@ public sealed class ConfigWindow : Window, IDisposable
             if (disableScoped)
                 ImGui.EndDisabled();
 
+            ImGui.TableSetColumnIndex(4);
+            DrawRemoveButton("retainer", cid, name, () =>
+            {
+                _config.RemoveRetainerConfiguration(cid, name);
+                SaveConfig();
+            }, () =>
+            {
+                _config.SetRetainerBlacklisted(cid, name, true);
+                SaveConfig();
+            }, _plugin.IsRunning);
+
             ImGui.PopID();
         }
 
         ImGui.EndTable();
+    }
+
+    private void DrawRemoveButton(
+        string kind,
+        ulong cid,
+        string name,
+        Action remove,
+        Action blacklist,
+        bool isRunActive)
+    {
+        var trashIcon = FontAwesomeIcon.Trash.ToIconString();
+        var ctrlHeld = ImGui.GetIO().KeyCtrl;
+        ImGui.BeginDisabled(!ctrlHeld || isRunActive);
+        ImGui.PushFont(UiBuilder.IconFont);
+        if (ImGui.Button($"{trashIcon}##{kind}_{cid}_{name}"))
+            remove();
+        var rightClicked = ImGui.IsItemClicked(ImGuiMouseButton.Right);
+        ImGui.PopFont();
+        ImGui.EndDisabled();
+
+        if (rightClicked)
+            blacklist();
+
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            TooltipHelper.Show(_config, isRunActive
+                ? "Stop the active run before removing or blacklisting."
+                : ctrlHeld
+                    ? "Left-click to remove. Right-click to blacklist."
+                    : "Hold Ctrl, then left-click to remove or right-click to blacklist.");
+    }
+
+    private void DrawBlacklistSection()
+    {
+        ImGui.Spacing();
+        if (!ImGui.CollapsingHeader("Blacklisted"))
+            return;
+
+        var hasEntries = false;
+        if (_config.BlacklistedCharacters is { Count: > 0 })
+        {
+            ImGui.TextUnformatted("Characters");
+            foreach (var cid in _config.BlacklistedCharacters.OrderBy(x => x))
+            {
+                hasEntries = true;
+                var settings = _config.GetCharacterSettings(cid);
+                ImGui.BulletText(string.IsNullOrWhiteSpace(settings.Name) ? cid.ToString("X16") : settings.Name);
+                ImGui.SameLine();
+                DrawUnblacklistButton($"character_{cid}", () =>
+                {
+                    _config.SetCharacterBlacklisted(cid, false);
+                    SaveConfig();
+                });
+            }
+        }
+
+        if (_config.BlacklistedRetainers is { Count: > 0 })
+        {
+            ImGui.TextUnformatted("Retainers");
+            foreach (var key in _config.BlacklistedRetainers.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+            {
+                hasEntries = true;
+                var split = key.IndexOf(':');
+                if (split <= 0) continue;
+                if (!ulong.TryParse(key[..split], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var cid)) continue;
+                var settings = _config.GetCharacterSettings(cid);
+                var label = $"{settings.Name} / {key[(split + 1)..]}";
+                ImGui.BulletText(label);
+                ImGui.SameLine();
+                DrawUnblacklistButton($"retainer_{key}", () =>
+                {
+                    _config.SetRetainerBlacklisted(cid, key[(split + 1)..], false);
+                    SaveConfig();
+                });
+            }
+        }
+
+        if (!hasEntries)
+            ImGui.TextDisabled("No blacklisted characters or retainers.");
+    }
+
+    private void DrawUnblacklistButton(string id, Action restore)
+    {
+        var ctrlHeld = ImGui.GetIO().KeyCtrl;
+        ImGui.BeginDisabled(!ctrlHeld);
+        if (ImGui.SmallButton($"Unblacklist##{id}"))
+            restore();
+        ImGui.EndDisabled();
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            TooltipHelper.Show(_config, ctrlHeld ? "Restore this entry." : "Hold Ctrl to unblacklist this entry.");
     }
 
     private static bool DrawCenteredCheckbox(string id, ref bool value)
@@ -1184,6 +1353,36 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.Spacing();
     }
 
+    private void DrawAutoRetainerSettings()
+    {
+        ImGui.Separator();
+        ImGui.Spacing();
+        ImGui.TextUnformatted("AutoRetainer");
+
+        var nearVentureWaitMinutes = Math.Clamp(_config.AutoRetainerNearVentureWaitMinutes, 0, 30);
+        ImGui.PushItemWidth(200f);
+        if (ImGui.SliderInt(
+                "Wait for near-due AutoRetainer ventures##ar_near_venture_wait",
+                ref nearVentureWaitMinutes,
+                0,
+                30,
+                nearVentureWaitMinutes == 0 ? "No waiting" : "%d min"))
+        {
+            _config.AutoRetainerNearVentureWaitMinutes = nearVentureWaitMinutes;
+            SaveConfig();
+        }
+        ImGui.PopItemWidth();
+
+        if (ImGui.IsItemHovered())
+        {
+            TooltipHelper.Show(
+                _config,
+                "Wait for another selected retainer venture that finishes within this window, " +
+                "then run one combined repricing pass.");
+        }
+
+        ImGui.Spacing();
+    }
 
     private void DrawAdvancedTabToggle()
     {
@@ -1362,7 +1561,10 @@ public sealed class ConfigWindow : Window, IDisposable
 
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
         {
-            TooltipHelper.Show(_config, "Smart sort auto-refreshes if the last refresh was more than this many minutes ago when a run starts.");
+            TooltipHelper.Show(
+                _config,
+                "Refreshes Smart Sort data in the background while Retainer Repricer is idle. " +
+                "Runs use the most recently refreshed order and do not wait for a new refresh.");
         }
 
         ImGui.PopItemWidth();
@@ -1412,6 +1614,14 @@ public sealed class ConfigWindow : Window, IDisposable
             0.5f,
             10f,
             "How often enabled retainer names are refreshed.");
+
+        DrawSecondsSlider(
+            "AutoRetainer handoff timeout##adv_ar_handoff",
+            () => _config.AutoRetainerHandoffTimeoutSeconds,
+            v => _config.AutoRetainerHandoffTimeoutSeconds = v,
+            3f,
+            30f,
+            "Overall time allowed to return to RetainerList before releasing AutoRetainer.");
     }
 
     private void DrawAdvancedMarketTimingSection()
@@ -1678,6 +1888,18 @@ public sealed class ConfigWindow : Window, IDisposable
         if (Math.Abs(_config.FrameworkTickIntervalSeconds - DefaultConfig.FrameworkTickIntervalSeconds) > 0.0001d)
         {
             _config.FrameworkTickIntervalSeconds = DefaultConfig.FrameworkTickIntervalSeconds;
+            changed = true;
+        }
+
+        if (Math.Abs(_config.AutoRetainerHandoffTimeoutSeconds - DefaultConfig.AutoRetainerHandoffTimeoutSeconds) > 0.0001d)
+        {
+            _config.AutoRetainerHandoffTimeoutSeconds = DefaultConfig.AutoRetainerHandoffTimeoutSeconds;
+            changed = true;
+        }
+
+        if (_config.AutoRetainerNearVentureWaitMinutes != DefaultConfig.AutoRetainerNearVentureWaitMinutes)
+        {
+            _config.AutoRetainerNearVentureWaitMinutes = DefaultConfig.AutoRetainerNearVentureWaitMinutes;
             changed = true;
         }
 
