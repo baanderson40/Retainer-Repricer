@@ -34,7 +34,7 @@ jobs:
 
       - name: Package plugin
         shell: pwsh
-        run: Compress-Archive -Path RetainerRepricer/bin/x64/Release/* -DestinationPath latest.zip
+        run: Compress-Archive -Path RetainerRepricer/bin/Release/win-x64/* -DestinationPath latest.zip
 
       - name: Publish release
         uses: softprops/action-gh-release@v3
