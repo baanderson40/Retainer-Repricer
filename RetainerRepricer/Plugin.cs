@@ -1011,6 +1011,8 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
     internal bool SmartSortIsSorting => _smartSorter.IsSorting;
     internal DateTime SmartSortLastRunUtc => _smartSorter.LastSortUtc;
     internal bool SmartSortRefreshDue => _smartSorter.IsRefreshDue();
+    internal TimeSpan SmartSortRefreshInterval => TimeSpan.FromMinutes(Math.Max(1, Configuration.SmartSortRefreshMinutes));
+    internal UniversalisDiagnostics UniversalisDiagnostics => _universalisClient.GetDiagnostics();
     internal SellListInventoryPruner.SellListInventoryPruneResult? LastPruneResult => _lastPruneResult;
 
     internal Task<bool> RequestSmartSortAsync(string reason, bool force = false)

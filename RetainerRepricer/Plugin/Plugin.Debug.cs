@@ -50,8 +50,13 @@ public unsafe sealed partial class Plugin
         decimal avg;
         try
         {
-            var result = _universalisClient.GetAveragePriceAsync(baseUrl, region, itemId, _currentIsHq);
-            avg = result != null ? (result.Result ?? 0) : 0;
+            var result = _universalisClient.GetAveragePriceAsync(
+                baseUrl,
+                region,
+                itemId,
+                _currentIsHq,
+                source: "test_gate");
+            avg = result.GetAwaiter().GetResult() ?? 0;
         }
         catch (Exception ex)
         {

@@ -99,7 +99,8 @@ internal sealed class SellListSmartSorter : IDisposable
                         entry.ItemId,
                         entry.IsHq,
                         cacheDuration: TimeSpan.FromMinutes(5),
-                        cancellationToken)
+                        cancellationToken: cancellationToken,
+                        source: $"smart_sort:{reason}")
                     .ConfigureAwait(false);
 
                 var velocityScore = ComputeVelocityScore(stats?.DailySaleVelocity ?? 0d);

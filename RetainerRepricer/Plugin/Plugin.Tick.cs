@@ -826,9 +826,11 @@ public unsafe sealed partial class Plugin
                             return;
                         }
 
-                        if (gateStatus == UniversalisGateStatus.Failed)
+                        if (gateStatus is UniversalisGateStatus.Failed or UniversalisGateStatus.Unavailable)
                         {
-                            Log.Information("[RR][Gate] Skipping repricing: Universalis gate failed for this item.");
+                            if (gateStatus == UniversalisGateStatus.Failed)
+                                Log.Information("[RR][Gate] Skipping repricing: Universalis gate failed for this item.");
+
                             _runPhase = RunPhase.CleanupAfterItem;
                             _lastActionUtc = now;
                             return;
@@ -968,7 +970,12 @@ public unsafe sealed partial class Plugin
                     {
                         _universalisGateKey = key;
                         _universalisGateAverage = null;
-                        _universalisGateTask = _universalisClient.GetAveragePriceAsync(baseUrl, region, itemId, _currentIsHq);
+                        _universalisGateTask = _universalisClient.GetAveragePriceAsync(
+                            baseUrl,
+                            region,
+                            itemId,
+                            _currentIsHq,
+                            source: "no_items_fallback");
                         Log.Debug($"[RR][NoItems] Requesting Universalis average for item {itemId} (HQ={_currentIsHq}, region='{region}').");
                     }
 
@@ -989,7 +996,7 @@ public unsafe sealed partial class Plugin
 
                     try
                     {
-                        var result = task.Result;
+                        var result = task.GetAwaiter().GetResult();
                         if (result.HasValue)
                         {
                             _universalisGateAverage = result.Value;
@@ -1007,9 +1014,30 @@ public unsafe sealed partial class Plugin
                         }
                         else
                         {
-                            Log.Information($"[RR][NoItems] Universalis returned no data for item {itemId}; skipping.");
+                            if (_universalisClient.TryGetCooldownRemaining(out var remaining))
+                            {
+                                Log.Debug($"[RR][NoItems] Universalis unavailable; {remaining.TotalSeconds:0}s cooldown remaining.");
+                            }
+                            else
+                            {
+                                Log.Information($"[RR][NoItems] Universalis returned no data for item {itemId}; skipping.");
+                            }
+
                             _runPhase = RunPhase.CleanupAfterItem;
                         }
+                    }
+                    catch (UniversalisRequestException ex)
+                    {
+                        if (_universalisClient.TryGetCooldownRemaining(out var remaining))
+                        {
+                            Log.Debug($"[RR][NoItems] Universalis unavailable ({ex.Kind}); {remaining.TotalSeconds:0}s cooldown remaining.");
+                        }
+                        else
+                        {
+                            Log.Warning(ex, $"[RR][NoItems] Universalis request failed for item {itemId}; skipping.");
+                        }
+
+                        _runPhase = RunPhase.CleanupAfterItem;
                     }
                     catch (Exception ex)
                     {

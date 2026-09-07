@@ -39,14 +39,27 @@ public unsafe sealed partial class Plugin
         var now = DateTime.UtcNow;
         if (_backgroundSmartSortTask is { IsCompleted: true } completedTask)
         {
+            var cancelledByPlugin = _backgroundSmartSortCancellation?.IsCancellationRequested == true;
             if (completedTask.IsFaulted)
             {
-                Log.Warning(completedTask.Exception?.GetBaseException(), "[RR][SmartSort] Background refresh failed.");
-                _nextBackgroundSmartSortAttemptUtc = now.AddMinutes(1);
+                Log.Warning(
+                    completedTask.Exception?.GetBaseException(),
+                    "[RR][SmartSort] Background refresh failed; retrying after the configured refresh interval.");
+                _nextBackgroundSmartSortAttemptUtc = now + SmartSortRefreshInterval;
             }
-            else if (!completedTask.IsCanceled && !completedTask.Result)
+            else if (completedTask.IsCanceled)
             {
-                _nextBackgroundSmartSortAttemptUtc = now.AddMinutes(1);
+                if (!cancelledByPlugin)
+                {
+                    Log.Warning(
+                        "[RR][SmartSort] Background refresh was cancelled unexpectedly; " +
+                        "retrying after the configured refresh interval.");
+                    _nextBackgroundSmartSortAttemptUtc = now + SmartSortRefreshInterval;
+                }
+            }
+            else if (!completedTask.Result)
+            {
+                _nextBackgroundSmartSortAttemptUtc = now + SmartSortRefreshInterval;
             }
 
             _backgroundSmartSortTask = null;
@@ -59,6 +72,9 @@ public unsafe sealed partial class Plugin
         {
             return;
         }
+
+        if (_universalisClient.TryGetCooldownRemaining(out _))
+            return;
 
         _backgroundSmartSortCancellation = new CancellationTokenSource();
         _backgroundSmartSortTask = _smartSorter.TrySortAsync(

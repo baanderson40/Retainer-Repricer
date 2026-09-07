@@ -40,6 +40,20 @@ public sealed class DebugWindow : Window, IDisposable
         ImGui.TextUnformatted("Diagnostics are written to the Retainer Repricer log buffer and Dalamud log.");
         ImGui.Separator();
 
+        var universalis = _plugin.UniversalisDiagnostics;
+        var cooldown = universalis.CooldownRemaining > TimeSpan.Zero
+            ? $"Cooldown: {universalis.CooldownRemaining.TotalSeconds:0}s remaining"
+            : "Cooldown: inactive";
+        ImGui.TextUnformatted("Universalis session");
+        ImGui.TextDisabled(cooldown);
+        ImGui.TextDisabled(
+            $"Requests: {universalis.OutboundRequests}  Cache hits: {universalis.CacheHits}  " +
+            $"Suppressed: {universalis.SuppressedRequests}");
+        ImGui.TextDisabled(
+            $"Timeouts: {universalis.Timeouts}  Connections: {universalis.ConnectionFailures}  " +
+            $"HTTP: {universalis.HttpFailures}  Rate limits: {universalis.RateLimitFailures}");
+        ImGui.Spacing();
+
         ImGui.TextUnformatted("Market and retainer dumps");
         if (ImGui.Button("Dump Market Rows / HQ State"))
             _plugin.DumpMarketRowsForDebug();

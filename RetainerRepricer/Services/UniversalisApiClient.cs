@@ -14,6 +14,7 @@ internal sealed class UniversalisApiClient : IDisposable
 {
     // Default aggregated endpoint used for deterministic Universalis lookups.
     internal const string AggregatedBaseUrl = "https://universalis.app/api/v2/aggregated";
+    private static readonly TimeSpan CooldownDuration = TimeSpan.FromSeconds(30);
 
     private static readonly JsonSerializerOptions _jsonOptions = new()
     {
@@ -26,6 +27,16 @@ internal sealed class UniversalisApiClient : IDisposable
     private readonly bool _ownsClient;
     private bool _disposed;
     private readonly ConcurrentDictionary<StatsCacheKey, StatsCacheEntry> _statsCache = new();
+    private readonly object _diagnosticsLock = new();
+    private DateTime _cooldownUntilUtc = DateTime.MinValue;
+    private long _cacheHits;
+    private long _outboundRequests;
+    private long _timeouts;
+    private long _connectionFailures;
+    private long _httpFailures;
+    private long _rateLimitFailures;
+    private long _suppressedRequests;
+    private int _suppressedRequestsDuringCooldown;
 
     public UniversalisApiClient(PluginLogger log, HttpClient? httpClient = null)
     {
@@ -42,9 +53,18 @@ internal sealed class UniversalisApiClient : IDisposable
         string worldDcRegion,
         uint itemId,
         bool isHighQuality,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string source = "gate")
     {
-        var stats = await GetListingStatsAsync(baseUrl, worldDcRegion, itemId, isHighQuality, cacheDuration: TimeSpan.FromMinutes(1), cancellationToken).ConfigureAwait(false);
+        var stats = await GetListingStatsAsync(
+                baseUrl,
+                worldDcRegion,
+                itemId,
+                isHighQuality,
+                cacheDuration: TimeSpan.FromMinutes(1),
+                cancellationToken: cancellationToken,
+                source: source)
+            .ConfigureAwait(false);
         return stats?.AveragePrice;
     }
 
@@ -52,12 +72,18 @@ internal sealed class UniversalisApiClient : IDisposable
         string baseUrl,
         string worldDcRegion,
         uint itemId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string source = "debug")
     {
         if (string.IsNullOrWhiteSpace(baseUrl) || string.IsNullOrWhiteSpace(worldDcRegion))
             return null;
 
+        if (TrySuppressUncachedRequest(out _))
+            return null;
+
         var requestUri = BuildRequestUri(baseUrl, worldDcRegion, itemId);
+        var startedUtc = DateTime.UtcNow;
+        RecordOutboundRequest();
 
         try
         {
@@ -66,13 +92,24 @@ internal sealed class UniversalisApiClient : IDisposable
 
             if (!response.IsSuccessStatusCode)
             {
-                _log.Warning($"[Universalis] Raw request failed ({response.StatusCode}) for '{requestUri}'.");
-                return null;
+                ThrowForUnsuccessfulResponse(response, itemId, false, worldDcRegion, source, startedUtc);
             }
 
             return await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException ex)
+        {
+            throw CreateTimeoutException(itemId, false, worldDcRegion, source, startedUtc, ex);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw CreateConnectionException(itemId, false, worldDcRegion, source, startedUtc, ex);
+        }
+        catch (UniversalisRequestException)
         {
             throw;
         }
@@ -89,7 +126,8 @@ internal sealed class UniversalisApiClient : IDisposable
         uint itemId,
         bool isHighQuality,
         TimeSpan? cacheDuration = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string source = "unknown")
     {
         if (string.IsNullOrWhiteSpace(baseUrl) || string.IsNullOrWhiteSpace(worldDcRegion))
             return null;
@@ -98,9 +136,17 @@ internal sealed class UniversalisApiClient : IDisposable
         var key = new StatsCacheKey(baseUrl.TrimEnd('/'), worldDcRegion, itemId, isHighQuality);
 
         if (_statsCache.TryGetValue(key, out var cached) && cached.ExpiresUtc > DateTime.UtcNow)
+        {
+            RecordCacheHit();
             return cached.Stats;
+        }
+
+        if (TrySuppressUncachedRequest(out _))
+            return null;
 
         var requestUri = BuildRequestUri(baseUrl, worldDcRegion, itemId);
+        var startedUtc = DateTime.UtcNow;
+        RecordOutboundRequest();
 
         try
         {
@@ -109,8 +155,7 @@ internal sealed class UniversalisApiClient : IDisposable
 
             if (!response.IsSuccessStatusCode)
             {
-                _log.Warning($"[Universalis] Request failed ({response.StatusCode}) for '{requestUri}'.");
-                return null;
+                ThrowForUnsuccessfulResponse(response, itemId, isHighQuality, worldDcRegion, source, startedUtc);
             }
 
             await using var contentStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
@@ -156,7 +201,19 @@ internal sealed class UniversalisApiClient : IDisposable
 
             return stats;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException ex)
+        {
+            throw CreateTimeoutException(itemId, isHighQuality, worldDcRegion, source, startedUtc, ex);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw CreateConnectionException(itemId, isHighQuality, worldDcRegion, source, startedUtc, ex);
+        }
+        catch (UniversalisRequestException)
         {
             throw;
         }
@@ -164,6 +221,224 @@ internal sealed class UniversalisApiClient : IDisposable
         {
             _log.Error(ex, $"[Universalis] Failed to fetch listing stats for item {itemId}.");
             return null;
+        }
+    }
+
+    internal bool TryGetCooldownRemaining(out TimeSpan remaining)
+    {
+        lock (_diagnosticsLock)
+        {
+            remaining = _cooldownUntilUtc - DateTime.UtcNow;
+            if (remaining > TimeSpan.Zero)
+                return true;
+
+            remaining = TimeSpan.Zero;
+            return false;
+        }
+    }
+
+    internal UniversalisDiagnostics GetDiagnostics()
+    {
+        lock (_diagnosticsLock)
+        {
+            var remaining = _cooldownUntilUtc - DateTime.UtcNow;
+            return new UniversalisDiagnostics(
+                _cacheHits,
+                _outboundRequests,
+                _timeouts,
+                _connectionFailures,
+                _httpFailures,
+                _rateLimitFailures,
+                _suppressedRequests,
+                remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero);
+        }
+    }
+
+    private bool TrySuppressUncachedRequest(out TimeSpan remaining)
+    {
+        var cooldownEndedSuppressedRequests = 0;
+
+        lock (_diagnosticsLock)
+        {
+            remaining = _cooldownUntilUtc - DateTime.UtcNow;
+            if (remaining > TimeSpan.Zero)
+            {
+                _suppressedRequests++;
+                _suppressedRequestsDuringCooldown++;
+                return true;
+            }
+
+            if (_cooldownUntilUtc != DateTime.MinValue)
+            {
+                cooldownEndedSuppressedRequests = _suppressedRequestsDuringCooldown;
+                _cooldownUntilUtc = DateTime.MinValue;
+                _suppressedRequestsDuringCooldown = 0;
+            }
+        }
+
+        if (cooldownEndedSuppressedRequests > 0)
+        {
+            _log.Information(
+                $"[Universalis] Cooldown ended; suppressed {cooldownEndedSuppressedRequests} uncached request(s).");
+        }
+
+        remaining = TimeSpan.Zero;
+        return false;
+    }
+
+    private void RecordCacheHit()
+    {
+        lock (_diagnosticsLock)
+        {
+            _cacheHits++;
+        }
+    }
+
+    private void RecordOutboundRequest()
+    {
+        lock (_diagnosticsLock)
+        {
+            _outboundRequests++;
+        }
+    }
+
+    private UniversalisRequestException CreateTimeoutException(
+        uint itemId,
+        bool isHighQuality,
+        string region,
+        string source,
+        DateTime startedUtc,
+        Exception innerException)
+    {
+        RegisterFailure(
+            UniversalisRequestFailureKind.Timeout,
+            itemId,
+            isHighQuality,
+            region,
+            source,
+            DateTime.UtcNow - startedUtc,
+            null,
+            startCooldown: true);
+        return new UniversalisRequestException(
+            UniversalisRequestFailureKind.Timeout,
+            "The Universalis request timed out.",
+            innerException);
+    }
+
+    private UniversalisRequestException CreateConnectionException(
+        uint itemId,
+        bool isHighQuality,
+        string region,
+        string source,
+        DateTime startedUtc,
+        HttpRequestException innerException)
+    {
+        RegisterFailure(
+            UniversalisRequestFailureKind.Connection,
+            itemId,
+            isHighQuality,
+            region,
+            source,
+            DateTime.UtcNow - startedUtc,
+            null,
+            startCooldown: true);
+        return new UniversalisRequestException(
+            UniversalisRequestFailureKind.Connection,
+            "The Universalis connection failed.",
+            innerException);
+    }
+
+    private void ThrowForUnsuccessfulResponse(
+        HttpResponseMessage response,
+        uint itemId,
+        bool isHighQuality,
+        string region,
+        string source,
+        DateTime startedUtc)
+    {
+        var statusCode = (int)response.StatusCode;
+        var retryAfter = response.Headers.RetryAfter?.Delta;
+        var cooldown = statusCode == 429 || statusCode >= 500;
+        var kind = statusCode == 429
+            ? UniversalisRequestFailureKind.RateLimited
+            : UniversalisRequestFailureKind.HttpStatus;
+
+        RegisterFailure(
+            kind,
+            itemId,
+            isHighQuality,
+            region,
+            source,
+            DateTime.UtcNow - startedUtc,
+            cooldown ? retryAfter : null,
+            cooldown);
+
+        if (!cooldown)
+        {
+            _log.Warning(
+                $"[Universalis] HTTP {statusCode} for item {itemId} (HQ={isHighQuality}, region={region}, source={source}).");
+        }
+
+        throw new UniversalisRequestException(
+            kind,
+            $"Universalis returned HTTP {statusCode}.",
+            null,
+            statusCode);
+    }
+
+    private void RegisterFailure(
+        UniversalisRequestFailureKind kind,
+        uint itemId,
+        bool isHighQuality,
+        string region,
+        string source,
+        TimeSpan elapsed,
+        TimeSpan? retryAfter,
+        bool startCooldown)
+    {
+        var now = DateTime.UtcNow;
+        var cooldownDuration = retryAfter is { } requested && requested > TimeSpan.Zero
+            ? requested
+            : CooldownDuration;
+        var newCooldownUntilUtc = now + cooldownDuration;
+        var startedCooldown = false;
+
+        lock (_diagnosticsLock)
+        {
+            switch (kind)
+            {
+                case UniversalisRequestFailureKind.Timeout:
+                    _timeouts++;
+                    break;
+                case UniversalisRequestFailureKind.Connection:
+                    _connectionFailures++;
+                    break;
+                case UniversalisRequestFailureKind.RateLimited:
+                    _rateLimitFailures++;
+                    _httpFailures++;
+                    break;
+                case UniversalisRequestFailureKind.HttpStatus:
+                    _httpFailures++;
+                    break;
+            }
+
+            if (startCooldown && _cooldownUntilUtc <= now)
+            {
+                _cooldownUntilUtc = newCooldownUntilUtc;
+                _suppressedRequestsDuringCooldown = 0;
+                startedCooldown = true;
+            }
+            else if (startCooldown && newCooldownUntilUtc > _cooldownUntilUtc)
+            {
+                _cooldownUntilUtc = newCooldownUntilUtc;
+            }
+        }
+
+        if (startedCooldown)
+        {
+            _log.Warning(
+                $"[Universalis] {kind} for item {itemId} (HQ={isHighQuality}, region={region}, source={source}, " +
+                $"elapsed={elapsed.TotalSeconds:0.0}s); pausing uncached requests for {cooldownDuration.TotalSeconds:0}s.");
         }
     }
 
@@ -362,5 +637,40 @@ internal sealed class UniversalisApiClient : IDisposable
         public DateTime ExpiresUtc { get; init; }
     }
 }
+
+internal enum UniversalisRequestFailureKind
+{
+    Timeout,
+    Connection,
+    HttpStatus,
+    RateLimited,
+}
+
+internal sealed class UniversalisRequestException : Exception
+{
+    public UniversalisRequestException(
+        UniversalisRequestFailureKind kind,
+        string message,
+        Exception? innerException,
+        int? statusCode = null)
+        : base(message, innerException)
+    {
+        Kind = kind;
+        StatusCode = statusCode;
+    }
+
+    public UniversalisRequestFailureKind Kind { get; }
+    public int? StatusCode { get; }
+}
+
+internal readonly record struct UniversalisDiagnostics(
+    long CacheHits,
+    long OutboundRequests,
+    long Timeouts,
+    long ConnectionFailures,
+    long HttpFailures,
+    long RateLimitFailures,
+    long SuppressedRequests,
+    TimeSpan CooldownRemaining);
 
 public sealed record UniversalisListingStats(decimal? AveragePrice, double? DailySaleVelocity, DateTime? LastUploadUtc);

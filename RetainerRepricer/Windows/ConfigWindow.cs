@@ -1564,7 +1564,8 @@ public sealed class ConfigWindow : Window, IDisposable
             TooltipHelper.Show(
                 _config,
                 "Refreshes Smart Sort data in the background while Retainer Repricer is idle. " +
-                "Runs use the most recently refreshed order and do not wait for a new refresh.");
+                "Runs use the most recently refreshed order and do not wait for a new refresh. " +
+                "After a failed refresh, the next attempt waits for this configured interval.");
         }
 
         ImGui.PopItemWidth();

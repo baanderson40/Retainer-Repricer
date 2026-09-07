@@ -92,13 +92,23 @@ public sealed partial class Plugin
 
         try
         {
-            var rawJsonTask = _universalisClient.GetAggregatedPayloadAsync(baseUrl, region, itemId);
-            var statsTask = _universalisClient.GetListingStatsAsync(baseUrl, region, itemId, isHq, cacheDuration: TimeSpan.Zero);
+            var rawJsonTask = _universalisClient.GetAggregatedPayloadAsync(
+                baseUrl,
+                region,
+                itemId,
+                source: "debug_payload");
+            var statsTask = _universalisClient.GetListingStatsAsync(
+                baseUrl,
+                region,
+                itemId,
+                isHq,
+                cacheDuration: TimeSpan.Zero,
+                source: "debug_stats");
 
             await Task.WhenAll(rawJsonTask, statsTask).ConfigureAwait(false);
 
-            var rawJson = rawJsonTask.Result;
-            var stats = statsTask.Result;
+            var rawJson = rawJsonTask.GetAwaiter().GetResult();
+            var stats = statsTask.GetAwaiter().GetResult();
 
             if (rawJson == null)
             {

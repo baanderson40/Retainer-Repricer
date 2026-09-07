@@ -86,7 +86,12 @@ public unsafe sealed partial class Plugin
         {
             _universalisGateKey = key;
             _universalisGateAverage = null;
-            _universalisGateTask = _universalisClient.GetAveragePriceAsync(baseUrl, region, itemId, _currentIsHq);
+            _universalisGateTask = _universalisClient.GetAveragePriceAsync(
+                baseUrl,
+                region,
+                itemId,
+                _currentIsHq,
+                source: "undercut_gate");
             Log.Debug($"[RR][Gate] Requesting Universalis average for item {itemId} (region='{region}', HQ={_currentIsHq}).");
         }
 
@@ -106,7 +111,19 @@ public unsafe sealed partial class Plugin
         decimal? averageResult;
         try
         {
-            averageResult = task.Result;
+            averageResult = task.GetAwaiter().GetResult();
+        }
+        catch (UniversalisRequestException ex)
+        {
+            _universalisGateTask = null;
+            if (_universalisClient.TryGetCooldownRemaining(out var remaining))
+            {
+                Log.Debug($"[RR][Gate] Universalis unavailable ({ex.Kind}); {remaining.TotalSeconds:0}s cooldown remaining.");
+                return UniversalisGateStatus.Unavailable;
+            }
+
+            Log.Warning(ex, "[RR][Gate] Universalis request failed; skipping item.");
+            return UniversalisGateStatus.Failed;
         }
         catch (Exception ex)
         {
@@ -119,6 +136,9 @@ public unsafe sealed partial class Plugin
 
         if (averageResult is null || averageResult <= 0)
         {
+            if (_universalisClient.TryGetCooldownRemaining(out _))
+                return UniversalisGateStatus.Unavailable;
+
             Log.Warning($"[RR][Gate] Universalis returned no data for item {itemId} (region='{region}', HQ={_currentIsHq}); skipping item.");
             return UniversalisGateStatus.Failed;
         }
@@ -190,6 +210,7 @@ public unsafe sealed partial class Plugin
         Disabled,
         Pending,
         Ready,
+        Unavailable,
         Failed,
     }
 
