@@ -15,9 +15,9 @@
     "IsTestingExclusive": false,
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
-    "DownloadCount": 1,
-    "DownloadLinkInstall": "https://github.com/baanderson40/Retainer-Repricer/releases/download/v1.3.0.2/latest.zip",
-    "DownloadLinkUpdate": "https://github.com/baanderson40/Retainer-Repricer/releases/download/v1.3.0.2/latest.zip",
+    "DownloadCount": 178,
+    "DownloadLinkInstall": "https://github.com/baanderson40/Retainer-Repricer/releases/download/v1.4.0.0/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/baanderson40/Retainer-Repricer/releases/download/v1.4.0.0/latest.zip",
     "SupportsProfiles": false
   }
 ]
