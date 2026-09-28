@@ -1382,8 +1382,8 @@ public sealed class ConfigWindow : Window, IDisposable
         {
             TooltipHelper.Show(
                 _config,
-                "Wait for another selected retainer venture that finishes within this window, " +
-                "then run one combined repricing pass.");
+                "Wait for another enabled retainer that is already complete or finishes within this window, " +
+                "then run one combined repricing pass. Retainers outside this window run in a later pass.");
         }
 
         ImGui.Spacing();

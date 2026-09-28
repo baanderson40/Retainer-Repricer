@@ -21,6 +21,7 @@ public unsafe sealed partial class Plugin
     private DateTime _autoRetainerRegistrationAttemptUtc = DateTime.MinValue;
     private DateTime _autoRetainerHandoffStartedUtc = DateTime.MinValue;
     private bool _autoRetainerSuppressionBeforeHandoff;
+    private string _autoRetainerHandoffRetainerName = string.Empty;
 
     internal bool AutoRetainerAvailable => _autoRetainerRegistered;
 
@@ -194,50 +195,27 @@ public unsafe sealed partial class Plugin
             return;
         }
 
-        bool anyAvailable;
-        try
+        var decision = EvaluateAutoRetainerHandoff(cid, retainerName, out var pendingWork);
+        if (decision == AutoRetainerHandoffDecision.Defer)
         {
-            anyAvailable = PluginInterface.GetIpcSubscriber<bool>(
-                "AutoRetainer.PluginState.AreAnyRetainersAvailableForCurrentChara").InvokeFunc();
-        }
-        catch (IpcError)
-        {
-            Log.Warning("[RR][AR] Could not query remaining retainers; releasing post-process callback.");
+            LogAutoRetainerHandoffDeferral(retainerName, pendingWork, "callback");
             FinishAutoRetainerRetainerPostProcess();
             return;
         }
 
-        if (anyAvailable)
+        if (decision == AutoRetainerHandoffDecision.Unavailable)
         {
+            Log.Warning("[RR][AR] Could not determine remaining enabled-retainer ventures; releasing post-process callback.");
             FinishAutoRetainerRetainerPostProcess();
             return;
         }
 
-        var waitSeconds = Math.Clamp(Configuration.AutoRetainerNearVentureWaitMinutes, 0, 30) * 60L;
-        if (waitSeconds > 0)
-        {
-            try
-            {
-                var closestVentureSeconds = PluginInterface.GetIpcSubscriber<ulong, long?>(
-                    "AutoRetainer.PluginState.GetClosestRetainerVentureSecondsRemaining").InvokeFunc(cid);
-                if (closestVentureSeconds is long seconds && seconds > 0 && seconds <= waitSeconds)
-                {
-                    Log.Information(
-                        "[RR][AR] Deferring automatic repricing; a selected retainer venture completes in {Seconds} seconds.",
-                        seconds);
-                    FinishAutoRetainerRetainerPostProcess();
-                    return;
-                }
-            }
-            catch (IpcError)
-            {
-                Log.Debug("[RR][AR] Could not query the closest retainer venture; starting automatic run.");
-            }
-        }
+        LogAutoRetainerHandoffStart(retainerName, pendingWork, "callback");
 
         _autoRetainerHandoffActive = true;
         _autoRetainerHandoffStartedUtc = DateTime.UtcNow;
         _autoRetainerSuppressionBeforeHandoff = false;
+        _autoRetainerHandoffRetainerName = retainerName;
 
         try
         {
@@ -251,6 +229,135 @@ public unsafe sealed partial class Plugin
         }
 
         Log.Information($"[RR][AR] Final retainer callback received for {retainerName}; preparing RetainerList.");
+    }
+
+    private AutoRetainerHandoffDecision EvaluateAutoRetainerHandoff(
+        ulong cid,
+        string completedRetainerName,
+        out PendingAutoRetainerWork pendingWork)
+    {
+        pendingWork = default;
+        if (cid == 0)
+            return AutoRetainerHandoffDecision.Unavailable;
+
+        try
+        {
+            var anyAvailable = PluginInterface.GetIpcSubscriber<bool>(
+                "AutoRetainer.PluginState.AreAnyRetainersAvailableForCurrentChara").InvokeFunc();
+            if (anyAvailable)
+            {
+                pendingWork = new PendingAutoRetainerWork(string.Empty, 0, true);
+                return AutoRetainerHandoffDecision.Defer;
+            }
+
+            var waitSeconds = Math.Clamp(Configuration.AutoRetainerNearVentureWaitMinutes, 0, 30) * 60L;
+            var enabledRetainersByCharacter = PluginInterface.GetIpcSubscriber<Dictionary<ulong, HashSet<string>>>(
+                "AutoRetainer.PluginState.GetEnabledRetainers").InvokeFunc();
+            if (enabledRetainersByCharacter == null ||
+                !enabledRetainersByCharacter.TryGetValue(cid, out var enabledRetainers))
+                return AutoRetainerHandoffDecision.Start;
+
+            var character = _autoRetainerApi?.GetOfflineCharacterData(cid);
+            if (character == null)
+                return AutoRetainerHandoffDecision.Unavailable;
+
+            var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            foreach (var retainer in character.RetainerData)
+            {
+                var isEnabled = enabledRetainers.Any(
+                    name => string.Equals(name, retainer.Name, StringComparison.OrdinalIgnoreCase));
+                if (!isEnabled ||
+                    string.Equals(retainer.Name, completedRetainerName, StringComparison.OrdinalIgnoreCase) ||
+                    !retainer.HasVenture || retainer.VentureEndsAt <= 0)
+                {
+                    continue;
+                }
+
+                var secondsRemaining = retainer.VentureEndsAt - now;
+                if (pendingWork.RetainerName.Length == 0 || secondsRemaining < pendingWork.SecondsRemaining)
+                {
+                    pendingWork = new PendingAutoRetainerWork(retainer.Name, secondsRemaining, false);
+                }
+            }
+
+            if (pendingWork.RetainerName.Length == 0)
+                return AutoRetainerHandoffDecision.Start;
+
+            return pendingWork.SecondsRemaining <= waitSeconds
+                ? AutoRetainerHandoffDecision.Defer
+                : AutoRetainerHandoffDecision.Start;
+        }
+        catch (IpcError)
+        {
+            return EvaluateClosestAutoRetainerVenture(cid, out pendingWork);
+        }
+    }
+
+    private AutoRetainerHandoffDecision EvaluateClosestAutoRetainerVenture(
+        ulong cid,
+        out PendingAutoRetainerWork pendingWork)
+    {
+        pendingWork = default;
+        try
+        {
+            var closestSeconds = PluginInterface.GetIpcSubscriber<ulong, long?>(
+                "AutoRetainer.PluginState.GetClosestRetainerVentureSecondsRemaining").InvokeFunc(cid);
+            if (closestSeconds is not long seconds || seconds <= 0)
+                return AutoRetainerHandoffDecision.Unavailable;
+
+            var waitSeconds = Math.Clamp(Configuration.AutoRetainerNearVentureWaitMinutes, 0, 30) * 60L;
+            pendingWork = new PendingAutoRetainerWork("an enabled retainer", seconds, false);
+            return seconds <= waitSeconds
+                ? AutoRetainerHandoffDecision.Defer
+                : AutoRetainerHandoffDecision.Start;
+        }
+        catch (IpcError)
+        {
+            return AutoRetainerHandoffDecision.Unavailable;
+        }
+    }
+
+    private void LogAutoRetainerHandoffDeferral(
+        string completedRetainerName,
+        PendingAutoRetainerWork pendingWork,
+        string source)
+    {
+        if (pendingWork.IsAlreadyAvailable)
+        {
+            Log.Information(
+                "[RR][AR] Deferring automatic repricing after {CompletedRetainer}; another enabled retainer is already available ({Source}).",
+                completedRetainerName,
+                source);
+            return;
+        }
+
+        var waitSeconds = Math.Clamp(Configuration.AutoRetainerNearVentureWaitMinutes, 0, 30) * 60L;
+        Log.Information(
+            "[RR][AR] Deferring automatic repricing after {CompletedRetainer}; {PendingRetainer} completes in {Seconds}s " +
+            "(window={Window}s, source={Source}).",
+            completedRetainerName,
+            pendingWork.RetainerName,
+            pendingWork.SecondsRemaining,
+            waitSeconds,
+            source);
+    }
+
+    private void LogAutoRetainerHandoffStart(
+        string completedRetainerName,
+        PendingAutoRetainerWork pendingWork,
+        string source)
+    {
+        if (pendingWork.RetainerName.Length == 0)
+            return;
+
+        var waitSeconds = Math.Clamp(Configuration.AutoRetainerNearVentureWaitMinutes, 0, 30) * 60L;
+        Log.Debug(
+            "[RR][AR] {PendingRetainer} completes in {Seconds}s, outside the {Window}s grouping window after {CompletedRetainer} ({Source}).",
+            pendingWork.RetainerName,
+            pendingWork.SecondsRemaining,
+            waitSeconds,
+            completedRetainerName,
+            source);
     }
 
     private void AdvanceAutoRetainerHandoff()
@@ -294,6 +401,26 @@ public unsafe sealed partial class Plugin
 
         if (!IsAddonVisible("RetainerList") || !IsRetainerListReady())
             return;
+
+        var decision = EvaluateAutoRetainerHandoff(
+            CurrentCharacterId,
+            _autoRetainerHandoffRetainerName,
+            out var pendingWork);
+        if (decision == AutoRetainerHandoffDecision.Defer)
+        {
+            LogAutoRetainerHandoffDeferral(_autoRetainerHandoffRetainerName, pendingWork, "pre_start");
+            ReleaseAutoRetainerHandoff();
+            return;
+        }
+
+        if (decision == AutoRetainerHandoffDecision.Unavailable)
+        {
+            Log.Warning("[RR][AR] Could not verify enabled-retainer ventures before starting; releasing AutoRetainer.");
+            ReleaseAutoRetainerHandoff();
+            return;
+        }
+
+        LogAutoRetainerHandoffStart(_autoRetainerHandoffRetainerName, pendingWork, "pre_start");
 
         if (!StartRunFromRetainerList(RunMode.PriceAndSell))
         {
@@ -406,6 +533,7 @@ public unsafe sealed partial class Plugin
         _autoRetainerRunStarted = false;
         _autoRetainerRecoveryActive = false;
         _autoRetainerHandoffStartedUtc = DateTime.MinValue;
+        _autoRetainerHandoffRetainerName = string.Empty;
     }
 
     private void FinishAutoRetainerRetainerPostProcess()
@@ -419,4 +547,16 @@ public unsafe sealed partial class Plugin
             Log.Debug("[RR][AR] AutoRetainer post-process completion IPC was unavailable.");
         }
     }
+
+    private enum AutoRetainerHandoffDecision
+    {
+        Start,
+        Defer,
+        Unavailable,
+    }
+
+    private readonly record struct PendingAutoRetainerWork(
+        string RetainerName,
+        long SecondsRemaining,
+        bool IsAlreadyAvailable);
 }
