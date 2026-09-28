@@ -1,6 +1,8 @@
-using FFXIVClientStructs.FFXIV.Client.Game;
 using System;
 using System.Collections.Generic;
+using System.Linq;
+
+using FFXIVClientStructs.FFXIV.Client.Game;
 
 namespace RetainerRepricer.Services;
 
@@ -24,38 +26,59 @@ internal unsafe sealed class SellListInventoryPruner
         _log = log;
     }
 
-    public SellListInventoryPruneResult Run(string reason, bool saveConfig = true)
+    public SellListInventoryPruneResult Run(string reason, ulong cid, bool saveConfig = true)
     {
-        var snapshot = CaptureBagCounts();
-        return Run(reason, snapshot, saveConfig);
+        if (cid == 0)
+        {
+            _log.Warning("[RR][Prune] Skipped: current character is unavailable ({Reason}).", reason);
+            return SellListInventoryPruneResult.Skipped(reason);
+        }
+
+        var snapshot = CaptureBagCounts(out var inventoryReady);
+        if (!inventoryReady)
+        {
+            _log.Warning("[RR][Prune] Skipped: inventory containers are not fully loaded ({Reason}).", reason);
+            return SellListInventoryPruneResult.Skipped(reason, snapshot);
+        }
+
+        return Run(reason, cid, snapshot, saveConfig);
     }
 
-    public SellListInventoryPruneResult Run(string reason, IReadOnlyDictionary<ulong, int> bagCounts, bool saveConfig = true)
+    public SellListInventoryPruneResult Run(
+        string reason,
+        ulong cid,
+        IReadOnlyDictionary<ulong, int> bagCounts,
+        bool saveConfig = true)
     {
         var removedEntries = new List<SellListInventoryPruneResult.PrunedEntry>();
 
-        var removedCount = _config.RemoveSellEntries(entry =>
+        foreach (var entry in _config.GetSellListOrdered(cid).ToList())
         {
             if (entry.PreserveFromAutoPrune)
-                return false;
+                continue;
+
+            // Entries created before character memberships existed remain shared until manually changed.
+            if (!entry.IsExplicitlyAssignedToCharacter(cid))
+                continue;
 
             var key = Configuration.MakeSellKey(entry.ItemId, entry.IsHq);
             var inventoryCount = bagCounts.TryGetValue(key, out var count) ? count : 0;
 
             if (inventoryCount > 0)
-                return false;
+                continue;
 
-            removedEntries.Add(new SellListInventoryPruneResult.PrunedEntry
+            if (_config.RemoveSellItem(entry.ItemId, entry.IsHq, cid))
             {
-                ItemId = entry.ItemId,
-                IsHq = entry.IsHq,
-                Name = entry.Name ?? string.Empty,
-            });
+                removedEntries.Add(new SellListInventoryPruneResult.PrunedEntry
+                {
+                    ItemId = entry.ItemId,
+                    IsHq = entry.IsHq,
+                    Name = entry.Name ?? string.Empty,
+                });
+            }
+        }
 
-            return true;
-        });
-
-        if (removedCount > 0 && saveConfig)
+        if (removedEntries.Count > 0 && saveConfig)
             _config.Save();
 
         var result = new SellListInventoryPruneResult(
@@ -64,9 +87,13 @@ internal unsafe sealed class SellListInventoryPruner
             removedEntries,
             bagCounts);
 
-        if (removedCount > 0)
+        if (removedEntries.Count > 0)
         {
-            _log.Information("[RR][Prune] Removed {Removed} sell-list item(s) missing from bags ({Reason}).", removedCount, reason);
+            _log.Information(
+                "[RR][Prune] Removed {Removed} character assignment(s) missing from bags ({Reason}, cid={Cid}).",
+                removedEntries.Count,
+                reason,
+                cid);
         }
         else
         {
@@ -76,8 +103,9 @@ internal unsafe sealed class SellListInventoryPruner
         return result;
     }
 
-    private static Dictionary<ulong, int> CaptureBagCounts()
+    private static Dictionary<ulong, int> CaptureBagCounts(out bool inventoryReady)
     {
+        inventoryReady = false;
         var counts = new Dictionary<ulong, int>();
         var inventory = InventoryManager.Instance();
         if (inventory == null)
@@ -87,7 +115,7 @@ internal unsafe sealed class SellListInventoryPruner
         {
             var container = inventory->GetInventoryContainer(type);
             if (container == null || !container->IsLoaded)
-                continue;
+                return counts;
 
             for (var i = 0; i < container->Size; i++)
             {
@@ -118,6 +146,7 @@ internal unsafe sealed class SellListInventoryPruner
             }
         }
 
+        inventoryReady = true;
         return counts;
     }
 
@@ -141,6 +170,15 @@ internal unsafe sealed class SellListInventoryPruner
         public IReadOnlyDictionary<ulong, int> InventorySnapshot { get; }
         public bool ItemsRemoved => RemovedEntries.Count > 0;
         public int RemovedCount => RemovedEntries.Count;
+        public bool IsSkipped { get; private init; }
+
+        public static SellListInventoryPruneResult Skipped(
+            string reason,
+            IReadOnlyDictionary<ulong, int>? inventorySnapshot = null)
+            => new(reason, DateTime.UtcNow, Array.Empty<PrunedEntry>(), inventorySnapshot ?? new Dictionary<ulong, int>())
+            {
+                IsSkipped = true,
+            };
 
         internal sealed class PrunedEntry
         {

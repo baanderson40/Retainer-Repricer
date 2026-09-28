@@ -83,7 +83,7 @@ internal sealed class ContextMenuManager : IDisposable
             return;
         var isHq = inv.TargetItem.Value.IsHq;
 
-        var isInSellList = _config.HasSellItem(itemId, isHq);
+        var isInSellList = _config.HasSellItem(itemId, isHq, _plugin.CurrentCharacterId);
 
         // Pull Lumina once (name + tradable/marketable gate).
         var itemRow = Svc.Data.GetExcelSheet<Item>()?.GetRowOrDefault(itemId);
@@ -148,9 +148,13 @@ internal sealed class ContextMenuManager : IDisposable
 
                 OnClicked = _ =>
                 {
-                    if (_config.RemoveSellItem(itemId, isHq))
+                    if (_config.RemoveSellItem(itemId, isHq, _plugin.CurrentCharacterId))
                     {
-                        Plugin.Log.Information("[RR][ContextMenu] Removed item {ItemId} (HQ={IsHq}) from Sell List", itemId, isHq);
+                        Plugin.Log.Information(
+                            "[RR][ContextMenu] Removed item {ItemId} (HQ={IsHq}) from Sell List for cid={Cid}",
+                            itemId,
+                            isHq,
+                            _plugin.CurrentCharacterId);
                         _config.Save();
                     }
                 }
@@ -308,14 +312,25 @@ internal sealed class ContextMenuManager : IDisposable
         bool allowPreserveToggle,
         string source = "menu")
     {
-        if (!_config.TryAddSellItemWithMinCount(itemId, isHq, itemName, minCount, priority))
+        if (!_config.TryAddSellItemWithMinCount(
+                itemId,
+                isHq,
+                itemName,
+                minCount,
+                _plugin.CurrentCharacterId,
+                priority))
             return false;
 
         if (allowPreserveToggle)
             _config.SetSellItemPreserveFlag(itemId, isHq, keepPreserved);
 
-        Plugin.Log.Information("[RR][ContextMenu] Added item {ItemId} (HQ={IsHq}, minCount={MinCount}, source={Source}) to Sell List",
-            itemId, isHq, minCount, source);
+        Plugin.Log.Information(
+            "[RR][ContextMenu] Added item {ItemId} (HQ={IsHq}, minCount={MinCount}, source={Source}) to Sell List for cid={Cid}",
+            itemId,
+            isHq,
+            minCount,
+            source,
+            _plugin.CurrentCharacterId);
         _config.Save();
         if (_plugin.SmartSortEnabled)
             _ = _plugin.RequestSmartSortAsync("item_added", force: true);

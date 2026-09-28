@@ -397,6 +397,31 @@ public sealed class Configuration : IPluginConfiguration
         // Protect this entry from automatic pruning even if it is missing from inventory.
         public bool PreserveFromAutoPrune { get; set; }
 
+        // Null denotes an entry created before character-scoped sell lists existed.
+        // Legacy entries stay shared and are excluded from automatic pruning.
+        public HashSet<ulong>? CharacterIds { get; set; }
+
+        public bool IsAssignedToCharacter(ulong cid)
+            => CharacterIds is null || (cid != 0 && CharacterIds.Contains(cid));
+
+        public bool IsExplicitlyAssignedToCharacter(ulong cid)
+            => cid != 0 && CharacterIds?.Contains(cid) == true;
+
+        public bool AddCharacterAssignment(ulong cid)
+        {
+            if (cid == 0)
+                return false;
+
+            CharacterIds ??= new();
+            return CharacterIds.Add(cid);
+        }
+
+        public bool RemoveCharacterAssignment(ulong cid)
+            => cid != 0 && CharacterIds?.Remove(cid) == true;
+
+        public bool HasNoCharacterAssignments
+            => CharacterIds is { Count: 0 };
+
         public void EnsureRetainerCaps()
         {
             RetainerCaps ??= new(StringComparer.OrdinalIgnoreCase);
@@ -579,7 +604,7 @@ public sealed class Configuration : IPluginConfiguration
         return n;
     }
 
-    public bool TryGetSellEntryKeyByDisplayName(string displayName, out ulong key)
+    public bool TryGetSellEntryKeyByDisplayName(string displayName, ulong cid, out ulong key)
     {
         key = 0;
         if (SellList == null || SellList.Count == 0)
@@ -588,6 +613,9 @@ public sealed class Configuration : IPluginConfiguration
         foreach (var entry in SellList.Values)
         {
             if (entry == null)
+                continue;
+
+            if (!entry.IsAssignedToCharacter(cid))
                 continue;
 
             if (string.Equals(entry.Name, displayName, StringComparison.OrdinalIgnoreCase))
@@ -600,15 +628,22 @@ public sealed class Configuration : IPluginConfiguration
         return false;
     }
 
-    public bool HasSellItem(uint baseItemId, bool isHq)
-        => SellList.ContainsKey(MakeSellKey(baseItemId, isHq));
+    public bool HasSellItem(uint baseItemId, bool isHq, ulong cid)
+        => SellList.TryGetValue(MakeSellKey(baseItemId, isHq), out var entry) &&
+           entry?.IsAssignedToCharacter(cid) == true;
 
-    public bool TryAddSellItem(uint baseItemId, bool isHq, string name, int? priorityOverride = null)
+    public bool TryAddSellItem(uint baseItemId, bool isHq, string name, ulong cid, int? priorityOverride = null)
     {
-        if (baseItemId == 0) return false;
+        if (baseItemId == 0 || cid == 0) return false;
 
         var key = MakeSellKey(baseItemId, isHq);
-        if (SellList.ContainsKey(key)) return false;
+        if (SellList.TryGetValue(key, out var existing))
+        {
+            if (existing is null || existing.CharacterIds is null)
+                return false;
+
+            return existing.AddCharacterAssignment(cid);
+        }
 
         var nextOrder = GetNextSortOrder();
 
@@ -620,6 +655,7 @@ public sealed class Configuration : IPluginConfiguration
             MinCountToSell = 1,
             SortOrder = nextOrder,
             PreserveFromAutoPrune = false,
+            CharacterIds = new() { cid },
         };
 
         if (priorityOverride.HasValue)
@@ -628,12 +664,24 @@ public sealed class Configuration : IPluginConfiguration
         return true;
     }
 
-    public bool TryAddSellItemWithMinCount(uint baseItemId, bool isHq, string name, int minCount, int? priorityOverride = null)
+    public bool TryAddSellItemWithMinCount(
+        uint baseItemId,
+        bool isHq,
+        string name,
+        int minCount,
+        ulong cid,
+        int? priorityOverride = null)
     {
-        if (baseItemId == 0) return false;
+        if (baseItemId == 0 || cid == 0) return false;
 
         var key = MakeSellKey(baseItemId, isHq);
-        if (SellList.ContainsKey(key)) return false;
+        if (SellList.TryGetValue(key, out var existing))
+        {
+            if (existing is null || existing.CharacterIds is null)
+                return false;
+
+            return existing.AddCharacterAssignment(cid);
+        }
 
         var clampedMinCount = Math.Clamp(minCount, 1, 999);
         var nextOrder = GetNextSortOrder();
@@ -646,6 +694,7 @@ public sealed class Configuration : IPluginConfiguration
             MinCountToSell = clampedMinCount,
             SortOrder = nextOrder,
             PreserveFromAutoPrune = false,
+            CharacterIds = new() { cid },
         };
 
         if (priorityOverride.HasValue)
@@ -654,16 +703,50 @@ public sealed class Configuration : IPluginConfiguration
         return true;
     }
 
-    public bool RemoveSellItem(uint baseItemId, bool isHq)
+    public bool RemoveSellItem(uint baseItemId, bool isHq, ulong cid)
     {
-        var removed = SellList.Remove(MakeSellKey(baseItemId, isHq));
-        if (removed)
+        var key = MakeSellKey(baseItemId, isHq);
+        if (!SellList.TryGetValue(key, out var entry) || entry == null)
+            return false;
+
+        // Legacy entries were intentionally global; manual removal retains that behavior.
+        var removed = entry.CharacterIds is null
+            ? SellList.Remove(key)
+            : entry.RemoveCharacterAssignment(cid);
+
+        if (entry.HasNoCharacterAssignments)
+            SellList.Remove(key);
+
+        if (!SellList.ContainsKey(key))
             NormalizeSellListOrder(saveChanges: false);
+
         return removed;
     }
 
-    public void ClearSellList()
-        => SellList.Clear();
+    public void ClearSellList(ulong cid)
+    {
+        if (cid == 0)
+            return;
+
+        var keysToRemove = new List<ulong>();
+        foreach (var kvp in SellList)
+        {
+            var entry = kvp.Value;
+            if (entry is null)
+                continue;
+
+            if (entry.CharacterIds is null ||
+                (entry.RemoveCharacterAssignment(cid) && entry.HasNoCharacterAssignments))
+            {
+                keysToRemove.Add(kvp.Key);
+            }
+        }
+
+        foreach (var key in keysToRemove)
+            SellList.Remove(key);
+
+        NormalizeSellListOrder(saveChanges: false);
+    }
 
     public void SetSellItemPreserveFlag(uint baseItemId, bool isHq, bool preserve)
     {
@@ -704,10 +787,11 @@ public sealed class Configuration : IPluginConfiguration
         return keysToRemove.Count;
     }
 
-    public IEnumerable<SellListEntry> GetSellListOrdered()
+    public IEnumerable<SellListEntry> GetSellListOrdered(ulong cid)
     {
         NormalizeSellListOrder(saveChanges: false);
         return SellList.Values
+            .Where(e => e != null && e.IsAssignedToCharacter(cid))
             .OrderBy(e => e.SortOrder <= 0 ? int.MaxValue : e.SortOrder)
             .ThenBy(e => string.IsNullOrWhiteSpace(e.Name) ? "zzz" : e.Name, StringComparer.OrdinalIgnoreCase)
             .ThenBy(e => e.ItemId)
@@ -870,8 +954,13 @@ public sealed class Configuration : IPluginConfiguration
 
         if (SellList != null)
         {
-            foreach (var entry in SellList.Values)
+            var unassignedEntries = new List<ulong>();
+            foreach (var kvp in SellList)
             {
+                var entry = kvp.Value;
+                if (entry?.RemoveCharacterAssignment(cid) == true && entry.HasNoCharacterAssignments)
+                    unassignedEntries.Add(kvp.Key);
+
                 if (entry?.RetainerCaps != null)
                     entry.RetainerCaps.Keys.Where(x => x.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList()
                         .ForEach(x => entry.RetainerCaps.Remove(x));
@@ -879,6 +968,12 @@ public sealed class Configuration : IPluginConfiguration
                     entry.RetainerStackSizes.Keys.Where(x => x.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList()
                         .ForEach(x => entry.RetainerStackSizes.Remove(x));
             }
+
+            foreach (var key in unassignedEntries)
+                SellList.Remove(key);
+
+            if (unassignedEntries.Count > 0)
+                NormalizeSellListOrder(saveChanges: false);
         }
     }
 

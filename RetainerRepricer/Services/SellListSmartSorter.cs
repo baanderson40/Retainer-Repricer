@@ -13,6 +13,7 @@ internal sealed class SellListSmartSorter : IDisposable
     private readonly UniversalisApiClient _universalis;
     private readonly PluginLogger _log;
     private readonly Func<string?> _regionProvider;
+    private readonly Func<ulong> _characterIdProvider;
     private readonly SemaphoreSlim _sortLock = new(1, 1);
 
     private bool _disposed;
@@ -21,12 +22,14 @@ internal sealed class SellListSmartSorter : IDisposable
         Configuration config,
         UniversalisApiClient universalis,
         PluginLogger log,
-        Func<string?> regionProvider)
+        Func<string?> regionProvider,
+        Func<ulong> characterIdProvider)
     {
         _config = config;
         _universalis = universalis;
         _log = log;
         _regionProvider = regionProvider;
+        _characterIdProvider = characterIdProvider;
     }
 
     public bool IsEnabled
@@ -80,7 +83,7 @@ internal sealed class SellListSmartSorter : IDisposable
                 return false;
             }
 
-            var entries = _config.GetSellListOrdered().ToList();
+            var entries = _config.GetSellListOrdered(_characterIdProvider()).ToList();
             if (entries.Count <= 1)
                 return false;
 

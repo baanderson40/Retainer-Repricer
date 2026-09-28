@@ -134,7 +134,12 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         Log = new PluginLogger(log, _pluginLogBuffer);
 
         _universalisClient = new UniversalisApiClient(Log);
-        _smartSorter = new SellListSmartSorter(Configuration, _universalisClient, Log, GetWorldDcRegionKey);
+        _smartSorter = new SellListSmartSorter(
+            Configuration,
+            _universalisClient,
+            Log,
+            GetWorldDcRegionKey,
+            () => CurrentCharacterId);
         _sellListPruner = new SellListInventoryPruner(Configuration, Log);
 
         ConfigWindow = new ConfigWindow(this);
@@ -1052,7 +1057,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
     private SellListInventoryPruner.SellListInventoryPruneResult RunPruneInternal(string reason)
     {
-        var result = _sellListPruner.Run(reason);
+        var result = _sellListPruner.Run(reason, CurrentCharacterId);
         _lastPruneResult = result;
         return result;
     }

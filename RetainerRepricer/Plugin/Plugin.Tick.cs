@@ -79,7 +79,7 @@ public unsafe sealed partial class Plugin
                         _retainerSellCounts.Clear();
                     _retainerExistingSellCounts.Clear();
                     _needsExistingListingScan = Configuration.EnablePerRetainerCaps;
-                    foreach (var e in Configuration.GetSellListOrdered())
+                    foreach (var e in Configuration.GetSellListOrdered(CurrentCharacterId))
                     {
                         if (e.ItemId == 0) continue;
 
@@ -1684,7 +1684,7 @@ public unsafe sealed partial class Plugin
             return;
 
         var displayName = Configuration.BuildDisplayName(trimmed, isHq);
-        if (!Configuration.TryGetSellEntryKeyByDisplayName(displayName, out var key))
+        if (!Configuration.TryGetSellEntryKeyByDisplayName(displayName, CurrentCharacterId, out var key))
             return;
 
         var updated = _retainerExistingSellCounts.TryGetValue(key, out var existing)

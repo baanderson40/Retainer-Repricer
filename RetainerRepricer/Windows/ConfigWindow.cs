@@ -145,12 +145,12 @@ public sealed class ConfigWindow : Window, IDisposable
     {
         DrawSellListSearch();
 
-        var list = _config.SellList;
-        var listCount = list?.Count ?? 0;
+        var currentCid = _plugin.CurrentCharacterId;
+        var listCount = _config.GetSellListOrdered(currentCid).Count();
 
         DrawSellListActionRow(listCount);
 
-        if (list == null || listCount == 0)
+        if (listCount == 0)
         {
             ImGui.TextDisabled("No items in sell list.");
             _confirmClearSellList = false;
@@ -161,13 +161,12 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.Spacing();
 
         var rows = BuildFilteredSellListRows();
-        var currentCid = _plugin.CurrentCharacterId;
         var retainerNames = _config.GetAllRetainerNames(currentCid)
             .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
             .ToList();
-        ImGui.TextDisabled($"{rows.Count} item(s)");
+        ImGui.TextDisabled($"{rows.Count} item(s) for current character");
 
-        DrawSellListTable(rows, list.Count, retainerNames, currentCid, _config.EnablePerRetainerCaps, _forceCollapseSellListRows);
+        DrawSellListTable(rows, listCount, retainerNames, currentCid, _config.EnablePerRetainerCaps, _forceCollapseSellListRows);
         _forceCollapseSellListRows = false;
     }
 
@@ -255,10 +254,10 @@ public sealed class ConfigWindow : Window, IDisposable
             return;
         }
 
-        ImGui.TextColored(new System.Numerics.Vector4(1f, 0.6f, 0.2f, 1f), "Clear all items?");
+        ImGui.TextColored(new System.Numerics.Vector4(1f, 0.6f, 0.2f, 1f), "Clear current character items?");
         if (ImGui.Button("Confirm clear"))
         {
-            _config.ClearSellList();
+            _config.ClearSellList(_plugin.CurrentCharacterId);
             SaveConfig();
             _confirmClearSellList = false;
             return;
@@ -284,7 +283,9 @@ public sealed class ConfigWindow : Window, IDisposable
 
         if (ImGui.IsItemHovered())
         {
-            TooltipHelper.Show(_config, "Removes sell items that are nowhere in your bags. Preserved entries are skipped.");
+            TooltipHelper.Show(
+                _config,
+                "Removes current-character sell assignments that are nowhere in your bags. Preserved entries are skipped.");
         }
 
         return ImGui.GetCursorPosY();
@@ -326,7 +327,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private System.Collections.Generic.List<Configuration.SellListEntry> BuildFilteredSellListRows()
     {
-        var ordered = _config.GetSellListOrdered();
+        var ordered = _config.GetSellListOrdered(_plugin.CurrentCharacterId);
 
         var filter = (_sellListSearch ?? string.Empty).Trim();
         var filterLower = filter.ToLowerInvariant();
@@ -555,8 +556,12 @@ public sealed class ConfigWindow : Window, IDisposable
 
         if (removeKey.HasValue)
         {
-            _config.RemoveSellItem(removeKey.Value.itemId, removeKey.Value.isHq);
-            Plugin.Log.Information("[RR][Config] Removed item {ItemId} (HQ={IsHq}) from Sell List", removeKey.Value.itemId, removeKey.Value.isHq);
+            _config.RemoveSellItem(removeKey.Value.itemId, removeKey.Value.isHq, _plugin.CurrentCharacterId);
+            Plugin.Log.Information(
+                "[RR][Config] Removed item {ItemId} (HQ={IsHq}) from Sell List for cid={Cid}",
+                removeKey.Value.itemId,
+                removeKey.Value.isHq,
+                _plugin.CurrentCharacterId);
             SaveConfig();
         }
     }
