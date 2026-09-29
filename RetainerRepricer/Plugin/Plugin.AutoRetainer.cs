@@ -195,7 +195,18 @@ public unsafe sealed partial class Plugin
             return;
         }
 
-        var decision = EvaluateAutoRetainerHandoff(cid, retainerName, out var pendingWork);
+        AutoRetainerHandoffDecision decision;
+        PendingAutoRetainerWork pendingWork;
+        try
+        {
+            decision = EvaluateAutoRetainerHandoff(cid, retainerName, out pendingWork);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, $"[RR][AR] Failed to evaluate pending retainers after '{retainerName}' (cid={cid}); releasing AutoRetainer.");
+            FinishAutoRetainerRetainerPostProcess();
+            return;
+        }
         if (decision == AutoRetainerHandoffDecision.Defer)
         {
             LogAutoRetainerHandoffDeferral(retainerName, pendingWork, "callback");
@@ -236,7 +247,7 @@ public unsafe sealed partial class Plugin
         string completedRetainerName,
         out PendingAutoRetainerWork pendingWork)
     {
-        pendingWork = default;
+        pendingWork = PendingAutoRetainerWork.Empty;
         if (cid == 0)
             return AutoRetainerHandoffDecision.Unavailable;
 
@@ -257,13 +268,19 @@ public unsafe sealed partial class Plugin
                 !enabledRetainersByCharacter.TryGetValue(cid, out var enabledRetainers))
                 return AutoRetainerHandoffDecision.Start;
 
+            if (enabledRetainers == null)
+                return AutoRetainerHandoffDecision.Unavailable;
+
             var character = _autoRetainerApi?.GetOfflineCharacterData(cid);
-            if (character == null)
+            if (character?.RetainerData == null)
                 return AutoRetainerHandoffDecision.Unavailable;
 
             var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             foreach (var retainer in character.RetainerData)
             {
+                if (retainer == null || string.IsNullOrWhiteSpace(retainer.Name))
+                    continue;
+
                 var isEnabled = enabledRetainers.Any(
                     name => string.Equals(name, retainer.Name, StringComparison.OrdinalIgnoreCase));
                 if (!isEnabled ||
@@ -274,13 +291,13 @@ public unsafe sealed partial class Plugin
                 }
 
                 var secondsRemaining = retainer.VentureEndsAt - now;
-                if (pendingWork.RetainerName.Length == 0 || secondsRemaining < pendingWork.SecondsRemaining)
+                if (string.IsNullOrEmpty(pendingWork.RetainerName) || secondsRemaining < pendingWork.SecondsRemaining)
                 {
                     pendingWork = new PendingAutoRetainerWork(retainer.Name, secondsRemaining, false);
                 }
             }
 
-            if (pendingWork.RetainerName.Length == 0)
+            if (string.IsNullOrEmpty(pendingWork.RetainerName))
                 return AutoRetainerHandoffDecision.Start;
 
             return pendingWork.SecondsRemaining <= waitSeconds
@@ -291,13 +308,19 @@ public unsafe sealed partial class Plugin
         {
             return EvaluateClosestAutoRetainerVenture(cid, out pendingWork);
         }
+        catch (Exception ex)
+        {
+            Log.Error(ex, $"[RR][AR] Failed to evaluate pending retainers after '{completedRetainerName}' (cid={cid}).");
+            pendingWork = PendingAutoRetainerWork.Empty;
+            return AutoRetainerHandoffDecision.Unavailable;
+        }
     }
 
     private AutoRetainerHandoffDecision EvaluateClosestAutoRetainerVenture(
         ulong cid,
         out PendingAutoRetainerWork pendingWork)
     {
-        pendingWork = default;
+        pendingWork = PendingAutoRetainerWork.Empty;
         try
         {
             var closestSeconds = PluginInterface.GetIpcSubscriber<ulong, long?>(
@@ -313,6 +336,13 @@ public unsafe sealed partial class Plugin
         }
         catch (IpcError)
         {
+            pendingWork = PendingAutoRetainerWork.Empty;
+            return AutoRetainerHandoffDecision.Unavailable;
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, $"[RR][AR] Failed to query fallback venture timing (cid={cid}).");
+            pendingWork = PendingAutoRetainerWork.Empty;
             return AutoRetainerHandoffDecision.Unavailable;
         }
     }
@@ -347,7 +377,7 @@ public unsafe sealed partial class Plugin
         PendingAutoRetainerWork pendingWork,
         string source)
     {
-        if (pendingWork.RetainerName.Length == 0)
+        if (string.IsNullOrEmpty(pendingWork.RetainerName))
             return;
 
         var waitSeconds = Math.Clamp(Configuration.AutoRetainerNearVentureWaitMinutes, 0, 30) * 60L;
@@ -402,10 +432,21 @@ public unsafe sealed partial class Plugin
         if (!IsAddonVisible("RetainerList") || !IsRetainerListReady())
             return;
 
-        var decision = EvaluateAutoRetainerHandoff(
-            CurrentCharacterId,
-            _autoRetainerHandoffRetainerName,
-            out var pendingWork);
+        AutoRetainerHandoffDecision decision;
+        PendingAutoRetainerWork pendingWork;
+        try
+        {
+            decision = EvaluateAutoRetainerHandoff(
+                CurrentCharacterId,
+                _autoRetainerHandoffRetainerName,
+                out pendingWork);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "[RR][AR] Failed to verify enabled-retainer ventures before starting; releasing AutoRetainer.");
+            ReleaseAutoRetainerHandoff();
+            return;
+        }
         if (decision == AutoRetainerHandoffDecision.Defer)
         {
             LogAutoRetainerHandoffDeferral(_autoRetainerHandoffRetainerName, pendingWork, "pre_start");
@@ -558,5 +599,8 @@ public unsafe sealed partial class Plugin
     private readonly record struct PendingAutoRetainerWork(
         string RetainerName,
         long SecondsRemaining,
-        bool IsAlreadyAvailable);
+        bool IsAlreadyAvailable)
+    {
+        public static PendingAutoRetainerWork Empty => new(string.Empty, 0, false);
+    }
 }
