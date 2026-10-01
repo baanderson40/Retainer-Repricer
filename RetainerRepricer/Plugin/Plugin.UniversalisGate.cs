@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 
 using ECommons.GameHelpers;
 using FFXIVClientStructs.FFXIV.Client.UI.Agent;
@@ -18,6 +19,77 @@ public unsafe sealed partial class Plugin
         _universalisGateAverage = null;
         _universalisPriceFloor = null;
     }
+
+    private void ResetAutoListPrefilterState()
+    {
+        _autoListPrefilterCancellation?.Cancel();
+        _autoListPrefilterCancellation?.Dispose();
+        _autoListPrefilterCancellation = null;
+        _autoListPrefilterTask = null;
+        _autoListPrefilterKey = null;
+    }
+
+    private bool TryStartAutoListPrefilter()
+    {
+        ResetAutoListPrefilterState();
+
+        if (!Configuration.UseUniversalisApi)
+            return false;
+
+        var region = GetWorldDcRegionKey();
+        if (string.IsNullOrWhiteSpace(region))
+        {
+            Log.Debug($"[RR][AutoList][Prefilter] Region unavailable for item {_currentSellItemId}; continuing with live market check.");
+            return false;
+        }
+
+        var baseUrl = UniversalisApiClient.AggregatedBaseUrl;
+        var cancellation = new CancellationTokenSource();
+        var key = new AutoListPrefilterKey(
+            _currentSellItemId,
+            _currentSellItemIsHq,
+            region,
+            baseUrl,
+            _pendingSellSlot.Container,
+            _pendingSellSlot.Slot,
+            _currentSellStackSize,
+            _currentSellMinimumStackValue);
+
+        try
+        {
+            _autoListPrefilterCancellation = cancellation;
+            _autoListPrefilterKey = key;
+            _autoListPrefilterTask = _universalisClient.GetAveragePriceAsync(
+                baseUrl,
+                region,
+                _currentSellItemId,
+                _currentSellItemIsHq,
+                cancellation.Token,
+                source: "auto_list_prefilter");
+            Log.Debug($"[RR][AutoList][Prefilter] Requesting Universalis estimate itemId={_currentSellItemId} hq={_currentSellItemIsHq} quantity={_currentSellStackSize} minimum={_currentSellMinimumStackValue}.");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            cancellation.Dispose();
+            _autoListPrefilterCancellation = null;
+            _autoListPrefilterTask = null;
+            _autoListPrefilterKey = null;
+            Log.Debug($"[RR][AutoList][Prefilter] Unable to start Universalis estimate for item {_currentSellItemId}; continuing with live market check ({ex.GetType().Name}: {ex.Message}).");
+            return false;
+        }
+    }
+
+    private AutoListPrefilterKey GetCurrentAutoListPrefilterKey(string region)
+        => new(
+            _currentSellItemId,
+            _currentSellItemIsHq,
+            region,
+            UniversalisApiClient.AggregatedBaseUrl,
+            _pendingSellSlot.Container,
+            _pendingSellSlot.Slot,
+            _currentSellStackSize,
+            _currentSellMinimumStackValue);
 
     private bool TryGetCurrentMarketItemId(out uint itemId)
     {

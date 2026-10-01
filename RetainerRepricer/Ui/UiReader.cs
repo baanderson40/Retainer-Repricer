@@ -99,6 +99,12 @@ internal sealed unsafe class UiReader
         public bool FoundSellable => Status == InventoryLookupStatus.FoundSellable;
     }
 
+    public readonly record struct AutoListInventoryCandidate(
+        uint ItemId,
+        bool IsHq,
+        string Name,
+        int TotalQuantity);
+
     #endregion
 
     #region Fields / lifecycle
@@ -538,6 +544,66 @@ internal sealed unsafe class UiReader
                 firstUnsellableSpiritbondOrCollectability);
 
         return new InventoryLookupResult(InventoryLookupStatus.NotFound, 0, 0, 0, 0);
+    }
+
+    public bool TryGetAutoListInventoryCandidates(
+        HashSet<ulong>? blacklist,
+        out List<AutoListInventoryCandidate> candidates)
+    {
+        candidates = new List<AutoListInventoryCandidate>();
+        var inv = InventoryManager.Instance();
+        if (inv == null)
+            return false;
+
+        var grouped = new Dictionary<ulong, AutoListInventoryCandidate>();
+        foreach (var type in SellScanContainers)
+        {
+            var container = inv->GetInventoryContainer(type);
+            if (container == null || !container->IsLoaded)
+                return false;
+
+            for (var i = 0; i < container->Size; i++)
+            {
+                var slot = container->GetInventorySlot(i);
+                if (slot == null || slot->Quantity <= 0)
+                    continue;
+
+                var itemId = slot->GetBaseItemId();
+                if (itemId == 0)
+                    continue;
+
+                var isHq = IsSlotHq(slot);
+                var key = Configuration.MakeSellKey(itemId, isHq);
+                if (blacklist?.Contains(key) == true)
+                    continue;
+
+                var itemRow = Svc.Data.GetExcelSheet<Item>()?.GetRowOrDefault(itemId);
+                if (!IsInventorySlotSellable(slot, itemRow))
+                    continue;
+
+                var quantity = Math.Min((int)slot->Quantity, 999999);
+                if (grouped.TryGetValue(key, out var existing))
+                {
+                    var total = Math.Min(999999, existing.TotalQuantity + quantity);
+                    grouped[key] = existing with { TotalQuantity = total };
+                }
+                else
+                {
+                    grouped[key] = new AutoListInventoryCandidate(
+                        itemId,
+                        isHq,
+                        itemRow?.Name.ToString().Trim() ?? string.Empty,
+                        quantity);
+                }
+            }
+        }
+
+        candidates = grouped.Values
+            .OrderBy(candidate => candidate.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(candidate => candidate.ItemId)
+            .ThenBy(candidate => candidate.IsHq ? 1 : 0)
+            .ToList();
+        return true;
     }
 
     public bool TryGetInventorySlot(InventoryType containerType, int slotIndex, out InventoryItem* inventorySlot)

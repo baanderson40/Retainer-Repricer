@@ -41,7 +41,7 @@ public sealed class Configuration : IPluginConfiguration
     #region Dalamud config versioning
 
     // Dalamud serialization schema version; bump when config layout changes.
-    public int Version { get; set; } = 2;
+    public int Version { get; set; } = 3;
 
     [NonSerialized]
     private IDalamudPluginInterface? _pluginInterface;
@@ -893,6 +893,9 @@ public sealed class Configuration : IPluginConfiguration
         public string Name { get; set; } = string.Empty;
         public string World { get; set; } = string.Empty;
         public bool ProcessAfterAutoRetainer { get; set; }
+        public bool AutoListInventoryItems { get; set; }
+        public int AutoListMinimumStackValue { get; set; } = 1000;
+        public HashSet<ulong> AutoListItemBlacklist { get; set; } = new();
     }
 
     // Character settings are keyed by AutoRetainer's stable content ID.
@@ -909,9 +912,33 @@ public sealed class Configuration : IPluginConfiguration
             Characters[cid] = settings;
         }
 
+        settings.AutoListItemBlacklist ??= new();
+        settings.AutoListMinimumStackValue = Math.Clamp(settings.AutoListMinimumStackValue, 1, 999_999_999);
+
         if (!string.IsNullOrWhiteSpace(name)) settings.Name = name.Trim();
         if (!string.IsNullOrWhiteSpace(world)) settings.World = world.Trim();
         return settings;
+    }
+
+    public bool IsAutoListItemBlacklisted(ulong cid, uint itemId, bool isHq)
+    {
+        if (cid == 0 || itemId == 0)
+            return false;
+
+        return GetCharacterSettings(cid).AutoListItemBlacklist.Contains(MakeSellKey(itemId, isHq));
+    }
+
+    public void SetAutoListItemBlacklisted(ulong cid, uint itemId, bool isHq, bool blacklisted)
+    {
+        if (cid == 0 || itemId == 0)
+            return;
+
+        var settings = GetCharacterSettings(cid);
+        var key = MakeSellKey(itemId, isHq);
+        if (blacklisted)
+            settings.AutoListItemBlacklist.Add(key);
+        else
+            settings.AutoListItemBlacklist.Remove(key);
     }
 
     public bool IsCharacterBlacklisted(ulong cid)

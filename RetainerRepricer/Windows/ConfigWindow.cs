@@ -6,8 +6,10 @@ using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
 using Dalamud.Interface.Windowing;
+using ECommons.DalamudServices;
 using FFXIVClientStructs.FFXIV.Common.Lua;
 using AutoRetainerAPI.Configuration;
+using ItemSheet = Lumina.Excel.Sheets.Item;
 
 using RetainerRepricer.Ui;
 
@@ -750,6 +752,8 @@ public sealed class ConfigWindow : Window, IDisposable
                             "Near-due ventures can be grouped with this run using the AutoRetainer wait setting.");
                     }
 
+                    DrawAutoListSettings(character);
+
                     if (names.Count == 0)
                         ImGui.TextDisabled("No retainers are known for this character.");
                     else
@@ -766,6 +770,30 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         DrawBlacklistSection();
+    }
+
+    private void DrawAutoListSettings(Configuration.CharacterSettings character)
+    {
+        ImGui.Separator();
+        ImGui.TextUnformatted("Automatic inventory listing");
+
+        var enabled = character.AutoListInventoryItems;
+        if (ImGui.Checkbox("Automatically list eligible items", ref enabled))
+        {
+            character.AutoListInventoryItems = enabled;
+            SaveConfig();
+        }
+
+        var minimum = character.AutoListMinimumStackValue;
+        ImGui.SetNextItemWidth(190f);
+        if (ImGui.InputInt("Minimum total stack value", ref minimum))
+        {
+            character.AutoListMinimumStackValue = Math.Clamp(minimum, 1, 999_999_999);
+            SaveConfig();
+        }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Universalis performs an early estimate; final value uses the live market price multiplied by the full selected stack quantity.");
+
     }
 
     private void DrawRetainerBulkButtons(System.Collections.Generic.IReadOnlyList<string> names, ulong cid)
@@ -987,15 +1015,61 @@ public sealed class ConfigWindow : Window, IDisposable
             }
         }
 
+        if (_config.Characters is { Count: > 0 })
+        {
+            foreach (var characterEntry in _config.Characters
+                         .Where(entry => entry.Value?.AutoListItemBlacklist is { Count: > 0 })
+                         .OrderBy(entry => GetCharacterDisplayName(entry.Key, entry.Value), StringComparer.OrdinalIgnoreCase))
+            {
+                var settings = characterEntry.Value;
+                if (settings?.AutoListItemBlacklist is not { Count: > 0 })
+                    continue;
+
+                hasEntries = true;
+                ImGui.TextUnformatted($"Don't Auto-List Items ({GetCharacterDisplayName(characterEntry.Key, settings)})");
+                foreach (var key in settings.AutoListItemBlacklist.OrderBy(value => value).ToList())
+                {
+                    var itemId = (uint)(key >> 1);
+                    var isHq = (key & 1UL) != 0;
+                    var itemName = Svc.Data.GetExcelSheet<ItemSheet>()?.GetRowOrDefault(itemId)?.Name.ToString().Trim();
+                    var label = string.IsNullOrWhiteSpace(itemName) ? $"Item {itemId}" : itemName;
+                    if (isHq)
+                        label += " (HQ)";
+
+                    ImGui.PushID($"auto-blacklist-{characterEntry.Key}-{key}");
+                    ImGui.BulletText(label);
+                    ImGui.SameLine();
+                    DrawUnblacklistButton($"auto-blacklist-{characterEntry.Key}-{key}", () =>
+                    {
+                        settings.AutoListItemBlacklist.Remove(key);
+                        SaveConfig();
+                    }, "Allow Auto-Listing");
+                    ImGui.PopID();
+                }
+            }
+        }
+
         if (!hasEntries)
-            ImGui.TextDisabled("No blacklisted characters or retainers.");
+            ImGui.TextDisabled("No blacklisted characters, retainers, or auto-list items.");
     }
 
-    private void DrawUnblacklistButton(string id, Action restore)
+    private static string GetCharacterDisplayName(ulong cid, Configuration.CharacterSettings? settings)
+    {
+        if (settings is not null && !string.IsNullOrWhiteSpace(settings.Name))
+        {
+            return string.IsNullOrWhiteSpace(settings.World)
+                ? settings.Name
+                : $"{settings.Name}@{settings.World}";
+        }
+
+        return cid.ToString("X16");
+    }
+
+    private void DrawUnblacklistButton(string id, Action restore, string label = "Unblacklist")
     {
         var ctrlHeld = ImGui.GetIO().KeyCtrl;
         ImGui.BeginDisabled(!ctrlHeld);
-        if (ImGui.SmallButton($"Unblacklist##{id}"))
+        if (ImGui.SmallButton($"{label}##{id}"))
             restore();
         ImGui.EndDisabled();
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))

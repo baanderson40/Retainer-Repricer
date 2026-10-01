@@ -200,6 +200,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         CommandManager.RemoveHandler(CommandName);
         CommandManager.RemoveHandler(CommandAlias);
 
+        ResetAutoListPrefilterState();
         _universalisClient.Dispose();
         _smartSorter.Dispose();
 
@@ -566,7 +567,10 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         _currentSellItemId = 0;
         _currentSellItemIsHq = false;
         _currentSellStackSize = 0;
+        _currentSellItemIsAutoDiscovered = false;
+        _currentSellMinimumStackValue = 0;
         _hasPendingSellSlot = false;
+        _pendingSellSlot = default;
         ResetNewListingAttempt();
         _failedSellSlotKeys.Clear();
         if (Configuration.EnablePerRetainerCaps)
@@ -576,6 +580,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         }
         _needsExistingListingScan = false;
 
+        ResetAutoListPrefilterState();
         ResetUniversalisGateState();
 
         Log.Information("[RR] Stopped.");
@@ -584,6 +589,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
     private void ResetRunState()
     {
         _runStopReason = RunStopReason.Manual;
+        ResetAutoListPrefilterState();
         ResetUniversalisGateState();
 
         RebuildMyRetainersSet();
@@ -607,7 +613,10 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         _currentSellItemId = 0;
         _currentSellItemIsHq = false;
         _currentSellStackSize = 0;
+        _currentSellItemIsAutoDiscovered = false;
+        _currentSellMinimumStackValue = 0;
         _hasPendingSellSlot = false;
+        _pendingSellSlot = default;
         ResetNewListingAttempt();
         _failedSellSlotKeys.Clear();
         if (Configuration.EnablePerRetainerCaps)

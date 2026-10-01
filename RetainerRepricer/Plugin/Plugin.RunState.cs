@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace RetainerRepricer;
@@ -60,6 +61,9 @@ public unsafe sealed partial class Plugin
 
         /// <summary>Click an inventory slot to open RetainerSell for a new listing.</summary>
         Sell_OpenRetainerSellFromInventory,
+
+        /// <summary>Wait for a fast Universalis stack-value estimate before opening RetainerSell.</summary>
+        Sell_WaitingUniversalisStackValuePrefilter,
 
         /// <summary>Close RetainerSell/market windows before moving on.</summary>
         CleanupAfterItem,
@@ -182,6 +186,18 @@ public unsafe sealed partial class Plugin
         set => _sellState.CurrentSellStackSize = value;
     }
 
+    private bool _currentSellItemIsAutoDiscovered
+    {
+        get => _sellState.CurrentSellItemIsAutoDiscovered;
+        set => _sellState.CurrentSellItemIsAutoDiscovered = value;
+    }
+
+    private int _currentSellMinimumStackValue
+    {
+        get => _sellState.CurrentSellMinimumStackValue;
+        set => _sellState.CurrentSellMinimumStackValue = value;
+    }
+
     private InventorySlotRef _pendingSellSlot
     {
         get => _sellState.PendingSellSlot;
@@ -273,6 +289,24 @@ public unsafe sealed partial class Plugin
     {
         get => _sellState.NeedsExistingListingScan;
         set => _sellState.NeedsExistingListingScan = value;
+    }
+
+    private Task<decimal?>? _autoListPrefilterTask
+    {
+        get => _sellState.AutoListPrefilterTask;
+        set => _sellState.AutoListPrefilterTask = value;
+    }
+
+    private CancellationTokenSource? _autoListPrefilterCancellation
+    {
+        get => _sellState.AutoListPrefilterCancellation;
+        set => _sellState.AutoListPrefilterCancellation = value;
+    }
+
+    private AutoListPrefilterKey? _autoListPrefilterKey
+    {
+        get => _sellState.AutoListPrefilterKey;
+        set => _sellState.AutoListPrefilterKey = value;
     }
 
     private HashSet<string> _myRetainers => _marketState.MyRetainers;
@@ -437,6 +471,8 @@ public unsafe sealed partial class Plugin
         public Dictionary<string, int>? RetainerCaps;
         public Dictionary<string, int>? RetainerStackSizes;
         public int StackSizeMax;
+        public bool IsAutoDiscovered;
+        public int MinimumStackValue;
     }
 
     private struct InventorySlotRef
@@ -445,6 +481,16 @@ public unsafe sealed partial class Plugin
         public int Slot;
     }
 
+    private readonly record struct AutoListPrefilterKey(
+        uint ItemId,
+        bool IsHq,
+        string Region,
+        string BaseUrl,
+        int Container,
+        int Slot,
+        int Quantity,
+        int MinimumStackValue);
+
     private enum NewListingAttemptState
     {
         None,
@@ -452,6 +498,7 @@ public unsafe sealed partial class Plugin
         PendingConfirm,
         AwaitingResult,
         Succeeded,
+        Skipped,
         Failed,
     }
 
@@ -484,6 +531,8 @@ public unsafe sealed partial class Plugin
         public uint CurrentSellItemId { get; set; }
         public bool CurrentSellItemIsHq { get; set; }
         public int CurrentSellStackSize { get; set; }
+        public bool CurrentSellItemIsAutoDiscovered { get; set; }
+        public int CurrentSellMinimumStackValue { get; set; }
         public InventorySlotRef PendingSellSlot { get; set; }
         public bool HasPendingSellSlot { get; set; }
         public NewListingAttemptState ListingAttemptState { get; set; }
@@ -501,6 +550,9 @@ public unsafe sealed partial class Plugin
         public Dictionary<ulong, int> RetainerSellCounts { get; } = new();
         public Dictionary<ulong, int> RetainerExistingSellCounts { get; } = new();
         public bool NeedsExistingListingScan { get; set; }
+        public Task<decimal?>? AutoListPrefilterTask { get; set; }
+        public CancellationTokenSource? AutoListPrefilterCancellation { get; set; }
+        public AutoListPrefilterKey? AutoListPrefilterKey { get; set; }
     }
 
     private sealed class MarketContextState

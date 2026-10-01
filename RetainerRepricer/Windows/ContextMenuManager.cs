@@ -34,6 +34,8 @@ internal sealed class ContextMenuManager : IDisposable
     private const string AddLabel = " + Add to Sell List";
     private const string QuickListLabel = " + Quick List";
     private const string RemoveLabel = "- Remove from Sell List";
+    private const string AutoListExcludeLabel = " - Don't Auto-List";
+    private const string AutoListIncludeLabel = " + Allow Auto-Listing";
     private const string NotSellableLabel = " Not Sellable";
 
     #endregion
@@ -219,11 +221,44 @@ internal sealed class ContextMenuManager : IDisposable
 
         if (quickListVisible)
             AddQuickListMenuItem(args, containerType, slotIndex);
+
+        AddAutoListBlacklistMenuItem(args, itemId, isHq);
     }
 
     #endregion
 
     #region Helpers
+
+    private void AddAutoListBlacklistMenuItem(IMenuOpenedArgs args, uint itemId, bool isHq)
+    {
+        var settings = _config.GetCharacterSettings(_plugin.CurrentCharacterId);
+        if (!settings.AutoListInventoryItems)
+            return;
+
+        var isBlacklisted = _config.IsAutoListItemBlacklisted(_plugin.CurrentCharacterId, itemId, isHq);
+        args.AddMenuItem(new MenuItem
+        {
+            IsEnabled = true,
+            IsReturn = false,
+            IsSubmenu = false,
+            Prefix = PrefixIcon,
+            PrefixColor = isBlacklisted ? RemoveColor : PrefixColor,
+            Name = new SeStringBuilder()
+                .AddUiForeground(isBlacklisted ? AutoListIncludeLabel : AutoListExcludeLabel,
+                    isBlacklisted ? RemoveColor : PrefixColor)
+                .Build(),
+            OnClicked = _ =>
+            {
+                _config.SetAutoListItemBlacklisted(_plugin.CurrentCharacterId, itemId, isHq, !isBlacklisted);
+                _config.Save();
+                Plugin.Log.Information("[RR][AutoList] Item {ItemId} (HQ={IsHq}) blacklist={Blacklisted} for cid={Cid}",
+                    itemId,
+                    isHq,
+                    !isBlacklisted,
+                    _plugin.CurrentCharacterId);
+            }
+        });
+    }
 
     private bool TryQuickAddFromModifier(uint itemId, bool isHq, string itemName)
     {
