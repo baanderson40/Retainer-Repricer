@@ -285,6 +285,9 @@ public unsafe sealed partial class Plugin
     private Dictionary<ulong, int> _retainerExistingSellCounts
         => _sellState.RetainerExistingSellCounts;
 
+    private Dictionary<ulong, AutoListPriceRejection> _autoListPriceRejections
+        => _sellState.AutoListPriceRejections;
+
     private bool _needsExistingListingScan
     {
         get => _sellState.NeedsExistingListingScan;
@@ -491,6 +494,12 @@ public unsafe sealed partial class Plugin
         int Quantity,
         int MinimumStackValue);
 
+    private readonly record struct AutoListPriceRejection(
+        int UnitPrice,
+        int Quantity,
+        int MinimumStackValue,
+        long StackValue);
+
     private enum NewListingAttemptState
     {
         None,
@@ -549,6 +558,7 @@ public unsafe sealed partial class Plugin
         public DateTime RetainerContextMenuRequestedUtc { get; set; } = DateTime.MinValue;
         public Dictionary<ulong, int> RetainerSellCounts { get; } = new();
         public Dictionary<ulong, int> RetainerExistingSellCounts { get; } = new();
+        public Dictionary<ulong, AutoListPriceRejection> AutoListPriceRejections { get; } = new();
         public bool NeedsExistingListingScan { get; set; }
         public Task<decimal?>? AutoListPrefilterTask { get; set; }
         public CancellationTokenSource? AutoListPrefilterCancellation { get; set; }

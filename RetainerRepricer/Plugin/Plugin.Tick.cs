@@ -1131,7 +1131,8 @@ public unsafe sealed partial class Plugin
                     if (_currentSellItemIsAutoDiscovered &&
                         !MeetsAutoListStackValue(_stagedDesiredPrice.Value, _currentSellStackSize, out var stackValue))
                     {
-                        Log.Information($"[RR][AutoList] Skipping itemId={_currentSellItemId} hq={_currentSellItemIsHq}: stack value {stackValue} < minimum {_currentSellMinimumStackValue}.");
+                        CacheAutoListPriceRejection(_stagedDesiredPrice.Value, stackValue);
+                        Log.Information($"[RR][AutoList] Skipping itemId={_currentSellItemId} hq={_currentSellItemIsHq}: stack value {stackValue} < minimum {_currentSellMinimumStackValue}; cached for this run.");
                         _newListingAttemptState = NewListingAttemptState.Skipped;
                         RememberFailedAttemptedSlot();
                         _runPhase = RunPhase.CleanupAfterItem;
@@ -1491,6 +1492,9 @@ public unsafe sealed partial class Plugin
                         _currentSellMinimumStackValue = c.MinimumStackValue;
                         _pendingSellSlot = slotRef;
                         _hasPendingSellSlot = true;
+
+                        if (c.IsAutoDiscovered && TrySkipCachedAutoListRejection(now))
+                            return;
 
                         Log.Debug($"[RR] Sell candidate: itemId={c.ItemId} hq={c.IsHq} count={totalCount} threshold={threshold} container={slotRef.Container} slot={slotRef.Slot} (cap {_soldThisRetainer}/{_sellCapacityThisRetainer})");
 
@@ -1884,6 +1888,37 @@ public unsafe sealed partial class Plugin
     {
         stackValue = (long)Math.Max(0, unitPrice) * Math.Max(0, quantity);
         return !_currentSellItemIsAutoDiscovered || stackValue >= Math.Max(1, _currentSellMinimumStackValue);
+    }
+
+    private bool TrySkipCachedAutoListRejection(DateTime now)
+    {
+        var key = Configuration.MakeSellKey(_currentSellItemId, _currentSellItemIsHq);
+        if (!_autoListPriceRejections.TryGetValue(key, out var rejection))
+            return false;
+
+        var cachedStackValue = (long)Math.Max(0, rejection.UnitPrice) * Math.Max(0, _currentSellStackSize);
+        if (cachedStackValue >= Math.Max(1, _currentSellMinimumStackValue))
+        {
+            Log.Verbose($"[RR][AutoList][Cache] Cached rejection does not reject itemId={_currentSellItemId} hq={_currentSellItemIsHq} quantity={_currentSellStackSize}; continuing with live pricing.");
+            return false;
+        }
+
+        Log.Debug($"[RR][AutoList][Cache] Skipping itemId={_currentSellItemId} hq={_currentSellItemIsHq}: cached unit price {rejection.UnitPrice} x quantity {_currentSellStackSize} = {cachedStackValue} < minimum {_currentSellMinimumStackValue}.");
+        SkipCurrentAutoListCandidate(now);
+        return true;
+    }
+
+    private void CacheAutoListPriceRejection(int unitPrice, long stackValue)
+    {
+        var key = Configuration.MakeSellKey(_currentSellItemId, _currentSellItemIsHq);
+        var rejection = new AutoListPriceRejection(
+            Math.Max(1, unitPrice),
+            Math.Max(0, _currentSellStackSize),
+            Math.Max(1, _currentSellMinimumStackValue),
+            stackValue);
+
+        if (!_autoListPriceRejections.TryGetValue(key, out var existing) || rejection.UnitPrice > existing.UnitPrice)
+            _autoListPriceRejections[key] = rejection;
     }
 
     private void SkipCurrentAutoListCandidate(DateTime now)

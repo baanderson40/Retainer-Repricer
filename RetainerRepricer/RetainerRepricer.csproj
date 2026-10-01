@@ -11,7 +11,7 @@
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     </PropertyGroup>
     <ItemGroup>
-        <PackageReference Include="ECommons" Version="3.2.1.17" />
+        <PackageReference Include="ECommons" Version="3.2.1.21" />
         <ProjectReference Include="..\external\AutoRetainerAPI\AutoRetainerAPI\AutoRetainerAPI.csproj" />
     </ItemGroup>
 </Project>

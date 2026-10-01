@@ -14,17 +14,17 @@
         "resolved": "1.2.39",
         "contentHash": "fcFN01tDTIQqDuTwr1jUQK/geofiwjG5DycJQOnC72i1SsLAk1ELe+apBOuZ11UMQG8YKFZG1FgvjZPbqHyatg=="
       },
+      "ECommons": {
+        "type": "Direct",
+        "requested": "[3.2.1.21, )",
+        "resolved": "3.2.1.21",
+        "contentHash": "t8aWdB5cIOjuCT+fR8L1h9EF9+VUB/YVDdocbB9Ig5qb6s2/RYTtLmR8dskBeRlIIi0OPh840F4Y/3MVz/o3Xw=="
+      },
       "autoretainerapi": {
         "type": "Project",
         "dependencies": {
           "ECommons": "[3.2.0.11, )"
         }
-      },
-      "ecommons": {
-        "type": "Direct",
-        "requested": "[3.2.1.17, )",
-        "resolved": "3.2.1.17",
-        "contentHash": "gIjvCFzqJApeyncqDegjvs2QFAVoXuwkrfFimhXWhu6x8zAloh8Wyu1Qu8BSym79HuTu4v5/U/HhNqkFy6uwoA=="
       }
     }
   }

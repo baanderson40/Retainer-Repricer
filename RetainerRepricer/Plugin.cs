@@ -573,6 +573,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         _pendingSellSlot = default;
         ResetNewListingAttempt();
         _failedSellSlotKeys.Clear();
+        _autoListPriceRejections.Clear();
         if (Configuration.EnablePerRetainerCaps)
         {
             _retainerSellCounts.Clear();
@@ -619,6 +620,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         _pendingSellSlot = default;
         ResetNewListingAttempt();
         _failedSellSlotKeys.Clear();
+        _autoListPriceRejections.Clear();
         if (Configuration.EnablePerRetainerCaps)
         {
             _retainerSellCounts.Clear();
