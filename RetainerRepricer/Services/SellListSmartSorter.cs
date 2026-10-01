@@ -73,17 +73,26 @@ internal sealed class SellListSmartSorter : IDisposable
         if (!IsEnabled)
             return false;
 
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var region = _regionProvider() ?? string.Empty;
+        var characterId = _characterIdProvider();
+
         await _sortLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var region = _regionProvider() ?? string.Empty;
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!IsEnabled)
+                return false;
+
             if (string.IsNullOrWhiteSpace(region))
             {
                 _log.Warning("[RR][SmartSort] Cannot run smart sort: missing world or data center context.");
                 return false;
             }
 
-            var entries = _config.GetSellListOrdered(_characterIdProvider()).ToList();
+            var entries = _config.GetSellListOrdered(characterId).ToList();
             if (entries.Count <= 1)
                 return false;
 
