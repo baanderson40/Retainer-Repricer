@@ -22,6 +22,8 @@ public unsafe sealed partial class Plugin
     private DateTime _autoRetainerHandoffStartedUtc = DateTime.MinValue;
     private bool _autoRetainerSuppressionBeforeHandoff;
     private string _autoRetainerHandoffRetainerName = string.Empty;
+    private ulong _autoRetainerHandoffCharacterId;
+    private DateTime _autoRetainerRecoveryStartedUtc = DateTime.MinValue;
 
     internal bool AutoRetainerAvailable => _autoRetainerRegistered;
 
@@ -102,7 +104,8 @@ public unsafe sealed partial class Plugin
 
     private void DisposeAutoRetainerIntegration()
     {
-        ReleaseAutoRetainerHandoff();
+        if (_autoRetainerHandoffActive)
+            FailAutoRetainerHandoff("plugin disposed during handoff");
 
         if (_autoRetainerApi != null)
         {
@@ -117,6 +120,14 @@ public unsafe sealed partial class Plugin
     {
         if (_autoRetainerHandoffActive)
         {
+            if (CurrentCharacterId == 0 || CurrentCharacterId != _autoRetainerHandoffCharacterId)
+            {
+                if (IsRunning)
+                    StopRun(RunStopReason.Error);
+                FailAutoRetainerHandoff("character changed during handoff");
+                return;
+            }
+
             if (_autoRetainerRecoveryActive)
             {
                 AdvanceAutoRetainerRecovery();
@@ -167,6 +178,9 @@ public unsafe sealed partial class Plugin
 
     private void OnAutoRetainerAdditionalTask(string retainerName)
     {
+        if (_autoRetainerAutomationBlocked)
+            return;
+
         try
         {
             _autoRetainerApi?.RequestRetainerPostprocess();
@@ -181,7 +195,11 @@ public unsafe sealed partial class Plugin
 
     private void OnAutoRetainerRetainerReady(string retainerName)
     {
-        if (_autoRetainerHandoffActive || IsRunning)
+        // A duplicate callback must not unlock the handoff we already own.
+        if (_autoRetainerHandoffActive || _autoRetainerAutomationBlocked)
+            return;
+
+        if (IsRunning)
         {
             FinishAutoRetainerRetainerPostProcess();
             return;
@@ -227,6 +245,9 @@ public unsafe sealed partial class Plugin
         _autoRetainerHandoffStartedUtc = DateTime.UtcNow;
         _autoRetainerSuppressionBeforeHandoff = false;
         _autoRetainerHandoffRetainerName = retainerName;
+        _autoRetainerHandoffCharacterId = cid;
+        ResetAutoRetainerNavigation();
+        SetAutoRetainerNavigationStage(AutoRetainerNavigationStage.PreparingList);
 
         try
         {
@@ -405,31 +426,23 @@ public unsafe sealed partial class Plugin
             return;
         }
 
-        if (IsAddonVisible("ItemSearchResult") || IsAddonVisible("ItemHistory"))
+        LogAutoRetainerNavigation();
+        if (!CanAdvanceAutoRetainerNavigation() || AdvanceAutoRetainerChildCleanup())
+            return;
+
+        if (IsAutoRetainerAddonBlocking("SelectString"))
         {
-            CloseMarketWindows();
+            TryAutoRetainerCloseAddon("SelectString");
             return;
         }
 
-        if (IsAddonVisible("RetainerSell"))
+        if (IsAutoRetainerAddonBlocking("Talk"))
         {
-            CloseRetainerSellIfOpen();
+            TryAutoRetainerAdvanceTalk();
             return;
         }
 
-        if (IsAddonVisible("SelectString"))
-        {
-            CloseAddonIfOpen("SelectString");
-            return;
-        }
-
-        if (IsAddonVisible("Talk"))
-        {
-            TryAdvanceTalk();
-            return;
-        }
-
-        if (!IsAddonVisible("RetainerList") || !IsRetainerListReady())
+        if (!IsAutoRetainerAddonReady("RetainerList") || !IsRetainerListReady())
             return;
 
         AutoRetainerHandoffDecision decision;
@@ -443,21 +456,20 @@ public unsafe sealed partial class Plugin
         }
         catch (Exception ex)
         {
-            Log.Error(ex, "[RR][AR] Failed to verify enabled-retainer ventures before starting; releasing AutoRetainer.");
-            ReleaseAutoRetainerHandoff();
+            Log.Error(ex, "[RR][AR] Failed to verify enabled-retainer ventures before starting.");
+            BeginAutoRetainerRecovery("venture verification failed");
             return;
         }
         if (decision == AutoRetainerHandoffDecision.Defer)
         {
             LogAutoRetainerHandoffDeferral(_autoRetainerHandoffRetainerName, pendingWork, "pre_start");
-            ReleaseAutoRetainerHandoff();
+            BeginAutoRetainerRecovery("pending venture work appeared before start");
             return;
         }
 
         if (decision == AutoRetainerHandoffDecision.Unavailable)
         {
-            Log.Warning("[RR][AR] Could not verify enabled-retainer ventures before starting; releasing AutoRetainer.");
-            ReleaseAutoRetainerHandoff();
+            BeginAutoRetainerRecovery("enabled-retainer venture data unavailable before start");
             return;
         }
 
@@ -471,71 +483,68 @@ public unsafe sealed partial class Plugin
         else
         {
             _autoRetainerRunStarted = true;
+            SetAutoRetainerNavigationStage(AutoRetainerNavigationStage.Running);
             Log.Information("[RR][AR] RetainerList ready; automatic repricing run started.");
         }
     }
 
     private void BeginAutoRetainerRecovery(string reason)
     {
+        if (_autoRetainerRecoveryActive)
+            return;
+
+        LogAutoRetainerNavigation(force: true);
         _autoRetainerRecoveryActive = true;
-        _autoRetainerHandoffStartedUtc = DateTime.UtcNow;
-        Log.Warning($"[RR][AR] Aborting handoff and unwinding retainer UI: {reason}.");
+        _autoRetainerRecoveryStartedUtc = DateTime.UtcNow;
+        _autoRetainerRecoveryRetainerName = _autoRetainerHandoffRetainerName;
+        _autoRetainerMenuStableSinceUtc = DateTime.MinValue;
+        _autoRetainerRetainerReopened = false;
+        SetAutoRetainerNavigationStage(AutoRetainerNavigationStage.RecoveringMenu);
+        Log.Warning($"[RR][AR] Restoring AutoRetainer Quit menu: {reason}.");
     }
 
     private void AdvanceAutoRetainerRecovery()
     {
-        var elapsed = (DateTime.UtcNow - _autoRetainerHandoffStartedUtc).TotalSeconds;
+        var elapsed = (DateTime.UtcNow - _autoRetainerRecoveryStartedUtc).TotalSeconds;
         if (elapsed >= AutoRetainerRecoveryTimeoutSeconds)
         {
-            Log.Warning("[RR][AR] Retainer UI unwind timed out; releasing AutoRetainer.");
-            ReleaseAutoRetainerHandoff();
+            FailAutoRetainerHandoff("Quit menu recovery timed out");
             return;
         }
 
-        if (IsAddonVisible("ItemSearchResult") || IsAddonVisible("ItemHistory"))
+        LogAutoRetainerNavigation();
+        if (!IsAutoRetainerQuitMenuReady())
+            _autoRetainerMenuStableSinceUtc = DateTime.MinValue;
+
+        if (!CanAdvanceAutoRetainerNavigation() || AdvanceAutoRetainerChildCleanup())
+            return;
+
+        if (IsAutoRetainerAddonBlocking("SelectString"))
         {
-            CloseMarketWindows();
+            SetAutoRetainerNavigationStage(AutoRetainerNavigationStage.WaitingForQuitMenu);
+            if (IsAutoRetainerQuitMenuStable())
+            {
+                SetAutoRetainerNavigationStage(AutoRetainerNavigationStage.ReadyToRelease);
+                Log.Information("[RR][AR] Stable retainer Quit menu ready; releasing AutoRetainer.");
+                ReleaseAutoRetainerHandoff();
+            }
             return;
         }
 
-        if (IsAddonVisible("ContextMenu"))
+        if (IsAutoRetainerAddonBlocking("Talk"))
         {
-            FireContextMenuDismiss();
+            SetAutoRetainerNavigationStage(AutoRetainerNavigationStage.WaitingForQuitMenu);
+            TryAutoRetainerAdvanceTalk();
             return;
         }
 
-        if (IsAddonVisible("RetainerSell"))
+        if (IsAutoRetainerAddonReady("RetainerList") && IsRetainerListReady() &&
+            !_autoRetainerRetainerReopened)
         {
-            CloseRetainerSellIfOpen();
-            return;
+            SetAutoRetainerNavigationStage(AutoRetainerNavigationStage.ReopeningRetainer);
+            TryAutoRetainerReopenCallbackRetainer();
         }
-
-        if (IsAddonVisible("RetainerSellList"))
-        {
-            CloseAddonIfOpen("RetainerSellList");
-            return;
-        }
-
-        if (IsAddonVisible("SelectString"))
-        {
-            CloseAddonIfOpen("SelectString");
-            return;
-        }
-
-        if (IsAddonVisible("Talk"))
-        {
-            TryAdvanceTalk();
-            return;
-        }
-
-        if (IsAddonVisible("RetainerList"))
-        {
-            CloseAddonIfOpen("RetainerList");
-            return;
-        }
-
-        Log.Information("[RR][AR] Retainer UI fully unwound; releasing AutoRetainer.");
-        ReleaseAutoRetainerHandoff();
+        // No visible UI can be a transition, never evidence of a valid handback.
     }
 
     private void CompleteAutoRetainerHandoff()
@@ -543,17 +552,17 @@ public unsafe sealed partial class Plugin
         if (!_autoRetainerHandoffActive)
             return;
 
-        ReleaseAutoRetainerHandoff();
+        BeginAutoRetainerRecovery("automatic run finished; validating handback menu");
     }
 
-    private void ReleaseAutoRetainerHandoff()
+    private void ReleaseAutoRetainerHandoff(bool restoreSuppression = true, bool finishPostprocess = true)
     {
         if (!_autoRetainerHandoffActive)
             return;
 
         try
         {
-            if (_autoRetainerApi != null)
+            if (restoreSuppression && _autoRetainerApi != null)
                 _autoRetainerApi.Suppressed = _autoRetainerSuppressionBeforeHandoff;
         }
         catch (IpcError)
@@ -563,7 +572,8 @@ public unsafe sealed partial class Plugin
 
         try
         {
-            _autoRetainerApi?.FinishRetainerPostProcess();
+            if (finishPostprocess)
+                _autoRetainerApi?.FinishRetainerPostProcess();
         }
         catch (IpcError)
         {
@@ -575,6 +585,9 @@ public unsafe sealed partial class Plugin
         _autoRetainerRecoveryActive = false;
         _autoRetainerHandoffStartedUtc = DateTime.MinValue;
         _autoRetainerHandoffRetainerName = string.Empty;
+        _autoRetainerHandoffCharacterId = 0;
+        _autoRetainerRecoveryStartedUtc = DateTime.MinValue;
+        ResetAutoRetainerNavigation();
     }
 
     private void FinishAutoRetainerRetainerPostProcess()

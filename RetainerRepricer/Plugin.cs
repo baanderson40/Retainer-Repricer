@@ -411,6 +411,12 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
     internal unsafe bool StartRunFromRetainerList(RunMode mode = RunMode.PriceAndSell, bool notifyChatOnFailure = false)
     {
+        if (IsRunning)
+        {
+            NotifyStartFailed("Already running.", notifyChatOnFailure);
+            return false;
+        }
+
         if (Configuration.IsCharacterBlacklisted(CurrentCharacterId))
         {
             NotifyStartFailed("Current character is blacklisted.", notifyChatOnFailure);
@@ -426,6 +432,8 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
         SyncRetainersIntoConfig(ReadRetainerNames());
         ResetRunState();
+        _runScope = RunScope.AllEnabledRetainers;
+        _runCharacterId = CurrentCharacterId;
         _runMode = mode;
 
         var count = list->GetItemCount();
@@ -468,6 +476,91 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         return true;
     }
 
+    internal bool StartRunFromCurrentRetainerSellList(
+        RunMode mode = RunMode.PriceAndSell,
+        bool notifyChatOnFailure = false)
+    {
+        if (IsRunning)
+        {
+            NotifyStartFailed("Already running.", notifyChatOnFailure);
+            return false;
+        }
+
+        if (Configuration.IsCharacterBlacklisted(CurrentCharacterId))
+        {
+            NotifyStartFailed("Current character is blacklisted.", notifyChatOnFailure);
+            return false;
+        }
+
+        if (!IsAddonVisible("RetainerSellList") || IsAddonVisible("RetainerSell") ||
+            IsAddonOpen("ItemSearchResult") || IsAddonOpen("ItemHistory"))
+        {
+            NotifyStartFailed("Close item or market windows; open RetainerSellList before starting.", notifyChatOnFailure);
+            return false;
+        }
+
+        if (!_uiReader.TryGetActiveRetainer(out var retainerId, out var retainerName))
+        {
+            NotifyStartFailed("Could not resolve active retainer from RetainerSellList.", notifyChatOnFailure);
+            return false;
+        }
+
+        var cid = CurrentCharacterId;
+        if (cid == 0)
+        {
+            NotifyStartFailed("Could not resolve current character.", notifyChatOnFailure);
+            return false;
+        }
+
+        retainerName = Configuration.NormalizeRetainerName(retainerName);
+        if (Configuration.IsRetainerBlacklisted(cid, retainerName))
+        {
+            NotifyStartFailed($"Retainer '{retainerName}' is blacklisted.", notifyChatOnFailure);
+            return false;
+        }
+
+        var behavior = Configuration.GetRetainerBehavior(cid, retainerName);
+        if (!behavior.Enabled)
+        {
+            NotifyStartFailed($"Retainer '{retainerName}' is disabled.", notifyChatOnFailure);
+            return false;
+        }
+
+        if ((mode == RunMode.PriceOnly && !behavior.AllowReprice) ||
+            (mode == RunMode.SellOnly && !behavior.AllowSell) ||
+            (mode == RunMode.PriceAndSell && !behavior.AllowReprice && !behavior.AllowSell))
+        {
+            NotifyStartFailed($"Retainer '{retainerName}' has no enabled action for {DescribeRunMode(mode)}.", notifyChatOnFailure);
+            return false;
+        }
+
+        if (_uiReader.ReadRetainerSellListListedCount() is null)
+        {
+            NotifyStartFailed("RetainerSellList is not readable yet. Try again shortly.", notifyChatOnFailure);
+            return false;
+        }
+
+        ResetRunState();
+        _runScope = RunScope.CurrentRetainer;
+        _runCharacterId = cid;
+        _runMode = mode;
+        _currentRetainerId = retainerId;
+        _currentRetainerName = retainerName;
+        _currentRetainerAllowsReprice = behavior.AllowReprice;
+        _currentRetainerAllowsSell = behavior.AllowSell;
+        _currentRetainerRowIndex = -1;
+        RunAutoPruneIfEnabled("run_start", latchRun: true);
+        InitializePerRetainerSellState();
+
+        IsRunning = true;
+        _runPhase = RunPhase.WaitingRetainerSellList;
+        _lastActionUtc = DateTime.MinValue;
+        _lastFrameworkTickUtc = DateTime.MinValue;
+
+        Log.Information($"[RR] Start ({DescribeRunMode(mode)}) for current retainer '{retainerName}' (id={retainerId}).");
+        return true;
+    }
+
     private unsafe bool StartRun(RunMode mode = RunMode.PriceAndSell, bool notifyChatOnFailure = false)
     {
         if (Configuration.IsCharacterBlacklisted(CurrentCharacterId))
@@ -481,6 +574,9 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
             NotifyStartFailed("Already running.", notifyChatOnFailure);
             return false;
         }
+
+        if (IsAddonVisible("RetainerSellList"))
+            return StartRunFromCurrentRetainerSellList(mode, notifyChatOnFailure);
 
         if (!IsAddonVisible("RetainerList"))
         {
@@ -497,6 +593,8 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
         SyncRetainersIntoConfig(ReadRetainerNames());
         ResetRunState();
+        _runScope = RunScope.AllEnabledRetainers;
+        _runCharacterId = CurrentCharacterId;
         _runMode = mode;
 
         var count = list->GetItemCount();
@@ -544,6 +642,8 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         _runStopReason = reason;
         _runPhase = RunPhase.Idle;
         _runMode = RunMode.PriceAndSell;
+        _runScope = RunScope.AllEnabledRetainers;
+        _runCharacterId = 0;
 
         _retainerRowOrder.Clear();
         _retainerRowPos = -1;
@@ -551,6 +651,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         _currentRetainerAllowsSell = false;
         _currentRetainerRowIndex = -1;
         _currentRetainerName = string.Empty;
+        _currentRetainerId = 0;
 
         _sellListCountCaptured = false;
         _listedCountThisRetainer = 0;
@@ -583,6 +684,8 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
         ResetAutoListPrefilterState();
         ResetUniversalisGateState();
+        _runScope = RunScope.AllEnabledRetainers;
+        _runCharacterId = 0;
 
         Log.Information("[RR] Stopped.");
     }
@@ -590,6 +693,9 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
     private void ResetRunState()
     {
         _runStopReason = RunStopReason.Manual;
+        _runScope = RunScope.AllEnabledRetainers;
+        _runCharacterId = 0;
+        _currentRetainerId = 0;
         ResetAutoListPrefilterState();
         ResetUniversalisGateState();
 
@@ -689,12 +795,17 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
     }
 
     private string GetCompletionMessage()
-        => _runMode switch
+    {
+        if (_runScope == RunScope.CurrentRetainer)
+            return $"Current-retainer run complete for {_currentRetainerName}.";
+
+        return _runMode switch
         {
             RunMode.PriceOnly => "Repricing run complete.",
             RunMode.SellOnly => "Sell-only run complete.",
             _ => "Repricing and selling run complete.",
         };
+    }
 
     #endregion
 
@@ -1095,6 +1206,12 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
     private void TransitionToExitToRetainerList()
     {
+        if (_runScope == RunScope.CurrentRetainer)
+        {
+            TransitionToCurrentRetainerCompletion();
+            return;
+        }
+
         QueuePostSellPruneIfNeeded();
         _runPhase = RunPhase.ExitToRetainerList;
     }

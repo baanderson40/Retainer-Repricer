@@ -37,6 +37,18 @@ public unsafe sealed partial class Plugin
         var itemHistoryOpen = IsAddonOpen("ItemHistory");
         var contextMenuVisible = IsAddonVisible("ContextMenu");
 
+        if (_runScope == RunScope.CurrentRetainer)
+        {
+            if (CurrentCharacterId != _runCharacterId ||
+                !_uiReader.TryGetActiveRetainer(out var activeRetainerId, out _) ||
+                activeRetainerId != _currentRetainerId)
+            {
+                Log.Warning($"[RR] Current retainer context changed during run (expected cid={_runCharacterId}, retainerId={_currentRetainerId}); stopping.");
+                StopRun(RunStopReason.Error);
+                return;
+            }
+        }
+
         switch (_runPhase)
         {
             #region Retainer navigation
@@ -70,82 +82,7 @@ public unsafe sealed partial class Plugin
                         return;
                     }
 
-                    // Reset per-retainer counters.
-                    _sellListCountCaptured = false;
-                    _listedCountThisRetainer = 0;
-                    _slotIndexToOpen = 0;
-                    ResetAutoListPrefilterState();
-
-                    // Build per-retainer sell queue (runs after repricing).
-                    _sellQueue.Clear();
-                    var characterSettings = Configuration.GetCharacterSettings(CurrentCharacterId);
-                    if (Configuration.EnablePerRetainerCaps || characterSettings.AutoListInventoryItems)
-                        _retainerSellCounts.Clear();
-                    _retainerExistingSellCounts.Clear();
-                    _needsExistingListingScan = Configuration.EnablePerRetainerCaps || characterSettings.AutoListInventoryItems;
-                    var explicitSellKeys = new HashSet<ulong>();
-                    foreach (var e in Configuration.GetSellListOrdered(CurrentCharacterId))
-                    {
-                        if (e.ItemId == 0) continue;
-
-                        e.EnsureRetainerCaps();
-                        e.EnsureRetainerStackSizes();
-                        var stackCap = GetStackSizeCap(e.ItemId);
-
-                        _sellQueue.Add(new SellCandidate
-                        {
-                            ItemId = e.ItemId,
-                            IsHq = e.IsHq,
-                            MinCountToSell = Math.Max(1, e.MinCountToSell),
-                            Name = e.Name ?? string.Empty,
-                            RetainerCaps = e.RetainerCaps,
-                            RetainerStackSizes = e.RetainerStackSizes,
-                            StackSizeMax = stackCap,
-                        });
-                        explicitSellKeys.Add(Configuration.MakeSellKey(e.ItemId, e.IsHq));
-                    }
-
-                    if (characterSettings.AutoListInventoryItems &&
-                        _uiReader.TryGetAutoListInventoryCandidates(characterSettings.AutoListItemBlacklist, out var autoCandidates))
-                    {
-                        foreach (var candidate in autoCandidates)
-                        {
-                            var key = Configuration.MakeSellKey(candidate.ItemId, candidate.IsHq);
-                            if (explicitSellKeys.Contains(key))
-                                continue;
-
-                            _sellQueue.Add(new SellCandidate
-                            {
-                                ItemId = candidate.ItemId,
-                                IsHq = candidate.IsHq,
-                                MinCountToSell = 1,
-                                Name = candidate.Name,
-                                StackSizeMax = GetStackSizeCap(candidate.ItemId),
-                                IsAutoDiscovered = true,
-                                MinimumStackValue = characterSettings.AutoListMinimumStackValue,
-                            });
-                        }
-                    }
-                    else if (characterSettings.AutoListInventoryItems)
-                    {
-                        Log.Verbose("[RR][AutoList] Inventory not ready; automatic candidates will be retried.");
-                    }
-                    _sellCapacityThisRetainer = 0;
-                    _soldThisRetainer = 0;
-
-                    _processingListedItem = true;
-                    _currentSellItemId = 0;
-                    _currentSellItemIsHq = false;
-                    _currentSellStackSize = 0;
-                    _currentSellItemIsAutoDiscovered = false;
-                    _currentSellMinimumStackValue = 0;
-                    _hasPendingSellSlot = false;
-                    ResetNewListingAttempt();
-                    _failedSellSlotKeys.Clear();
-
-                    // Reset pacing per retainer so a throttle hit doesn't poison the next retainer.
-                    _mbIntervalSec = MbBaseIntervalSeconds;
-                    _lastMbQueryUtc = DateTime.MinValue;
+                    InitializePerRetainerSellState();
 
                     var entry = _retainerRowOrder[_retainerRowPos];
                     _currentRetainerAllowsReprice = entry.AllowReprice;
@@ -263,7 +200,7 @@ public unsafe sealed partial class Plugin
                     }
 
                     var retainerLabel = DescribeCurrentRetainerForLog();
-                    var needListingScan = Configuration.EnablePerRetainerCaps && _needsExistingListingScan && _listedCountThisRetainer > 0;
+                    var needListingScan = _needsExistingListingScan && _listedCountThisRetainer > 0;
 
                     if ((ShouldRepriceThisRetainer && _listedCountThisRetainer > 0) || needListingScan)
                     {
@@ -311,7 +248,7 @@ public unsafe sealed partial class Plugin
 
             case RunPhase.OpeningSellItem:
                 {
-                    var needListingScan = Configuration.EnablePerRetainerCaps && _needsExistingListingScan;
+                    var needListingScan = _needsExistingListingScan;
 
                     if (!ShouldRepriceThisRetainer && !needListingScan)
                     {
@@ -1131,7 +1068,10 @@ public unsafe sealed partial class Plugin
                     if (_currentSellItemIsAutoDiscovered &&
                         !MeetsAutoListStackValue(_stagedDesiredPrice.Value, _currentSellStackSize, out var stackValue))
                     {
-                        CacheAutoListPriceRejection(_stagedDesiredPrice.Value, stackValue);
+                        CacheAutoListPriceRejection(
+                            _stagedDesiredPrice.Value,
+                            stackValue,
+                            AutoListPriceSource.FinalListingPrice);
                         Log.Information($"[RR][AutoList] Skipping itemId={_currentSellItemId} hq={_currentSellItemIsHq}: stack value {stackValue} < minimum {_currentSellMinimumStackValue}; cached for this run.");
                         _newListingAttemptState = NewListingAttemptState.Skipped;
                         RememberFailedAttemptedSlot();
@@ -1389,6 +1329,7 @@ public unsafe sealed partial class Plugin
 
                     if (_sellCapacityThisRetainer <= 0)
                     {
+                        LogCachedAutoListSkipSummary();
                         Log.Information("[RR] Sell skipped: retainer is full (20/20).");
                         TransitionToExitToRetainerList();
                         _lastActionUtc = now;
@@ -1397,6 +1338,7 @@ public unsafe sealed partial class Plugin
 
                     if (_soldThisRetainer >= _sellCapacityThisRetainer)
                     {
+                        LogCachedAutoListSkipSummary();
                         Log.Information($"[RR] Sell complete: reached capacity {_soldThisRetainer}/{_sellCapacityThisRetainer}.");
                         TransitionToExitToRetainerList();
                         _lastActionUtc = now;
@@ -1405,6 +1347,7 @@ public unsafe sealed partial class Plugin
 
                     if (_sellQueue.Count == 0)
                     {
+                        LogCachedAutoListSkipSummary();
                         Log.Debug("[RR] Sell skipped: SellList is empty.");
                         TransitionToExitToRetainerList();
                         _lastActionUtc = now;
@@ -1455,73 +1398,90 @@ public unsafe sealed partial class Plugin
                             }
                         }
 
-                        var inventoryLookup = FindItemInInventory(c.ItemId, c.IsHq, out var slotRef);
-                        if (!inventoryLookup.FoundSellable)
+                        while (true)
                         {
-                            if (inventoryLookup.Status == UiReader.InventoryLookupStatus.FoundOnlyUnsellable)
+                            var inventoryLookup = FindItemInInventory(c.ItemId, c.IsHq, out var slotRef);
+                            if (!inventoryLookup.FoundSellable)
                             {
-                                Log.Verbose($"[RR] Sell candidate skipped: itemId={c.ItemId} hq={c.IsHq} present but not sellable (spiritbondOrCollectability={inventoryLookup.FirstUnsellableSpiritbondOrCollectability})");
+                                if (inventoryLookup.Status == UiReader.InventoryLookupStatus.FoundOnlyUnsellable)
+                                {
+                                    Log.Verbose($"[RR] Sell candidate skipped: itemId={c.ItemId} hq={c.IsHq} present but not sellable (spiritbondOrCollectability={inventoryLookup.FirstUnsellableSpiritbondOrCollectability})");
+                                }
+                                else
+                                {
+                                    Log.Verbose($"[RR] Sell candidate not in inventory: itemId={c.ItemId} hq={c.IsHq}");
+                                }
+
+                                break;
+                            }
+
+                            var totalCount = inventoryLookup.TotalCount;
+                            if (totalCount < threshold)
+                            {
+                                Log.Verbose($"[RR] Sell candidate skipped: itemId={c.ItemId} hq={c.IsHq} count={totalCount} < threshold={threshold}");
+                                break;
+                            }
+
+                            if (!TryReadInventorySlotState(slotRef, out _, out _, out var selectedQuantity))
+                            {
+                                _failedSellSlotKeys.Add(GetInventorySlotKey(slotRef));
+                                continue;
+                            }
+
+                            var selectedStackQuantity = c.IsAutoDiscovered
+                                ? Math.Min(selectedQuantity, Math.Max(1, c.StackSizeMax))
+                                : desiredQuantity;
+
+                            if (c.IsAutoDiscovered && TryGetCachedAutoListRejection(
+                                    c.ItemId,
+                                    c.IsHq,
+                                    selectedStackQuantity,
+                                    c.MinimumStackValue,
+                                    out var rejection,
+                                    out var cachedStackValue))
+                            {
+                                _failedSellSlotKeys.Add(GetInventorySlotKey(slotRef));
+                                _cachedAutoListSlotsSkippedThisRetainer++;
+                                Log.Verbose($"[RR][AutoList][Cache] Skipped cached itemId={c.ItemId} hq={c.IsHq} container={slotRef.Container} slot={slotRef.Slot}: {rejection.UnitPrice} x {selectedStackQuantity} = {cachedStackValue} < minimum {c.MinimumStackValue}.");
+                                continue;
+                            }
+
+                            _currentSellItemId = c.ItemId;
+                            _currentSellItemIsHq = c.IsHq;
+                            _currentSellStackSize = selectedStackQuantity;
+                            _currentSellItemIsAutoDiscovered = c.IsAutoDiscovered;
+                            _currentSellMinimumStackValue = c.MinimumStackValue;
+                            _pendingSellSlot = slotRef;
+                            _hasPendingSellSlot = true;
+
+                            Log.Debug($"[RR] Sell candidate: itemId={c.ItemId} hq={c.IsHq} count={totalCount} threshold={threshold} container={slotRef.Container} slot={slotRef.Slot} (cap {_soldThisRetainer}/{_sellCapacityThisRetainer})");
+
+                            if (c.IsAutoDiscovered && TryStartAutoListPrefilter())
+                            {
+                                _runPhase = RunPhase.Sell_WaitingUniversalisStackValuePrefilter;
                             }
                             else
                             {
-                                Log.Verbose($"[RR] Sell candidate not in inventory: itemId={c.ItemId} hq={c.IsHq}");
+                                var listedCountBefore = GetCurrentExpectedListedCount();
+                                if (retainerSellListVisible)
+                                {
+                                    var listedSnapshot = ReadCurrentRetainerSellListCount();
+                                    if (listedSnapshot.HasValue)
+                                        listedCountBefore = listedSnapshot.Value;
+                                }
+
+                                BeginNewListingAttempt(slotRef, c.ItemId, c.IsHq, selectedStackQuantity, listedCountBefore,
+                                    selectedQuantity, now);
+                                _runPhase = RunPhase.Sell_OpenRetainerSellFromInventory;
                             }
 
-                            continue;
-                        }
-
-                        var totalCount = inventoryLookup.TotalCount;
-
-                        if (totalCount < threshold)
-                        {
-                            Log.Verbose($"[RR] Sell candidate skipped: itemId={c.ItemId} hq={c.IsHq} count={totalCount} < threshold={threshold}");
-                            continue;
-                        }
-
-                        var selectedQuantity = 0;
-                        if (!TryReadInventorySlotState(slotRef, out _, out _, out selectedQuantity))
-                            continue;
-
-                        if (c.IsAutoDiscovered)
-                            desiredQuantity = Math.Min(selectedQuantity, Math.Max(1, c.StackSizeMax));
-
-                        _currentSellItemId = c.ItemId;
-                        _currentSellItemIsHq = c.IsHq;
-                        _currentSellStackSize = desiredQuantity;
-                        _currentSellItemIsAutoDiscovered = c.IsAutoDiscovered;
-                        _currentSellMinimumStackValue = c.MinimumStackValue;
-                        _pendingSellSlot = slotRef;
-                        _hasPendingSellSlot = true;
-
-                        if (c.IsAutoDiscovered && TrySkipCachedAutoListRejection(now))
+                            _lastActionUtc = now;
                             return;
-
-                        Log.Debug($"[RR] Sell candidate: itemId={c.ItemId} hq={c.IsHq} count={totalCount} threshold={threshold} container={slotRef.Container} slot={slotRef.Slot} (cap {_soldThisRetainer}/{_sellCapacityThisRetainer})");
-
-                        if (c.IsAutoDiscovered && TryStartAutoListPrefilter())
-                        {
-                            _runPhase = RunPhase.Sell_WaitingUniversalisStackValuePrefilter;
                         }
-                        else
-                        {
-                            var listedCountBefore = GetCurrentExpectedListedCount();
-                            if (retainerSellListVisible)
-                            {
-                                var listedSnapshot = ReadCurrentRetainerSellListCount();
-                                if (listedSnapshot.HasValue)
-                                    listedCountBefore = listedSnapshot.Value;
-                            }
-
-                            BeginNewListingAttempt(slotRef, c.ItemId, c.IsHq, desiredQuantity, listedCountBefore,
-                                selectedQuantity, now);
-                            _runPhase = RunPhase.Sell_OpenRetainerSellFromInventory;
-                        }
-
-                        _lastActionUtc = now;
-                        return;
 
                     }
 
+                    LogCachedAutoListSkipSummary();
                     Log.Information("[RR] Sell complete: no eligible SellList items remain for this retainer.");
                     TransitionToExitToRetainerList();
                     _lastActionUtc = now;
@@ -1606,7 +1566,11 @@ public unsafe sealed partial class Plugin
                         var estimatedStackValue = (long)unitPrice * Math.Max(0, _currentSellStackSize);
                         if (estimatedStackValue < _currentSellMinimumStackValue)
                         {
-                            Log.Information($"[RR][AutoList][Prefilter] Skipping itemId={_currentSellItemId} hq={_currentSellItemIsHq}: estimated stack value {estimatedStackValue} < minimum {_currentSellMinimumStackValue}.");
+                            CacheAutoListPriceRejection(
+                                unitPrice,
+                                estimatedStackValue,
+                                AutoListPriceSource.UniversalisEstimate);
+                            Log.Information($"[RR][AutoList][Prefilter] Skipping itemId={_currentSellItemId} hq={_currentSellItemIsHq}: estimated stack value {estimatedStackValue} < minimum {_currentSellMinimumStackValue}; cached for this run.");
                             SkipCurrentAutoListCandidate(now);
                             return;
                         }
@@ -1629,6 +1593,7 @@ public unsafe sealed partial class Plugin
 
                     if (_sellCapacityThisRetainer <= 0 || _soldThisRetainer >= _sellCapacityThisRetainer)
                     {
+                        LogCachedAutoListSkipSummary();
                         if (_quickListRun)
                         {
                             StopRun(RunStopReason.Completed);
@@ -1757,7 +1722,7 @@ public unsafe sealed partial class Plugin
                             _retainerRowPos >= _retainerRowOrder.Count - 1)
                         {
                             RunPendingSellPrune();
-                            Log.Information("[RR][AR] Final retainer cleanup complete; preserving AutoRetainer Quit menu.");
+                            Log.Information("[RR][AR] Final retainer cleanup complete; preserving AutoRetainer Quit menu for handback validation.");
                             StopRun(RunStopReason.Completed);
                             return;
                         }
@@ -1789,11 +1754,131 @@ public unsafe sealed partial class Plugin
                     return;
                 }
 
+            case RunPhase.CompleteCurrentRetainerRun:
+                {
+                    if (marketOpen || itemHistoryOpen)
+                    {
+                        CloseMarketWindows();
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    if (contextMenuVisible)
+                    {
+                        FireContextMenuDismiss();
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    if (retainerSellVisible)
+                    {
+                        CloseRetainerSellIfOpen();
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    if (!retainerSellListVisible)
+                    {
+                        Log.Warning("[RR] Current-retainer run lost RetainerSellList before completion; stopping without changing retainer context.");
+                        StopRun(RunStopReason.Error);
+                        return;
+                    }
+
+                    RunPendingSellPrune();
+                    PrintSuccess(GetCompletionMessage());
+                    Log.Information($"[RR] Current-retainer run complete for {_currentRetainerName}.");
+                    StopRun(RunStopReason.Completed);
+                    return;
+                }
+
             #endregion
 
             default:
                 return;
         }
+    }
+
+    private void InitializePerRetainerSellState()
+    {
+        _sellListCountCaptured = false;
+        _listedCountThisRetainer = 0;
+        _slotIndexToOpen = 0;
+        ResetAutoListPrefilterState();
+
+        _sellQueue.Clear();
+        var characterSettings = Configuration.GetCharacterSettings(_runCharacterId);
+        if (Configuration.EnablePerRetainerCaps || characterSettings.AutoListInventoryItems)
+            _retainerSellCounts.Clear();
+        _retainerExistingSellCounts.Clear();
+        _needsExistingListingScan = Configuration.EnablePerRetainerCaps || characterSettings.AutoListInventoryItems;
+        var explicitSellKeys = new HashSet<ulong>();
+        foreach (var entry in Configuration.GetSellListOrdered(_runCharacterId))
+        {
+            if (entry.ItemId == 0)
+                continue;
+
+            entry.EnsureRetainerCaps();
+            entry.EnsureRetainerStackSizes();
+            _sellQueue.Add(new SellCandidate
+            {
+                ItemId = entry.ItemId,
+                IsHq = entry.IsHq,
+                MinCountToSell = Math.Max(1, entry.MinCountToSell),
+                Name = entry.Name ?? string.Empty,
+                RetainerCaps = entry.RetainerCaps,
+                RetainerStackSizes = entry.RetainerStackSizes,
+                StackSizeMax = GetStackSizeCap(entry.ItemId),
+            });
+            explicitSellKeys.Add(Configuration.MakeSellKey(entry.ItemId, entry.IsHq));
+        }
+
+        if (characterSettings.AutoListInventoryItems &&
+            _uiReader.TryGetAutoListInventoryCandidates(characterSettings.AutoListItemBlacklist, out var autoCandidates))
+        {
+            foreach (var candidate in autoCandidates)
+            {
+                var key = Configuration.MakeSellKey(candidate.ItemId, candidate.IsHq);
+                if (explicitSellKeys.Contains(key))
+                    continue;
+
+                _sellQueue.Add(new SellCandidate
+                {
+                    ItemId = candidate.ItemId,
+                    IsHq = candidate.IsHq,
+                    MinCountToSell = 1,
+                    Name = candidate.Name,
+                    StackSizeMax = GetStackSizeCap(candidate.ItemId),
+                    IsAutoDiscovered = true,
+                    MinimumStackValue = characterSettings.AutoListMinimumStackValue,
+                });
+            }
+        }
+        else if (characterSettings.AutoListInventoryItems)
+        {
+            Log.Verbose("[RR][AutoList] Inventory not ready; automatic candidates will be retried.");
+        }
+
+        _sellCapacityThisRetainer = 0;
+        _soldThisRetainer = 0;
+        _processingListedItem = true;
+        _currentSellItemId = 0;
+        _currentSellItemIsHq = false;
+        _currentSellStackSize = 0;
+        _currentSellItemIsAutoDiscovered = false;
+        _currentSellMinimumStackValue = 0;
+        _hasPendingSellSlot = false;
+        _pendingSellSlot = default;
+        ResetNewListingAttempt();
+        _failedSellSlotKeys.Clear();
+        _cachedAutoListSlotsSkippedThisRetainer = 0;
+        _mbIntervalSec = MbBaseIntervalSeconds;
+        _lastMbQueryUtc = DateTime.MinValue;
+    }
+
+    private void TransitionToCurrentRetainerCompletion()
+    {
+        QueuePostSellPruneIfNeeded();
+        _runPhase = RunPhase.CompleteCurrentRetainerRun;
     }
 
     private void HandleNewListingRetainerSellTimeout(DateTime now)
@@ -1890,35 +1975,52 @@ public unsafe sealed partial class Plugin
         return !_currentSellItemIsAutoDiscovered || stackValue >= Math.Max(1, _currentSellMinimumStackValue);
     }
 
-    private bool TrySkipCachedAutoListRejection(DateTime now)
+    private bool TryGetCachedAutoListRejection(
+        uint itemId,
+        bool isHq,
+        int quantity,
+        int minimumStackValue,
+        out AutoListPriceRejection rejection,
+        out long cachedStackValue)
     {
-        var key = Configuration.MakeSellKey(_currentSellItemId, _currentSellItemIsHq);
-        if (!_autoListPriceRejections.TryGetValue(key, out var rejection))
+        rejection = default;
+        cachedStackValue = 0;
+        var key = Configuration.MakeSellKey(itemId, isHq);
+        if (!_autoListPriceRejections.TryGetValue(key, out rejection))
             return false;
 
-        var cachedStackValue = (long)Math.Max(0, rejection.UnitPrice) * Math.Max(0, _currentSellStackSize);
-        if (cachedStackValue >= Math.Max(1, _currentSellMinimumStackValue))
-        {
-            Log.Verbose($"[RR][AutoList][Cache] Cached rejection does not reject itemId={_currentSellItemId} hq={_currentSellItemIsHq} quantity={_currentSellStackSize}; continuing with live pricing.");
+        cachedStackValue = (long)Math.Max(0, rejection.UnitPrice) * Math.Max(0, quantity);
+        if (cachedStackValue >= Math.Max(1, minimumStackValue))
             return false;
-        }
 
-        Log.Debug($"[RR][AutoList][Cache] Skipping itemId={_currentSellItemId} hq={_currentSellItemIsHq}: cached unit price {rejection.UnitPrice} x quantity {_currentSellStackSize} = {cachedStackValue} < minimum {_currentSellMinimumStackValue}.");
-        SkipCurrentAutoListCandidate(now);
         return true;
     }
 
-    private void CacheAutoListPriceRejection(int unitPrice, long stackValue)
+    private void CacheAutoListPriceRejection(int unitPrice, long stackValue, AutoListPriceSource source)
     {
         var key = Configuration.MakeSellKey(_currentSellItemId, _currentSellItemIsHq);
         var rejection = new AutoListPriceRejection(
             Math.Max(1, unitPrice),
             Math.Max(0, _currentSellStackSize),
             Math.Max(1, _currentSellMinimumStackValue),
-            stackValue);
+            stackValue,
+            source);
 
-        if (!_autoListPriceRejections.TryGetValue(key, out var existing) || rejection.UnitPrice > existing.UnitPrice)
+        if (!_autoListPriceRejections.TryGetValue(key, out var existing) ||
+            (source == AutoListPriceSource.FinalListingPrice && existing.Source != AutoListPriceSource.FinalListingPrice) ||
+            (source == existing.Source && rejection.UnitPrice > existing.UnitPrice))
+        {
             _autoListPriceRejections[key] = rejection;
+        }
+    }
+
+    private void LogCachedAutoListSkipSummary()
+    {
+        if (_cachedAutoListSlotsSkippedThisRetainer <= 0)
+            return;
+
+        Log.Information($"[RR][AutoList][Cache] Skipped {_cachedAutoListSlotsSkippedThisRetainer} previously vetted inventory stacks on {DescribeCurrentRetainerForLog()}.");
+        _cachedAutoListSlotsSkippedThisRetainer = 0;
     }
 
     private void SkipCurrentAutoListCandidate(DateTime now)

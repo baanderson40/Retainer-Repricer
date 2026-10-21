@@ -73,6 +73,9 @@ public unsafe sealed partial class Plugin
 
         /// <summary>Unwind any stray addons and return to RetainerList.</summary>
         ExitToRetainerList,
+
+        /// <summary>Finish a run started from an already-open RetainerSellList.</summary>
+        CompleteCurrentRetainerRun,
     }
 
     private RunPhase _runPhase = RunPhase.Idle;
@@ -84,7 +87,16 @@ public unsafe sealed partial class Plugin
         SellOnly,
     }
 
+    private enum RunScope
+    {
+        AllEnabledRetainers,
+        CurrentRetainer,
+    }
+
     private RunMode _runMode = RunMode.PriceAndSell;
+    private RunScope _runScope;
+    private ulong _runCharacterId;
+    private ulong _currentRetainerId;
 
     private bool ShouldReprice => _runMode != RunMode.SellOnly;
     private bool ShouldSell => _runMode != RunMode.PriceOnly;
@@ -287,6 +299,12 @@ public unsafe sealed partial class Plugin
 
     private Dictionary<ulong, AutoListPriceRejection> _autoListPriceRejections
         => _sellState.AutoListPriceRejections;
+
+    private int _cachedAutoListSlotsSkippedThisRetainer
+    {
+        get => _sellState.CachedAutoListSlotsSkippedThisRetainer;
+        set => _sellState.CachedAutoListSlotsSkippedThisRetainer = value;
+    }
 
     private bool _needsExistingListingScan
     {
@@ -494,11 +512,18 @@ public unsafe sealed partial class Plugin
         int Quantity,
         int MinimumStackValue);
 
+    private enum AutoListPriceSource
+    {
+        UniversalisEstimate,
+        FinalListingPrice,
+    }
+
     private readonly record struct AutoListPriceRejection(
         int UnitPrice,
         int Quantity,
         int MinimumStackValue,
-        long StackValue);
+        long StackValue,
+        AutoListPriceSource Source);
 
     private enum NewListingAttemptState
     {
@@ -559,6 +584,7 @@ public unsafe sealed partial class Plugin
         public Dictionary<ulong, int> RetainerSellCounts { get; } = new();
         public Dictionary<ulong, int> RetainerExistingSellCounts { get; } = new();
         public Dictionary<ulong, AutoListPriceRejection> AutoListPriceRejections { get; } = new();
+        public int CachedAutoListSlotsSkippedThisRetainer { get; set; }
         public bool NeedsExistingListingScan { get; set; }
         public Task<decimal?>? AutoListPrefilterTask { get; set; }
         public CancellationTokenSource? AutoListPrefilterCancellation { get; set; }

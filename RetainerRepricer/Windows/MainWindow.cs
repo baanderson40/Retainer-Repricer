@@ -83,10 +83,10 @@ public sealed unsafe class MainWindow : Window, IDisposable
     {
         // Prefer anchoring to whatever is currently visible.
         // This keeps the overlay reachable after RetainerList disappears.
-        var u = GetVisibleAddonUnit("RetainerList");
+        var u = GetVisibleAddonUnit("RetainerSellList");
         if (u != null) return u;
 
-        u = GetVisibleAddonUnit("RetainerSellList");
+        u = GetVisibleAddonUnit("RetainerList");
         if (u != null) return u;
 
         u = GetVisibleAddonUnit("RetainerSell");
@@ -105,9 +105,10 @@ public sealed unsafe class MainWindow : Window, IDisposable
     {
         // "Flow" windows where the Stop button should be available.
         if (IsAddonVisible("RetainerList")) return true;
+        if (IsAddonVisible("RetainerSellList")) return true;
+
         if (_plugin.IsRunning)
         {
-            if (IsAddonVisible("RetainerSellList")) return true;
             if (IsAddonVisible("RetainerSell")) return true;
             if (IsAddonVisible("SelectString")) return true;
             if (IsAddonVisible("Talk")) return true;
@@ -200,14 +201,21 @@ public sealed unsafe class MainWindow : Window, IDisposable
                 if (_plugin.Configuration.PluginEnabled)
                 {
                     Plugin.Log.Information("[RR][Overlay] Start button clicked");
-                    _plugin.StartRunFromRetainerList();
+                    if (IsAddonVisible("RetainerSellList"))
+                        _plugin.StartRunFromCurrentRetainerSellList();
+                    else
+                        _plugin.StartRunFromRetainerList();
                 }
             }
         }
         ImGui.PopID();
 
         if (ImGui.IsItemHovered())
-            TooltipHelper.Show(_plugin.Configuration, _plugin.IsRunning ? "Stop run" : "Start run");
+            TooltipHelper.Show(_plugin.Configuration, _plugin.IsRunning
+                ? "Stop run"
+                : IsAddonVisible("RetainerSellList")
+                    ? "Start current retainer"
+                    : "Start enabled retainers");
     }
 
     private void DrawConfigButton()

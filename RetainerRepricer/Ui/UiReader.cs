@@ -625,6 +625,28 @@ internal sealed unsafe class UiReader
         return inventorySlot != null;
     }
 
+    public bool TryGetActiveRetainer(out ulong retainerId, out string name)
+    {
+        retainerId = 0;
+        name = string.Empty;
+
+        var manager = RetainerManager.Instance();
+        if (manager == null || !manager->IsReady)
+            return false;
+
+        var retainer = manager->GetActiveRetainer();
+        if (retainer == null || !retainer->Available || retainer->RetainerId == 0)
+            return false;
+
+        var retainerName = retainer->NameString.ToString().Trim();
+        if (retainerName.Length == 0)
+            return false;
+
+        retainerId = retainer->RetainerId;
+        name = retainerName;
+        return true;
+    }
+
     public static bool IsInventorySlotSellable(InventoryItem* inventorySlot, Item? itemRow)
     {
         if (inventorySlot == null)
