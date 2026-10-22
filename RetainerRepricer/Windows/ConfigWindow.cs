@@ -692,18 +692,31 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawRetainerEnableList()
     {
-        var characters = _plugin.GetAutoRetainerCharacters();
+        var knownCharacters = _plugin.GetAutoRetainerCharacters()
+            .Where(data => data.CID != 0)
+            .DistinctBy(data => data.CID)
+            .ToList();
+        if (_config.NormalizeCharacterDisplayOrder(knownCharacters.Select(data => data.CID)))
+            SaveConfig();
+
+        var positions = _config.CharacterDisplayOrder
+            .Select((cid, index) => (cid, index))
+            .ToDictionary(entry => entry.cid, entry => entry.index);
+        var characters = knownCharacters
+            .Where(data => !_config.IsCharacterBlacklisted(data.CID))
+            .OrderBy(data => positions[data.CID])
+            .ToList();
+        (ulong cid, int direction)? pendingMove = null;
+        (ulong cid, bool blacklist)? pendingRemoval = null;
         if (characters.Count == 0)
         {
             ImGui.TextDisabled("No AutoRetainer characters are available.");
         }
         else
         {
-            foreach (var data in characters)
+            for (var index = 0; index < characters.Count; index++)
             {
-                if (data.CID == 0 || _config.IsCharacterBlacklisted(data.CID))
-                    continue;
-
+                var data = characters[index];
                 var character = _config.GetCharacterSettings(data.CID, data.Name, data.World);
                 var names = data.RetainerData.Select(x => x.Name)
                     .Concat(_config.GetAllRetainerNames(data.CID))
@@ -716,20 +729,48 @@ public sealed class ConfigWindow : Window, IDisposable
                 var label = string.IsNullOrWhiteSpace(character.Name)
                     ? $"Character {data.CID:X16}"
                     : $"{character.Name}@{character.World}";
-                var open = ImGui.TreeNodeEx(label, ImGuiTreeNodeFlags.Framed | ImGuiTreeNodeFlags.SpanFullWidth);
-                ImGui.SameLine();
-                DrawRemoveButton("character", data.CID, string.Empty, () =>
+                var open = false;
+                if (ImGui.BeginTable("##character_header", 3, ImGuiTableFlags.NoSavedSettings))
                 {
-                    _config.RemoveCharacterConfiguration(data.CID);
-                    SaveConfig();
-                }, () =>
-                {
-                    _config.SetCharacterBlacklisted(data.CID, true);
-                    SaveConfig();
-                }, _plugin.IsRunning);
+                    var style = ImGui.GetStyle();
+                    var arrowWidth = ImGui.GetFrameHeight();
+                    ImGui.PushFont(UiBuilder.IconFont);
+                    var removeWidth = ImGui.CalcTextSize(FontAwesomeIcon.Trash.ToIconString()).X + style.FramePadding.X * 2;
+                    ImGui.PopFont();
+                    ImGui.TableSetupColumn("##move", ImGuiTableColumnFlags.WidthFixed, arrowWidth * 2 + style.ItemSpacing.X);
+                    ImGui.TableSetupColumn("##name", ImGuiTableColumnFlags.WidthStretch);
+                    ImGui.TableSetupColumn("##remove", ImGuiTableColumnFlags.WidthFixed, removeWidth);
+                    ImGui.TableNextRow();
+                    ImGui.TableSetColumnIndex(0);
+                    ImGui.BeginDisabled(index == 0);
+                    if (ImGui.ArrowButton("##up", ImGuiDir.Up))
+                        pendingMove = (data.CID, -1);
+                    ImGui.EndDisabled();
+                    if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                        TooltipHelper.Show(_config, "Move character up (display order only).");
+                    ImGui.SameLine();
+                    ImGui.BeginDisabled(index == characters.Count - 1);
+                    if (ImGui.ArrowButton("##down", ImGuiDir.Down))
+                        pendingMove = (data.CID, 1);
+                    ImGui.EndDisabled();
+                    if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                        TooltipHelper.Show(_config, "Move character down (display order only).");
+
+                    ImGui.TableSetColumnIndex(1);
+                    open = ImGui.TreeNodeEx($"{label}###character", ImGuiTreeNodeFlags.Framed | ImGuiTreeNodeFlags.NoTreePushOnOpen);
+                    if (ImGui.IsItemHovered())
+                        TooltipHelper.Show(_config, label);
+
+                    ImGui.TableSetColumnIndex(2);
+                    DrawRemoveButton("character", data.CID, string.Empty,
+                        () => pendingRemoval = (data.CID, false),
+                        () => pendingRemoval = (data.CID, true), _plugin.IsRunning);
+                    ImGui.EndTable();
+                }
 
                 if (open)
                 {
+                    ImGui.Indent();
                     var processAfterAutoRetainer = character.ProcessAfterAutoRetainer;
                     if (!_plugin.AutoRetainerAvailable)
                         ImGui.BeginDisabled();
@@ -763,10 +804,25 @@ public sealed class ConfigWindow : Window, IDisposable
                         DrawRetainerTable(names, data.CID);
                     }
 
-                    ImGui.TreePop();
+                    ImGui.Unindent();
                 }
                 ImGui.PopID();
             }
+        }
+
+        // Apply header actions after rendering: don't reorder or delete rows mid-loop.
+        if (pendingRemoval is { } removal)
+        {
+            if (removal.blacklist)
+                _config.SetCharacterBlacklisted(removal.cid, true);
+            else
+                _config.RemoveCharacterConfiguration(removal.cid);
+            SaveConfig();
+        }
+        if (pendingMove is { } move && _config.TryMoveCharacterDisplay(
+                move.cid, move.direction, characters.Select(data => data.CID).ToList()))
+        {
+            SaveConfig();
         }
 
         DrawBlacklistSection();

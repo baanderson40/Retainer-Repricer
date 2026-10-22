@@ -900,8 +900,44 @@ public sealed class Configuration : IPluginConfiguration
 
     // Character settings are keyed by AutoRetainer's stable content ID.
     public Dictionary<ulong, CharacterSettings> Characters { get; set; } = new();
+    // UI order only; never changes AutoRetainer's processing order.
+    public List<ulong> CharacterDisplayOrder { get; set; } = new();
     public HashSet<ulong> BlacklistedCharacters { get; set; } = new();
     public HashSet<string> BlacklistedRetainers { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public bool NormalizeCharacterDisplayOrder(IEnumerable<ulong> knownCharacterIds)
+    {
+        var ordered = (CharacterDisplayOrder ?? new List<ulong>())
+            .Concat(knownCharacterIds)
+            .Where(cid => cid != 0)
+            .Distinct()
+            .ToList();
+        if (CharacterDisplayOrder != null && CharacterDisplayOrder.SequenceEqual(ordered))
+            return false;
+
+        // Retain missing/blacklisted IDs so they return to their previous position.
+        CharacterDisplayOrder = ordered;
+        return true;
+    }
+
+    public bool TryMoveCharacterDisplay(ulong cid, int direction, IReadOnlyCollection<ulong> visibleCharacterIds)
+    {
+        if (direction is not (-1 or 1) || CharacterDisplayOrder == null)
+            return false;
+
+        var visible = visibleCharacterIds.ToHashSet();
+        var orderedVisible = CharacterDisplayOrder.Where(visible.Contains).ToList();
+        var index = orderedVisible.IndexOf(cid);
+        var target = index + direction;
+        if (index < 0 || target < 0 || target >= orderedVisible.Count)
+            return false;
+
+        var sourcePosition = CharacterDisplayOrder.IndexOf(cid);
+        var targetPosition = CharacterDisplayOrder.IndexOf(orderedVisible[target]);
+        (CharacterDisplayOrder[sourcePosition], CharacterDisplayOrder[targetPosition]) =
+            (CharacterDisplayOrder[targetPosition], CharacterDisplayOrder[sourcePosition]);
+        return true;
+    }
 
     public CharacterSettings GetCharacterSettings(ulong cid, string? name = null, string? world = null)
     {
@@ -971,6 +1007,7 @@ public sealed class Configuration : IPluginConfiguration
     public void RemoveCharacterConfiguration(ulong cid)
     {
         Characters?.Remove(cid);
+        CharacterDisplayOrder?.RemoveAll(id => id == cid);
         BlacklistedCharacters?.Remove(cid);
         var prefix = MakeRetainerKeyPrefix(cid);
         RetainersEnabled?.Keys.Where(x => x.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList()
