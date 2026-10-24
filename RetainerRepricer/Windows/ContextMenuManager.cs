@@ -9,6 +9,7 @@ using ECommons.Interop;
 using FFXIVClientStructs.FFXIV.Client.Game;
 using Lumina.Excel.Sheets;
 using System;
+using System.Linq;
 
 using RetainerRepricer.Ui;
 using RetainerRepricer.Windows;
@@ -235,26 +236,60 @@ internal sealed class ContextMenuManager : IDisposable
         if (!settings.AutoListInventoryItems)
             return;
 
-        var isBlacklisted = _config.IsAutoListItemBlacklisted(_plugin.CurrentCharacterId, itemId, isHq);
+        var key = Configuration.MakeSellKey(itemId, isHq);
+        var sources = _config.GetAutoListBlocklistSources(_plugin.CurrentCharacterId, key);
+        if (sources.Count != 0)
+        {
+            args.AddMenuItem(new MenuItem
+            {
+                IsEnabled = true,
+                IsReturn = false,
+                IsSubmenu = false,
+                Prefix = PrefixIcon,
+                Name = new SeStringBuilder().AddUiForeground($"Manage Auto-List blocks ({sources.Count})", PrefixColor).Build(),
+                OnClicked = _ => _plugin.OpenAutoListBlocklistItem(_plugin.CurrentCharacterId, _config.Characters[_plugin.CurrentCharacterId].AutoListBlocklistIds.First(id => _config.AutoListBlocklists.TryGetValue(id, out var list) && list.ItemKeys.Contains(key)), itemId),
+            });
+            return;
+        }
+
+        var assigned = settings.AutoListBlocklistIds
+            .Where(id => _config.AutoListBlocklists?.ContainsKey(id) == true)
+            .ToList();
+        if (!_plugin.CanEditAutoListBlocklists || assigned.Count != 1 ||
+            _config.GetAutoListBlocklistSources(_plugin.CurrentCharacterId, key).Count != 0 ||
+            _config.Characters.Count(pair => pair.Value?.AutoListBlocklistIds?.Contains(assigned[0]) == true) > 1)
+        {
+            args.AddMenuItem(new MenuItem
+            {
+                IsEnabled = true,
+                IsReturn = false,
+                IsSubmenu = false,
+                Prefix = PrefixIcon,
+                Name = new SeStringBuilder().AddUiForeground("Manage Auto-List blocklists", PrefixColor).Build(),
+                OnClicked = _ => _plugin.OpenAutoListBlocklists(_plugin.CurrentCharacterId),
+            });
+            return;
+        }
+
         args.AddMenuItem(new MenuItem
         {
-            IsEnabled = true,
+            IsEnabled = _plugin.CanEditAutoListBlocklists,
             IsReturn = false,
             IsSubmenu = false,
             Prefix = PrefixIcon,
-            PrefixColor = isBlacklisted ? RemoveColor : PrefixColor,
+            PrefixColor = PrefixColor,
             Name = new SeStringBuilder()
-                .AddUiForeground(isBlacklisted ? AutoListIncludeLabel : AutoListExcludeLabel,
-                    isBlacklisted ? RemoveColor : PrefixColor)
+                .AddUiForeground($"{AutoListExcludeLabel} → {_config.AutoListBlocklists[assigned[0]].Name}", PrefixColor)
                 .Build(),
             OnClicked = _ =>
             {
-                _config.SetAutoListItemBlacklisted(_plugin.CurrentCharacterId, itemId, isHq, !isBlacklisted);
+                if (!_plugin.CanEditAutoListBlocklists) return;
+                _config.SetBlocklistKeys(assigned[0], [key], true);
                 _config.Save();
-                Plugin.Log.Information("[RR][AutoList] Item {ItemId} (HQ={IsHq}) blacklist={Blacklisted} for cid={Cid}",
+                Plugin.Log.Information("[RR][AutoList] Blocked item {ItemId} (HQ={IsHq}) in list {ListId} for cid={Cid}",
                     itemId,
                     isHq,
-                    !isBlacklisted,
+                    assigned[0],
                     _plugin.CurrentCharacterId);
             }
         });

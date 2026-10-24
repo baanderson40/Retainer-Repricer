@@ -1832,8 +1832,9 @@ public unsafe sealed partial class Plugin
             explicitSellKeys.Add(Configuration.MakeSellKey(entry.ItemId, entry.IsHq));
         }
 
+        var effectiveBlocklist = Configuration.GetEffectiveAutoListBlocklist(_runCharacterId);
         if (characterSettings.AutoListInventoryItems &&
-            _uiReader.TryGetAutoListInventoryCandidates(characterSettings.AutoListItemBlacklist, out var autoCandidates))
+            _uiReader.TryGetAutoListInventoryCandidates(effectiveBlocklist, out var autoCandidates))
         {
             foreach (var candidate in autoCandidates)
             {

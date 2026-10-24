@@ -129,6 +129,8 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
 
         Configuration = pi.GetPluginConfig() as Configuration ?? new Configuration();
         Configuration.Initialize(pi);
+        if (Configuration.MigrateLegacyAutoListBlocklists())
+            Configuration.Save();
 
         _pluginLogBuffer = new PluginLogBuffer();
         Log = new PluginLogger(log, _pluginLogBuffer);

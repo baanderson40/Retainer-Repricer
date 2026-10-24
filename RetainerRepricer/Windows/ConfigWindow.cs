@@ -18,7 +18,7 @@ namespace RetainerRepricer.Windows;
 /// <summary>
 /// Presents configuration controls for enabled retainers, market settings, and sell list management.
 /// </summary>
-public sealed class ConfigWindow : Window, IDisposable
+public sealed partial class ConfigWindow : Window, IDisposable
 {
     #region Fields (plugin + config)
 
@@ -49,6 +49,8 @@ public sealed class ConfigWindow : Window, IDisposable
         Retainers,
         Settings,
         Advanced,
+        ItemBlocklists,
+        BlocklistAssignments,
     }
 
     #endregion
@@ -121,6 +123,12 @@ public sealed class ConfigWindow : Window, IDisposable
         if (BeginFocusedTab("Characters", ConfigTabFocus.Retainers))
         {
             DrawRetainersTab();
+            ImGui.EndTabItem();
+        }
+
+        if (BeginFocusedTab("Item Blocklists", ConfigTabFocus.ItemBlocklists))
+        {
+            DrawItemBlocklistsTab();
             ImGui.EndTabItem();
         }
 
@@ -794,6 +802,11 @@ public sealed class ConfigWindow : Window, IDisposable
                     }
 
                     DrawAutoListSettings(character);
+                    var assignedBlocklists = character.AutoListBlocklistIds?.Count ?? 0;
+                    var effectiveBlocks = _config.GetEffectiveAutoListBlocklist(data.CID).Count;
+                    ImGui.TextDisabled($"Item blocklists: {assignedBlocklists} assigned • {effectiveBlocks} effective entries");
+                    ImGui.SameLine();
+                    if (ImGui.SmallButton($"Manage##blocklists-{data.CID}")) OpenBlocklistsForCharacter(data.CID);
 
                     if (names.Count == 0)
                         ImGui.TextDisabled("No retainers are known for this character.");
@@ -1071,42 +1084,8 @@ public sealed class ConfigWindow : Window, IDisposable
             }
         }
 
-        if (_config.Characters is { Count: > 0 })
-        {
-            foreach (var characterEntry in _config.Characters
-                         .Where(entry => entry.Value?.AutoListItemBlacklist is { Count: > 0 })
-                         .OrderBy(entry => GetCharacterDisplayName(entry.Key, entry.Value), StringComparer.OrdinalIgnoreCase))
-            {
-                var settings = characterEntry.Value;
-                if (settings?.AutoListItemBlacklist is not { Count: > 0 })
-                    continue;
-
-                hasEntries = true;
-                ImGui.TextUnformatted($"Don't Auto-List Items ({GetCharacterDisplayName(characterEntry.Key, settings)})");
-                foreach (var key in settings.AutoListItemBlacklist.OrderBy(value => value).ToList())
-                {
-                    var itemId = (uint)(key >> 1);
-                    var isHq = (key & 1UL) != 0;
-                    var itemName = Svc.Data.GetExcelSheet<ItemSheet>()?.GetRowOrDefault(itemId)?.Name.ToString().Trim();
-                    var label = string.IsNullOrWhiteSpace(itemName) ? $"Item {itemId}" : itemName;
-                    if (isHq)
-                        label += " (HQ)";
-
-                    ImGui.PushID($"auto-blacklist-{characterEntry.Key}-{key}");
-                    ImGui.BulletText(label);
-                    ImGui.SameLine();
-                    DrawUnblacklistButton($"auto-blacklist-{characterEntry.Key}-{key}", () =>
-                    {
-                        settings.AutoListItemBlacklist.Remove(key);
-                        SaveConfig();
-                    }, "Allow Auto-Listing");
-                    ImGui.PopID();
-                }
-            }
-        }
-
         if (!hasEntries)
-            ImGui.TextDisabled("No blacklisted characters, retainers, or auto-list items.");
+            ImGui.TextDisabled("No blacklisted characters or retainers.");
     }
 
     private static string GetCharacterDisplayName(ulong cid, Configuration.CharacterSettings? settings)

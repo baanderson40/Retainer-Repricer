@@ -41,7 +41,7 @@ public sealed class Configuration : IPluginConfiguration
     #region Dalamud config versioning
 
     // Dalamud serialization schema version; bump when config layout changes.
-    public int Version { get; set; } = 3;
+    public int Version { get; set; } = 4;
 
     [NonSerialized]
     private IDalamudPluginInterface? _pluginInterface;
@@ -896,10 +896,104 @@ public sealed class Configuration : IPluginConfiguration
         public bool AutoListInventoryItems { get; set; }
         public int AutoListMinimumStackValue { get; set; } = 1000;
         public HashSet<ulong> AutoListItemBlacklist { get; set; } = new();
+        public HashSet<string> AutoListBlocklistIds { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     }
 
     // Character settings are keyed by AutoRetainer's stable content ID.
     public Dictionary<ulong, CharacterSettings> Characters { get; set; } = new();
+    public Dictionary<string, AutoListBlocklist> AutoListBlocklists { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    [Serializable]
+    public sealed class AutoListBlocklist
+    {
+        public string Name { get; set; } = string.Empty;
+        public HashSet<ulong> ItemKeys { get; set; } = new();
+    }
+
+    public bool MigrateLegacyAutoListBlocklists()
+    {
+        AutoListBlocklists ??= new(StringComparer.OrdinalIgnoreCase);
+        Characters ??= new();
+        var changed = false;
+        if (Version < 4)
+        {
+            foreach (var (cid, settings) in Characters)
+            {
+                if (settings?.AutoListItemBlacklist is not { Count: > 0 } legacy)
+                    continue;
+                var id = $"legacy-{cid:X16}";
+                if (!AutoListBlocklists.ContainsKey(id))
+                {
+                    var displayName = string.IsNullOrWhiteSpace(settings.Name) ? cid.ToString("X16", CultureInfo.InvariantCulture)
+                        : string.IsNullOrWhiteSpace(settings.World) ? settings.Name : $"{settings.Name}@{settings.World}";
+                    AutoListBlocklists[id] = new AutoListBlocklist
+                    {
+                        Name = $"{displayName} exclusions",
+                        ItemKeys = new HashSet<ulong>(legacy),
+                    };
+                }
+                settings.AutoListBlocklistIds ??= new(StringComparer.OrdinalIgnoreCase);
+                settings.AutoListBlocklistIds.Add(id);
+                settings.AutoListItemBlacklist.Clear();
+                changed = true;
+            }
+            Version = 4;
+            changed = true;
+        }
+        foreach (var list in AutoListBlocklists.Values)
+        {
+            if (list == null) continue;
+            list.ItemKeys ??= new();
+            list.Name ??= string.Empty;
+        }
+        foreach (var settings in Characters.Values)
+            if (settings != null) settings.AutoListBlocklistIds ??= new(StringComparer.OrdinalIgnoreCase);
+        return changed;
+    }
+
+    public HashSet<ulong> GetEffectiveAutoListBlocklist(ulong cid)
+    {
+        var result = new HashSet<ulong>();
+        if (cid == 0 || Characters?.TryGetValue(cid, out var settings) != true || settings == null) return result;
+        foreach (var id in settings.AutoListBlocklistIds ?? new(StringComparer.OrdinalIgnoreCase))
+            if (AutoListBlocklists?.TryGetValue(id, out var list) == true && list?.ItemKeys != null) result.UnionWith(list.ItemKeys);
+        return result;
+    }
+
+    public List<string> GetAutoListBlocklistSources(ulong cid, ulong itemKey)
+    {
+        var sources = new List<string>();
+        if (Characters?.TryGetValue(cid, out var settings) != true || settings == null) return sources;
+        foreach (var id in settings.AutoListBlocklistIds ?? new(StringComparer.OrdinalIgnoreCase))
+            if (AutoListBlocklists?.TryGetValue(id, out var list) == true && list?.ItemKeys.Contains(itemKey) == true) sources.Add(list.Name);
+        return sources;
+    }
+
+    public bool TryCreateAutoListBlocklist(string id, string name, IEnumerable<ulong>? keys = null)
+    {
+        AutoListBlocklists ??= new(StringComparer.OrdinalIgnoreCase);
+        name = name.Trim();
+        if (name.Length == 0 || AutoListBlocklists.ContainsKey(id) || AutoListBlocklists.Values.Any(list => string.Equals(list.Name, name, StringComparison.OrdinalIgnoreCase))) return false;
+        AutoListBlocklists[id] = new AutoListBlocklist { Name = name, ItemKeys = keys?.ToHashSet() ?? new() };
+        return true;
+    }
+
+    public bool TryRenameAutoListBlocklist(string id, string name)
+    {
+        name = name.Trim();
+        if (name.Length == 0 || AutoListBlocklists?.TryGetValue(id, out var list) != true || list == null || AutoListBlocklists.Values.Any(other => !ReferenceEquals(other, list) && string.Equals(other.Name, name, StringComparison.OrdinalIgnoreCase))) return false;
+        list.Name = name;
+        return true;
+    }
+
+    public int SetBlocklistKeys(string id, IEnumerable<ulong> keys, bool blocked)
+    {
+        if (AutoListBlocklists?.TryGetValue(id, out var list) != true || list == null) return 0;
+        list.ItemKeys ??= new();
+        var changed = 0;
+        foreach (var key in keys) changed += blocked ? (list.ItemKeys.Add(key) ? 1 : 0) : (list.ItemKeys.Remove(key) ? 1 : 0);
+        return changed;
+    }
     // UI order only; never changes AutoRetainer's processing order.
     public List<ulong> CharacterDisplayOrder { get; set; } = new();
     public HashSet<ulong> BlacklistedCharacters { get; set; } = new();
