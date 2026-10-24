@@ -37,7 +37,7 @@ public sealed class DebugWindow : Window, IDisposable
 
     public override void Draw()
     {
-        ImGui.TextUnformatted("Diagnostics are written to the Retainer Repricer log buffer and Dalamud log.");
+        ImGui.TextWrapped("Diagnostics are written to the Retainer Repricer log buffer and Dalamud log.");
         ImGui.Separator();
 
         var universalis = _plugin.UniversalisDiagnostics;
@@ -58,11 +58,11 @@ public sealed class DebugWindow : Window, IDisposable
         if (ImGui.Button("Dump Market Rows / HQ State"))
             _plugin.DumpMarketRowsForDebug();
 
-        ImGui.SameLine();
+        if (ImGui.GetContentRegionAvail().X >= 200f) ImGui.SameLine();
         if (ImGui.Button("Dump Retainer Rows"))
             _plugin.DumpRetainerRowsForDebug();
 
-        ImGui.SameLine();
+        if (ImGui.GetContentRegionAvail().X >= 200f) ImGui.SameLine();
         if (ImGui.Button("Test Universalis Gate"))
             _plugin.TestUniversalisGateForDebug();
 
@@ -92,4 +92,8 @@ public sealed class DebugWindow : Window, IDisposable
         if (ImGui.Button("Open Logs"))
             _plugin.OpenLogWindow();
     }
+
+    public override void PreDraw() => RepricerUiStyle.Push();
+
+    public override void PostDraw() => RepricerUiStyle.Pop();
 }

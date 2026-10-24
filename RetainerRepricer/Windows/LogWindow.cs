@@ -41,19 +41,23 @@ public sealed class LogWindow : Window, IDisposable
         DrawLogEntries();
     }
 
+    public override void PreDraw() => RepricerUiStyle.Push();
+
+    public override void PostDraw() => RepricerUiStyle.Pop();
+
     private void DrawToolbar()
     {
         if (ImGui.Button("Clear"))
             _plugin.PluginLogBuffer.Clear();
 
-        ImGui.SameLine();
+        if (ImGui.GetContentRegionAvail().X >= 110f) ImGui.SameLine();
         if (ImGui.Button("Copy Visible"))
             ImGui.SetClipboardText(BuildVisibleLogText());
 
-        ImGui.SameLine();
+        if (ImGui.GetContentRegionAvail().X >= 130f) ImGui.SameLine();
         ImGui.Checkbox("Auto-scroll", ref _autoScroll);
 
-        ImGui.SameLine();
+        if (ImGui.GetContentRegionAvail().X >= 180f) ImGui.SameLine();
         ImGui.SetNextItemWidth(160f);
         if (ImGui.BeginCombo("Minimum level", _minimumLevel.ToString()))
         {
@@ -73,13 +77,11 @@ public sealed class LogWindow : Window, IDisposable
 
     private void DrawLogEntries()
     {
-        if (!ImGui.BeginChild("##rr-log-entries", new Vector2(0f, 0f), false, ImGuiWindowFlags.HorizontalScrollbar))
-            return;
-
-        var shouldStickToBottom = _autoScroll && ImGui.GetScrollY() >= ImGui.GetScrollMaxY();
-
-        try
+        var visible = ImGui.BeginChild("##rr-log-entries", new Vector2(0f, 0f), false, ImGuiWindowFlags.HorizontalScrollbar);
+        if (visible)
         {
+            var shouldStickToBottom = _autoScroll && ImGui.GetScrollY() >= ImGui.GetScrollMaxY();
+
             var entries = _plugin.PluginLogBuffer.GetSnapshot();
             foreach (var entry in entries)
             {
@@ -94,10 +96,7 @@ public sealed class LogWindow : Window, IDisposable
             if (shouldStickToBottom)
                 ImGui.SetScrollHereY(1f);
         }
-        finally
-        {
-            ImGui.EndChild();
-        }
+        ImGui.EndChild();
     }
 
     private string BuildVisibleLogText()

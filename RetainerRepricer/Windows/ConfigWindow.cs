@@ -58,7 +58,7 @@ public sealed partial class ConfigWindow : Window, IDisposable
     #region Lifecycle
 
     public ConfigWindow(Plugin plugin)
-        : base("Retainer Repricer Configuration##Config")
+        : base("Retainer Repricer##Config")
     {
         _plugin = plugin;
         _config = plugin.Configuration;
@@ -67,9 +67,11 @@ public sealed partial class ConfigWindow : Window, IDisposable
         Flags = ImGuiWindowFlags.None;
         SizeConstraints = new WindowSizeConstraints
         {
-            MinimumSize = new(360, 180),
-            MaximumSize = new(800, 600),
+            MinimumSize = new(520, 420),
+            MaximumSize = new(float.MaxValue, float.MaxValue),
         };
+        Size = new(900, 680);
+        SizeCondition = ImGuiCond.FirstUseEver;
     }
 
     public void Dispose()
@@ -94,6 +96,10 @@ public sealed partial class ConfigWindow : Window, IDisposable
 
     #region Draw
 
+    public override void PreDraw() => RepricerUiStyle.Push();
+
+    public override void PostDraw() => RepricerUiStyle.Pop();
+
     public override void Draw()
     {
         _plugin.TrySyncRetainersThrottled();
@@ -105,7 +111,7 @@ public sealed partial class ConfigWindow : Window, IDisposable
             _perRetainerCapsLastEnabled = _config.EnablePerRetainerCaps;
         }
 
-        if (!ImGui.BeginTabBar("##rr_cfg_tabs"))
+        if (!ImGui.BeginTabBar("##rr_cfg_tabs", ImGuiTabBarFlags.FittingPolicyScroll))
             return;
 
         // Order: Sell List, Characters, Settings, Advanced (optional).
@@ -207,11 +213,16 @@ public sealed partial class ConfigWindow : Window, IDisposable
 
     private void DrawSettingsTab()
     {
+        ImGui.TextUnformatted("GENERAL & OVERLAY");
         DrawPluginSettings();
+        ImGui.TextUnformatted("INVENTORY & LISTING");
         DrawPerRetainerToggle();
         DrawAutoPruneSettings();
+        ImGui.TextUnformatted("PRICING");
         DrawPricingGateSettings();
+        ImGui.TextUnformatted("AUTORETAINER");
         DrawAutoRetainerSettings();
+        ImGui.TextUnformatted("DIAGNOSTICS");
         DrawAdvancedTabToggle();
         DrawOpenLogsButton();
     }
@@ -372,13 +383,16 @@ public sealed partial class ConfigWindow : Window, IDisposable
         bool forceCollapseRows)
     {
         var smartSortActive = _plugin.SmartSortEnabled;
+        var tableHeight = Math.Max(180f, ImGui.GetContentRegionAvail().Y - ImGui.GetFrameHeightWithSpacing());
         if (!ImGui.BeginTable(
                 "##sell_list_table",
                 5,
                 ImGuiTableFlags.RowBg |
                 ImGuiTableFlags.BordersInnerH |
                 ImGuiTableFlags.BordersV |
-                ImGuiTableFlags.SizingStretchProp))
+                ImGuiTableFlags.SizingStretchProp |
+                ImGuiTableFlags.ScrollY,
+                new System.Numerics.Vector2(0, tableHeight)))
             return;
 
         ImGui.TableSetupColumn("Priority", ImGuiTableColumnFlags.WidthFixed, 60f);
@@ -386,6 +400,7 @@ public sealed partial class ConfigWindow : Window, IDisposable
         ImGui.TableSetupColumn("Min Inv", ImGuiTableColumnFlags.WidthFixed, 60f);
         ImGui.TableSetupColumn("Keep", ImGuiTableColumnFlags.WidthFixed, 50f);
         ImGui.TableSetupColumn("##remove", ImGuiTableColumnFlags.WidthFixed, 30f);
+        ImGui.TableSetupScrollFreeze(0, 1);
         ImGui.TableNextRow(ImGuiTableRowFlags.Headers);
         ImGui.TableSetColumnIndex(0);
         DrawHeaderLabel("Priority", center: true);
@@ -738,6 +753,8 @@ public sealed partial class ConfigWindow : Window, IDisposable
                     ? $"Character {data.CID:X16}"
                     : $"{character.Name}@{character.World}";
                 var open = false;
+                ImGui.PushStyleVar(ImGuiStyleVar.CellPadding, new System.Numerics.Vector2(10f, 2f));
+                ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new System.Numerics.Vector2(8f, 3f));
                 if (ImGui.BeginTable("##character_header", 3, ImGuiTableFlags.NoSavedSettings))
                 {
                     var style = ImGui.GetStyle();
@@ -775,10 +792,12 @@ public sealed partial class ConfigWindow : Window, IDisposable
                         () => pendingRemoval = (data.CID, true), _plugin.IsRunning);
                     ImGui.EndTable();
                 }
+                ImGui.PopStyleVar(2);
 
                 if (open)
                 {
                     ImGui.Indent();
+                    ImGui.TextUnformatted("AUTOMATIC PROCESSING");
                     var processAfterAutoRetainer = character.ProcessAfterAutoRetainer;
                     if (!_plugin.AutoRetainerAvailable)
                         ImGui.BeginDisabled();
@@ -801,13 +820,16 @@ public sealed partial class ConfigWindow : Window, IDisposable
                             "Near-due ventures can be grouped with this run using the AutoRetainer wait setting.");
                     }
 
+                    ImGui.TextUnformatted("AUTOMATIC INVENTORY LISTING");
                     DrawAutoListSettings(character);
+                    ImGui.TextUnformatted("ITEM BLOCKLISTS");
                     var assignedBlocklists = character.AutoListBlocklistIds?.Count ?? 0;
                     var effectiveBlocks = _config.GetEffectiveAutoListBlocklist(data.CID).Count;
                     ImGui.TextDisabled($"Item blocklists: {assignedBlocklists} assigned • {effectiveBlocks} effective entries");
                     ImGui.SameLine();
                     if (ImGui.SmallButton($"Manage##blocklists-{data.CID}")) OpenBlocklistsForCharacter(data.CID);
 
+                    ImGui.TextUnformatted("RETAINER CONTROLS");
                     if (names.Count == 0)
                         ImGui.TextDisabled("No retainers are known for this character.");
                     else

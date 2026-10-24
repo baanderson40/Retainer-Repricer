@@ -59,8 +59,15 @@ internal sealed class MinCountPopup : Window, IDisposable
 
     public override void PreDraw()
     {
+        RepricerUiStyle.Push();
         ApplyDynamicSizeConstraints();
         base.PreDraw();
+    }
+
+    public override void PostDraw()
+    {
+        base.PostDraw();
+        RepricerUiStyle.Pop();
     }
 
     public void Show(
