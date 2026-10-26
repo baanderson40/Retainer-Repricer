@@ -8,9 +8,12 @@ using Dalamud.Plugin.Services;
 
 using ECommons.Automation;
 using ECommons.DalamudServices;
+using ECommons.UIHelpers.AddonMasterImplementations;
+using RetainerRepricer.Services;
 
 using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.UI;
+using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 
 using Lumina.Excel.Sheets;
@@ -104,6 +107,8 @@ internal sealed unsafe class UiReader
         bool IsHq,
         string Name,
         int TotalQuantity);
+
+    public readonly record struct VendorInventorySnapshot(bool IsComplete, List<VendorInventoryStack> Stacks);
 
     #endregion
 
@@ -604,6 +609,202 @@ internal sealed unsafe class UiReader
             .ThenBy(candidate => candidate.IsHq ? 1 : 0)
             .ToList();
         return true;
+    }
+
+    public VendorInventorySnapshot GetVendorInventorySnapshot()
+    {
+        var stacks = new List<VendorInventoryStack>();
+        var inv = InventoryManager.Instance();
+        if (inv == null)
+            return new VendorInventorySnapshot(false, stacks);
+
+        var containers = new[] { InventoryType.Inventory1, InventoryType.Inventory2, InventoryType.Inventory3, InventoryType.Inventory4 };
+        foreach (var type in containers)
+        {
+            var container = inv->GetInventoryContainer(type);
+            if (container == null || !container->IsLoaded)
+                return new VendorInventorySnapshot(false, stacks);
+
+            for (var i = 0; i < container->Size; i++)
+            {
+                var slot = container->GetInventorySlot(i);
+                if (slot == null || slot->Quantity <= 0)
+                    continue;
+                var itemId = slot->GetBaseItemId();
+                if (itemId == 0)
+                    continue;
+                var row = Svc.Data.GetExcelSheet<Item>()?.GetRowOrDefault(itemId);
+                stacks.Add(new VendorInventoryStack(
+                    (int)type, i, itemId, IsSlotHq(slot), (int)slot->Quantity,
+                    row?.Name.ToString().Trim() ?? $"Item {itemId}", row.HasValue,
+                    row.HasValue && !row.Value.IsUntradable, slot->IsCollectable(),
+                    !slot->IsCollectable() && slot->GetSpiritbondOrCollectability() != 0,
+                    row?.PriceLow ?? 0));
+            }
+        }
+        return new VendorInventorySnapshot(true, stacks);
+    }
+
+    public bool TryEnsureInventoryWindowOpen()
+    {
+        var module = AgentModule.Instance();
+        if (module == null) return false;
+        var inventoryAgent = module->GetAgentByInternalId(AgentId.Inventory);
+        if (inventoryAgent == null) return false;
+        var addonId = inventoryAgent->GetAddonId();
+        if (addonId == 0)
+        {
+            inventoryAgent->Show();
+            return false;
+        }
+        var addon = RaptureAtkUnitManager.Instance()->GetAddonById((ushort)addonId);
+        if (addon == null)
+        {
+            inventoryAgent->Show();
+            return false;
+        }
+        if (!addon->IsVisible)
+        {
+            addon->Open(1);
+            return false;
+        }
+        return true;
+    }
+
+    public bool IsInventoryWindowVisible()
+    {
+        var module = AgentModule.Instance();
+        if (module == null) return false;
+        var inventoryAgent = module->GetAgentByInternalId(AgentId.Inventory);
+        if (inventoryAgent == null) return false;
+        var addonId = inventoryAgent->GetAddonId();
+        var unitManager = RaptureAtkUnitManager.Instance();
+        if (addonId == 0 || unitManager == null) return false;
+        var addon = unitManager->GetAddonById((ushort)addonId);
+        return addon != null && addon->IsVisible;
+    }
+
+    public bool TryOpenInventoryContextMenu(InventoryType containerType, int slotIndex)
+    {
+        var module = AgentModule.Instance();
+        if (module == null) return false;
+        var inventoryAgent = module->GetAgentByInternalId(AgentId.Inventory);
+        var contextAgent = (AgentInventoryContext*)module->GetAgentByInternalId(AgentId.InventoryContext);
+        if (inventoryAgent == null || contextAgent == null || !TryEnsureInventoryWindowOpen()) return false;
+        contextAgent->OpenForItemSlot(containerType, slotIndex, 0, inventoryAgent->GetAddonId());
+        return true;
+    }
+
+    public bool IsRetainerSellContextMenuOpen()
+    {
+        var module = AgentModule.Instance();
+        if (module == null) return false;
+        var agent = (AgentInventoryContext*)module->GetAgentByInternalId(AgentId.InventoryContext);
+        if (agent == null || !agent->IsAgentActive()) return false;
+        var addonId = agent->GetAddonId();
+        if (addonId == 0) return false;
+        var addon = RaptureAtkUnitManager.Instance()->GetAddonById((ushort)addonId);
+        return addon != null && addon->IsVisible;
+    }
+
+    public bool TrySelectLiveRetainerVendorSell(
+        int container, int slotIndex, uint itemId, bool isHq, int quantity,
+        ulong expectedRetainerId, out bool selectionAttempted, out string diagnostic, System.Action? beforeSelection = null)
+    {
+        selectionAttempted = false;
+        diagnostic = string.Empty;
+        if (!TryGetActiveRetainer(out var retainerId, out var retainerName) || retainerId != expectedRetainerId)
+        {
+            diagnostic = $"active retainer mismatch; expected={expectedRetainerId}";
+            return false;
+        }
+        var module = AgentModule.Instance();
+        if (module == null)
+        {
+            diagnostic = $"retainer={retainerName}#{retainerId}; AgentModule unavailable";
+            return false;
+        }
+        var agent = (AgentInventoryContext*)module->GetAgentByInternalId(AgentId.InventoryContext);
+        if (agent == null)
+        {
+            diagnostic = $"retainer={retainerName}#{retainerId}; InventoryContext agent unavailable";
+            return false;
+        }
+
+        var addonId = agent->GetAddonId();
+        var unitManager = RaptureAtkUnitManager.Instance();
+        var addon = addonId == 0 || unitManager == null ? null : unitManager->GetAddonById((ushort)addonId);
+        var visible = addon != null && addon->IsVisible;
+        var target = agent->TargetInventorySlot;
+        var actualItemId = target == null ? 0u : target->GetBaseItemId();
+        var actualHq = target != null && target->IsHighQuality();
+        var actualQuantity = target == null ? 0 : (int)target->Quantity;
+        var targetMatches = target != null && agent->TargetInventoryId == (InventoryType)container &&
+                            agent->TargetInventorySlotId == slotIndex && actualItemId == itemId &&
+                            actualHq == isHq && actualQuantity == quantity;
+        var contextAddon = Svc.GameGui.GetAddonByName("ContextMenu", 1);
+        if (contextAddon.IsNull || !contextAddon.IsVisible)
+        {
+            diagnostic = $"retainer={retainerName}#{retainerId}; context menu addon unavailable; agentActive={agent->IsAgentActive()}, addonId={addonId}, targetMatches={targetMatches}";
+            return false;
+        }
+        if (!visible || !targetMatches)
+        {
+            diagnostic = $"retainer={retainerName}#{retainerId}; contextVisible={visible}; requested={container}/{slotIndex} item={itemId} HQ={isHq} qty={quantity}; actual={agent->TargetInventoryId}/{agent->TargetInventorySlotId} item={actualItemId} HQ={actualHq} qty={actualQuantity}; targetMatches={targetMatches}";
+            return false;
+        }
+
+        try
+        {
+            var contextMenu = new AddonMaster.ContextMenu(contextAddon.Address);
+            var entries = contextMenu.Entries;
+            var rowCount = contextMenu.ListComponent == null ? 0 : contextMenu.ListItems.Count;
+            var renderedEntryDetails = entries.Select((entry, index) =>
+            {
+                var text = (entry.Text ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ').Replace('|', '/');
+                if (text.Length > 100) text = text[..100] + "…";
+                return $"{index}:'{text}' enabled={entry.Enabled} rendered={index < rowCount}";
+            });
+            var matching = entries.Select((entry, index) => (entry, index))
+                .Where(pair => string.Equals(pair.entry.Text?.Trim(), "Have Retainer Sell Items", StringComparison.Ordinal))
+                .ToArray();
+            diagnostic = $"retainer={retainerName}#{retainerId}; targetMatches=True; entries={entries.Length}; renderedRows={rowCount}; matches={matching.Length}; visibleEntries=[{string.Join(" | ", renderedEntryDetails)}]";
+            if (matching.Length != 1) return false;
+            var (sellEntry, displayIndex) = matching[0];
+            var rendered = displayIndex < rowCount;
+            diagnostic += $"; sellActionIndex={displayIndex}; text='{sellEntry.Text}'; enabled={sellEntry.Enabled}; rendered={rendered}";
+            if (!rendered || !sellEntry.Enabled) return false;
+
+            // Revalidate target immediately before touching the live menu entry.
+            if (!TryGetActiveRetainer(out var currentRetainerId, out _) || currentRetainerId != expectedRetainerId ||
+                !agent->IsAgentActive() || agent->TargetInventorySlot == null ||
+                agent->TargetInventoryId != (InventoryType)container || agent->TargetInventorySlotId != slotIndex ||
+                agent->TargetInventorySlot->GetBaseItemId() != itemId ||
+                agent->TargetInventorySlot->IsHighQuality() != isHq || agent->TargetInventorySlot->Quantity != quantity)
+            {
+                diagnostic += "; final target revalidation failed";
+                return false;
+            }
+
+            beforeSelection?.Invoke();
+            selectionAttempted = true;
+            var selected = sellEntry.Select();
+            diagnostic += $"; selectionReturn={selected}";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            diagnostic = $"retainer={retainerName}#{retainerId}; visible-entry selection exception={ex.GetType().Name}: {ex.Message}";
+            return selectionAttempted;
+        }
+    }
+
+    public void DismissInventoryContextMenu()
+    {
+        var module = AgentModule.Instance();
+        if (module == null) return;
+        var agent = module->GetAgentByInternalId(AgentId.InventoryContext);
+        if (agent != null && agent->IsAgentActive()) agent->Hide();
     }
 
     public bool TryGetInventorySlot(InventoryType containerType, int slotIndex, out InventoryItem* inventorySlot)

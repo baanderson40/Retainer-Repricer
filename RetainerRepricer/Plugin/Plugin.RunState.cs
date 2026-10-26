@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
+using RetainerRepricer.Services;
 
 namespace RetainerRepricer;
 
@@ -62,6 +63,9 @@ public unsafe sealed partial class Plugin
         /// <summary>Click an inventory slot to open RetainerSell for a new listing.</summary>
         Sell_OpenRetainerSellFromInventory,
 
+        /// <summary>Recover safely after a new-item RetainerSell window failed to open.</summary>
+        RecoveringFailedNewListing,
+
         /// <summary>Wait for a fast Universalis stack-value estimate before opening RetainerSell.</summary>
         Sell_WaitingUniversalisStackValuePrefilter,
 
@@ -70,6 +74,9 @@ public unsafe sealed partial class Plugin
 
         /// <summary>Wait to return to RetainerSellList so we can pick the next item.</summary>
         WaitingRetainerSellListAfterItem,
+
+        /// <summary>Sell an AutoList threshold-rejected inventory stack through the retainer NPC.</summary>
+        Sell_VendorFallback,
 
         /// <summary>Unwind any stray addons and return to RetainerList.</summary>
         ExitToRetainerList,
@@ -222,6 +229,60 @@ public unsafe sealed partial class Plugin
         set => _sellState.HasPendingSellSlot = value;
     }
 
+    private VendorFallbackStage _vendorFallbackStage
+    {
+        get => _sellState.VendorFallbackStage;
+        set => _sellState.VendorFallbackStage = value;
+    }
+
+    private bool _vendorFallbackSelectionAttempted
+    {
+        get => _sellState.VendorFallbackSelectionAttempted;
+        set => _sellState.VendorFallbackSelectionAttempted = value;
+    }
+
+    private long _vendorFallbackBaselineQuantity
+    {
+        get => _sellState.VendorFallbackBaselineQuantity;
+        set => _sellState.VendorFallbackBaselineQuantity = value;
+    }
+
+    private int _vendorFallbackExpectedQuantity
+    {
+        get => _sellState.VendorFallbackExpectedQuantity;
+        set => _sellState.VendorFallbackExpectedQuantity = value;
+    }
+
+    private int _vendorFallbackUnitPrice
+    {
+        get => _sellState.VendorFallbackUnitPrice;
+        set => _sellState.VendorFallbackUnitPrice = value;
+    }
+
+    private long _vendorFallbackRejectedStackValue
+    {
+        get => _sellState.VendorFallbackRejectedStackValue;
+        set => _sellState.VendorFallbackRejectedStackValue = value;
+    }
+
+    private DateTime _vendorFallbackStartedUtc
+    {
+        get => _sellState.VendorFallbackStartedUtc;
+        set => _sellState.VendorFallbackStartedUtc = value;
+    }
+
+    private DateTime _vendorFallbackNextSelectionCheckUtc
+    {
+        get => _sellState.VendorFallbackNextSelectionCheckUtc;
+        set => _sellState.VendorFallbackNextSelectionCheckUtc = value;
+    }
+
+    private ulong _vendorFallbackRetainerId
+    {
+        get => _sellState.VendorFallbackRetainerId;
+        set => _sellState.VendorFallbackRetainerId = value;
+    }
+
     private NewListingAttemptState _newListingAttemptState
     {
         get => _sellState.ListingAttemptState;
@@ -312,7 +373,7 @@ public unsafe sealed partial class Plugin
         set => _sellState.NeedsExistingListingScan = value;
     }
 
-    private Task<decimal?>? _autoListPrefilterTask
+    private Task<UniversalisListingStats?>? _autoListPrefilterTask
     {
         get => _sellState.AutoListPrefilterTask;
         set => _sellState.AutoListPrefilterTask = value;
@@ -536,6 +597,14 @@ public unsafe sealed partial class Plugin
         Failed,
     }
 
+    private enum VendorFallbackStage
+    {
+        None,
+        Prepare,
+        SelectAction,
+        Verify,
+    }
+
     private sealed class RetainerCycleState
     {
         public List<RetainerRowEntry> RowOrder { get; } = new();
@@ -578,6 +647,8 @@ public unsafe sealed partial class Plugin
         public int AttemptedSellSlotQuantityBefore { get; set; }
         public int AttemptedListedCountBefore { get; set; }
         public DateTime AttemptedSellStartedUtc { get; set; } = DateTime.MinValue;
+        public DateTime FailedListingRecoveryStartedUtc { get; set; } = DateTime.MinValue;
+        public DateTime FailedListingRecoveryStableSinceUtc { get; set; } = DateTime.MinValue;
         public HashSet<long> FailedSellSlotKeys { get; } = new();
         public bool AwaitingRetainerContextMenu { get; set; }
         public DateTime RetainerContextMenuRequestedUtc { get; set; } = DateTime.MinValue;
@@ -585,8 +656,23 @@ public unsafe sealed partial class Plugin
         public Dictionary<ulong, int> RetainerExistingSellCounts { get; } = new();
         public Dictionary<ulong, AutoListPriceRejection> AutoListPriceRejections { get; } = new();
         public int CachedAutoListSlotsSkippedThisRetainer { get; set; }
+        public VendorFallbackStage VendorFallbackStage { get; set; }
+        public bool VendorFallbackSelectionAttempted { get; set; }
+        public long VendorFallbackBaselineQuantity { get; set; }
+        public int VendorFallbackExpectedQuantity { get; set; }
+        public int VendorFallbackUnitPrice { get; set; }
+        public long VendorFallbackRejectedStackValue { get; set; }
+        public DateTime VendorFallbackStartedUtc { get; set; } = DateTime.MinValue;
+        public DateTime VendorFallbackNextSelectionCheckUtc { get; set; } = DateTime.MinValue;
+        public ulong VendorFallbackRetainerId { get; set; }
+        public string VendorFallbackLastContextDiagnostic { get; set; } = string.Empty;
+        public bool VendorSaleVerifiedThisRetainer { get; set; }
+        public bool VendorExitConfirmationPending { get; set; }
+        public bool VendorExitConfirmationAccepted { get; set; }
+        public bool VendorExitConfirmationAttempted { get; set; }
+        public DateTime VendorExitConfirmationStartedUtc { get; set; } = DateTime.MinValue;
         public bool NeedsExistingListingScan { get; set; }
-        public Task<decimal?>? AutoListPrefilterTask { get; set; }
+        public Task<UniversalisListingStats?>? AutoListPrefilterTask { get; set; }
         public CancellationTokenSource? AutoListPrefilterCancellation { get; set; }
         public AutoListPrefilterKey? AutoListPrefilterKey { get; set; }
     }

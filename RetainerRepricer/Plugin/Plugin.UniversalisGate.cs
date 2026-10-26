@@ -59,11 +59,12 @@ public unsafe sealed partial class Plugin
         {
             _autoListPrefilterCancellation = cancellation;
             _autoListPrefilterKey = key;
-            _autoListPrefilterTask = _universalisClient.GetAveragePriceAsync(
+            _autoListPrefilterTask = _universalisClient.GetListingStatsAsync(
                 baseUrl,
                 region,
                 _currentSellItemId,
                 _currentSellItemIsHq,
+                cacheDuration: TimeSpan.FromMinutes(1),
                 cancellation.Token,
                 source: "auto_list_prefilter");
             Log.Debug($"[RR][AutoList][Prefilter] Requesting Universalis estimate itemId={_currentSellItemId} hq={_currentSellItemIsHq} quantity={_currentSellStackSize} minimum={_currentSellMinimumStackValue}.");

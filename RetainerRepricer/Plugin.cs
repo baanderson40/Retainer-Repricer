@@ -189,6 +189,11 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         Framework.Update -= OnFrameworkUpdate;
         DisposeAutoRetainerIntegration();
         CancelBackgroundSmartSortRefresh();
+        if (VendorSaleRunning)
+            FinishVendorSale(_vendorSaleDispatched
+                ? "Plugin unloaded during a dispatched sale; outcome uncertain, no retry."
+                : "Plugin unloaded; sale stopped before dispatch.");
+        CancelVendorPreview();
 
         WindowSystem.RemoveAllWindows();
 
@@ -684,6 +689,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         }
         _needsExistingListingScan = false;
 
+        ResetAutoVendorFallbackState();
         ResetAutoListPrefilterState();
         ResetUniversalisGateState();
         _runScope = RunScope.AllEnabledRetainers;
@@ -736,6 +742,7 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         }
         _needsExistingListingScan = false;
 
+        ResetAutoVendorFallbackState();
         // Reset pacing so one bad throttle event doesn't slow the whole plugin permanently.
         _mbIntervalSec = MbBaseIntervalSeconds;
         _lastMbQueryUtc = DateTime.MinValue;

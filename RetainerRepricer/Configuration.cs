@@ -65,6 +65,9 @@ public sealed class Configuration : IPluginConfiguration
     // Optional: when enabled, per-retainer sell caps become available in the Sell List.
     public bool EnablePerRetainerCaps { get; set; } = false;
 
+    // When enabled, a completed eligible vendor preview may start an NPC sale automatically.
+    public bool AutoSellVendorPreviewCandidates { get; set; } = false;
+
     // Controls whether ImGui tooltips are shown while hovering configuration controls.
     public bool ShowTooltips { get; set; } = true;
 
@@ -895,13 +898,16 @@ public sealed class Configuration : IPluginConfiguration
         public bool ProcessAfterAutoRetainer { get; set; }
         public bool AutoListInventoryItems { get; set; }
         public int AutoListMinimumStackValue { get; set; } = 1000;
+        public int VendorPreviewMaximumStackMarketValue { get; set; }
         public HashSet<ulong> AutoListItemBlacklist { get; set; } = new();
         public HashSet<string> AutoListBlocklistIds { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        public HashSet<string> VendorAllowlistIds { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     }
 
     // Character settings are keyed by AutoRetainer's stable content ID.
     public Dictionary<ulong, CharacterSettings> Characters { get; set; } = new();
     public Dictionary<string, AutoListBlocklist> AutoListBlocklists { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, VendorAllowlist> VendorAllowlists { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     [Serializable]
     public sealed class AutoListBlocklist
@@ -910,9 +916,18 @@ public sealed class Configuration : IPluginConfiguration
         public HashSet<ulong> ItemKeys { get; set; } = new();
     }
 
+    [Serializable]
+    public sealed class VendorAllowlist
+    {
+        public string Name { get; set; } = string.Empty;
+        public HashSet<ulong> ItemKeys { get; set; } = new();
+        public int MaximumStackMarketValue { get; set; }
+    }
+
     public bool MigrateLegacyAutoListBlocklists()
     {
         AutoListBlocklists ??= new(StringComparer.OrdinalIgnoreCase);
+        VendorAllowlists ??= new(StringComparer.OrdinalIgnoreCase);
         Characters ??= new();
         var changed = false;
         if (Version < 4)
@@ -947,7 +962,36 @@ public sealed class Configuration : IPluginConfiguration
             list.Name ??= string.Empty;
         }
         foreach (var settings in Characters.Values)
-            if (settings != null) settings.AutoListBlocklistIds ??= new(StringComparer.OrdinalIgnoreCase);
+        {
+            if (settings == null) continue;
+            settings.AutoListBlocklistIds ??= new(StringComparer.OrdinalIgnoreCase);
+            settings.VendorAllowlistIds ??= new(StringComparer.OrdinalIgnoreCase);
+            settings.VendorPreviewMaximumStackMarketValue = Math.Clamp(settings.VendorPreviewMaximumStackMarketValue, 0, 999_999_999);
+        }
+        foreach (var list in VendorAllowlists.Values)
+        {
+            if (list == null) continue;
+            list.Name ??= string.Empty;
+            list.ItemKeys ??= new();
+            list.MaximumStackMarketValue = Math.Clamp(list.MaximumStackMarketValue, 0, 999_999_999);
+        }
+        if (Version < 6)
+        {
+            // Carry existing per-character limits into previously assigned shared lists,
+            // choosing the lowest legacy limit when multiple characters shared a list.
+            foreach (var (listId, list) in VendorAllowlists)
+            {
+                if (list == null || list.MaximumStackMarketValue > 0) continue;
+                var legacyThresholds = Characters
+                    .Where(pair => pair.Value?.VendorAllowlistIds?.Contains(listId) == true)
+                    .Select(pair => pair.Value!.VendorPreviewMaximumStackMarketValue)
+                    .ToList();
+                if (legacyThresholds.Count > 0)
+                    list.MaximumStackMarketValue = legacyThresholds.Min();
+            }
+            Version = 6;
+            changed = true;
+        }
         return changed;
     }
 
@@ -992,6 +1036,60 @@ public sealed class Configuration : IPluginConfiguration
         list.ItemKeys ??= new();
         var changed = 0;
         foreach (var key in keys) changed += blocked ? (list.ItemKeys.Add(key) ? 1 : 0) : (list.ItemKeys.Remove(key) ? 1 : 0);
+        return changed;
+    }
+
+    public HashSet<ulong> GetEffectiveVendorAllowlist(ulong cid)
+    {
+        var result = new HashSet<ulong>();
+        if (cid == 0 || Characters?.TryGetValue(cid, out var settings) != true || settings == null) return result;
+        foreach (var id in settings.VendorAllowlistIds ?? new(StringComparer.OrdinalIgnoreCase))
+            if (VendorAllowlists?.TryGetValue(id, out var list) == true && list?.ItemKeys != null)
+                result.UnionWith(list.ItemKeys);
+        return result;
+    }
+
+    public int GetEffectiveVendorThreshold(ulong cid, ulong itemKey)
+    {
+        if (cid == 0 || Characters?.TryGetValue(cid, out var settings) != true || settings == null ||
+            VendorAllowlists == null || settings.VendorAllowlistIds == null)
+            return 0;
+        var thresholds = settings.VendorAllowlistIds
+            .Where(id => VendorAllowlists.TryGetValue(id, out var list) && list?.ItemKeys?.Contains(itemKey) == true)
+            .Select(id => VendorAllowlists[id].MaximumStackMarketValue)
+            .ToList();
+        if (thresholds.Count == 0) return 0;
+        return Math.Min(thresholds.Min(), settings.AutoListMinimumStackValue);
+    }
+
+    public bool TryCreateVendorAllowlist(string id, string name, IEnumerable<ulong>? keys = null)
+    {
+        VendorAllowlists ??= new(StringComparer.OrdinalIgnoreCase);
+        name = name.Trim();
+        if (name.Length == 0 || VendorAllowlists.ContainsKey(id) ||
+            VendorAllowlists.Values.Any(list => string.Equals(list.Name, name, StringComparison.OrdinalIgnoreCase)))
+            return false;
+        VendorAllowlists[id] = new VendorAllowlist { Name = name, ItemKeys = keys?.ToHashSet() ?? new() };
+        return true;
+    }
+
+    public bool TryRenameVendorAllowlist(string id, string name)
+    {
+        name = name.Trim();
+        if (name.Length == 0 || VendorAllowlists?.TryGetValue(id, out var list) != true || list == null ||
+            VendorAllowlists.Values.Any(other => !ReferenceEquals(other, list) &&
+                string.Equals(other.Name, name, StringComparison.OrdinalIgnoreCase)))
+            return false;
+        list.Name = name;
+        return true;
+    }
+
+    public int SetVendorAllowlistKeys(string id, IEnumerable<ulong> keys, bool allowed)
+    {
+        if (VendorAllowlists?.TryGetValue(id, out var list) != true || list == null) return 0;
+        list.ItemKeys ??= new();
+        var changed = 0;
+        foreach (var key in keys) changed += allowed ? (list.ItemKeys.Add(key) ? 1 : 0) : (list.ItemKeys.Remove(key) ? 1 : 0);
         return changed;
     }
     // UI order only; never changes AutoRetainer's processing order.
@@ -1043,7 +1141,10 @@ public sealed class Configuration : IPluginConfiguration
         }
 
         settings.AutoListItemBlacklist ??= new();
+        settings.AutoListBlocklistIds ??= new(StringComparer.OrdinalIgnoreCase);
+        settings.VendorAllowlistIds ??= new(StringComparer.OrdinalIgnoreCase);
         settings.AutoListMinimumStackValue = Math.Clamp(settings.AutoListMinimumStackValue, 1, 999_999_999);
+        settings.VendorPreviewMaximumStackMarketValue = Math.Clamp(settings.VendorPreviewMaximumStackMarketValue, 0, settings.AutoListMinimumStackValue);
 
         if (!string.IsNullOrWhiteSpace(name)) settings.Name = name.Trim();
         if (!string.IsNullOrWhiteSpace(world)) settings.World = world.Trim();

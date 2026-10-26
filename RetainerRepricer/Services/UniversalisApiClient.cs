@@ -175,6 +175,8 @@ internal sealed class UniversalisApiClient : IDisposable
                 return null;
             }
 
+            var worldAverageSalePrice = quality.AverageSalePrice?.World?.Price;
+            var worldMinimumListingPrice = quality.MinListing?.World?.Price;
             var avgPrice = quality.AverageSalePrice?.GetBestPrice();
             if (avgPrice is null)
             {
@@ -191,7 +193,8 @@ internal sealed class UniversalisApiClient : IDisposable
             if (avgPrice is null && velocity is null)
                 return null;
 
-            var stats = new UniversalisListingStats(avgPrice, velocity, lastUpload);
+            var stats = new UniversalisListingStats(
+                avgPrice, velocity, lastUpload, worldAverageSalePrice, worldMinimumListingPrice);
 
             _statsCache[key] = new StatsCacheEntry
             {
@@ -673,4 +676,9 @@ internal readonly record struct UniversalisDiagnostics(
     long SuppressedRequests,
     TimeSpan CooldownRemaining);
 
-public sealed record UniversalisListingStats(decimal? AveragePrice, double? DailySaleVelocity, DateTime? LastUploadUtc);
+public sealed record UniversalisListingStats(
+    decimal? AveragePrice,
+    double? DailySaleVelocity,
+    DateTime? LastUploadUtc,
+    decimal? WorldAverageSalePrice = null,
+    decimal? WorldMinimumListingPrice = null);

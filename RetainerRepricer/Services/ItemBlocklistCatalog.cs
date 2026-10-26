@@ -9,7 +9,7 @@ namespace RetainerRepricer.Services;
 
 internal sealed class ItemBlocklistCatalog
 {
-    internal sealed record Entry(uint Id, string Name, uint CategoryId, string Category, bool CanBeHq, uint ItemLevel, byte Rarity, bool IsGear);
+    internal sealed record Entry(uint Id, string Name, uint CategoryId, string Category, bool CanBeHq, uint ItemLevel, byte Rarity, bool IsGear, uint NpcSalePrice);
 
     private readonly List<Entry> _items;
     internal IReadOnlyList<Entry> Items => _items;
@@ -29,7 +29,7 @@ internal sealed class ItemBlocklistCatalog
                 var categoryId = item.ItemUICategory.RowId;
                 return new Entry(item.RowId, item.Name.ToString().Trim(), categoryId,
                     categories.GetValueOrDefault(categoryId, "Other"), item.CanBeHq, item.LevelItem.RowId, item.Rarity,
-                    item.EquipSlotCategory.RowId != 0);
+                    item.EquipSlotCategory.RowId != 0, item.PriceLow);
             })
             .OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
             .ThenBy(item => item.Id).ToList();

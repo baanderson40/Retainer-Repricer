@@ -91,6 +91,21 @@ public sealed class DebugWindow : Window, IDisposable
         ImGui.Spacing();
         if (ImGui.Button("Open Logs"))
             _plugin.OpenLogWindow();
+
+        ImGui.Spacing();
+        ImGui.TextUnformatted("Context menu diagnostics");
+        ImGui.TextWrapped("Dump the open menu, or capture the next inventory context menu after right-clicking an item.");
+        if (ImGui.Button("Dump open context menu"))
+            _plugin.RequestOpenContextMenuDebugDump();
+        if (ImGui.GetContentRegionAvail().X >= 250f) ImGui.SameLine();
+        if (ImGui.Button("Capture next context menu"))
+            _plugin.ArmNextContextMenuDebugDump();
+        if (ImGui.GetContentRegionAvail().X >= 150f) ImGui.SameLine();
+        ImGui.BeginDisabled(!_plugin.CanCancelContextMenuDebugDump);
+        if (ImGui.Button("Cancel capture"))
+            _plugin.CancelContextMenuDebugDump();
+        ImGui.EndDisabled();
+        ImGui.TextDisabled(_plugin.ContextMenuDebugDumpStatus);
     }
 
     public override void PreDraw() => RepricerUiStyle.Push();

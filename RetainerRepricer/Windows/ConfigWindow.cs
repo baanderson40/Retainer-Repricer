@@ -5,6 +5,7 @@ using System.Numerics;
 
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
+using Dalamud.Interface.Utility;
 using Dalamud.Interface.Windowing;
 using ECommons.DalamudServices;
 using FFXIVClientStructs.FFXIV.Common.Lua;
@@ -135,6 +136,12 @@ public sealed partial class ConfigWindow : Window, IDisposable
         if (BeginFocusedTab("Item Blocklists", ConfigTabFocus.ItemBlocklists))
         {
             DrawItemBlocklistsTab();
+            ImGui.EndTabItem();
+        }
+
+        if (ImGui.BeginTabItem("Vendor Item List"))
+        {
+            DrawVendorPreviewTab();
             ImGui.EndTabItem();
         }
 
@@ -753,9 +760,15 @@ public sealed partial class ConfigWindow : Window, IDisposable
                     ? $"Character {data.CID:X16}"
                     : $"{character.Name}@{character.World}";
                 var open = false;
+                var openDropdownRequested = false;
+                var dropdownId = $"##character_settings_{data.CID}";
+                var dropdownPosition = System.Numerics.Vector2.Zero;
+                var dropdownWidth = 0f;
+                var dropdownHeight = 0f;
                 ImGui.PushStyleVar(ImGuiStyleVar.CellPadding, new System.Numerics.Vector2(10f, 2f));
                 ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new System.Numerics.Vector2(8f, 3f));
-                if (ImGui.BeginTable("##character_header", 3, ImGuiTableFlags.NoSavedSettings))
+                var headerTableOpen = ImGui.BeginTable("##character_header", 3, ImGuiTableFlags.NoSavedSettings);
+                if (headerTableOpen)
                 {
                     var style = ImGui.GetStyle();
                     var arrowWidth = ImGui.GetFrameHeight();
@@ -782,7 +795,14 @@ public sealed partial class ConfigWindow : Window, IDisposable
                         TooltipHelper.Show(_config, "Move character down (display order only).");
 
                     ImGui.TableSetColumnIndex(1);
-                    open = ImGui.TreeNodeEx($"{label}###character", ImGuiTreeNodeFlags.Framed | ImGuiTreeNodeFlags.NoTreePushOnOpen);
+                    dropdownPosition = ImGui.GetCursorScreenPos();
+                    var viewport = ImGui.GetMainViewport();
+                    var workRight = viewport.WorkPos.X + viewport.WorkSize.X;
+                    dropdownWidth = Math.Max(120f * ImGuiHelpers.GlobalScale,
+                        Math.Min(ImGui.GetContentRegionAvail().X, workRight - dropdownPosition.X));
+                    dropdownHeight = ImGui.GetFrameHeight();
+                    if (ImGui.Button($"{label}  ▼##{dropdownId}", new System.Numerics.Vector2(dropdownWidth, dropdownHeight)))
+                        openDropdownRequested = true;
                     if (ImGui.IsItemHovered())
                         TooltipHelper.Show(_config, label);
 
@@ -794,9 +814,16 @@ public sealed partial class ConfigWindow : Window, IDisposable
                 }
                 ImGui.PopStyleVar(2);
 
+                if (headerTableOpen)
+                {
+                    if (openDropdownRequested)
+                        ImGui.OpenPopup(dropdownId);
+                    open = BeginScreenFillingDropdownPopup(
+                        dropdownId, dropdownPosition, dropdownWidth, dropdownHeight,
+                        preferBelow: true, fitContentHeight: true);
+                }
                 if (open)
                 {
-                    ImGui.Indent();
                     ImGui.TextUnformatted("AUTOMATIC PROCESSING");
                     var processAfterAutoRetainer = character.ProcessAfterAutoRetainer;
                     if (!_plugin.AutoRetainerAvailable)
@@ -829,6 +856,7 @@ public sealed partial class ConfigWindow : Window, IDisposable
                     ImGui.SameLine();
                     if (ImGui.SmallButton($"Manage##blocklists-{data.CID}")) OpenBlocklistsForCharacter(data.CID);
 
+                    ImGui.Separator();
                     ImGui.TextUnformatted("RETAINER CONTROLS");
                     if (names.Count == 0)
                         ImGui.TextDisabled("No retainers are known for this character.");
@@ -838,8 +866,7 @@ public sealed partial class ConfigWindow : Window, IDisposable
                         ImGui.Spacing();
                         DrawRetainerTable(names, data.CID);
                     }
-
-                    ImGui.Unindent();
+                    ImGui.EndPopup();
                 }
                 ImGui.PopID();
             }

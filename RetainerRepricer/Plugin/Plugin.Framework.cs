@@ -12,8 +12,12 @@ public unsafe sealed partial class Plugin
 {
     private void OnFrameworkUpdate(IFramework framework)
     {
+        TickContextMenuDebugDump();
         TickAutoRetainerIntegration();
         TickBackgroundSmartSortRefresh();
+        TickVendorPreview();
+        TickAutomaticVendorSale();
+        TickVendorSale();
 
         if (_dismissContextMenuNextTick)
         {

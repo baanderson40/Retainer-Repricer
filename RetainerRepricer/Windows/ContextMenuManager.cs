@@ -68,6 +68,23 @@ internal sealed class ContextMenuManager : IDisposable
 
     private unsafe void OnMenuOpened(IMenuOpenedArgs args)
     {
+        var targetType = args.Target?.GetType().Name ?? "none";
+        if (args.Target is MenuTargetInventory debugInventory && debugInventory.TargetItem.HasValue)
+        {
+            var target = debugInventory.TargetItem.Value;
+            _plugin.NotifyContextMenuOpened(
+                args.MenuType.ToString(),
+                targetType,
+                target.BaseItemId,
+                target.IsHq,
+                (int)target.ContainerType,
+                unchecked((int)target.InventorySlot));
+        }
+        else
+        {
+            _plugin.NotifyContextMenuOpened(args.MenuType.ToString(), targetType, 0, false, 0, -1);
+        }
+
         if (!_config.PluginEnabled)
             return;
 

@@ -71,7 +71,7 @@ public sealed partial class ConfigWindow
         DrawBlocklistConfirmation();
     }
 
-    private void DrawBlocklistEditor()
+    private void DrawBlocklistEditorPrevious()
     {
         var lists = _config.AutoListBlocklists.OrderBy(pair => pair.Value.Name, StringComparer.OrdinalIgnoreCase).ToList();
         ImGui.TextUnformatted("CREATE LIST");

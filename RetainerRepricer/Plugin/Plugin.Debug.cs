@@ -1,6 +1,9 @@
 using System;
+using System.Linq;
 
+using ECommons.UIHelpers.AddonMasterImplementations;
 using FFXIVClientStructs.FFXIV.Client.Game;
+using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using Lumina.Excel.Sheets;
 using RetainerRepricer.Services;
@@ -12,6 +15,275 @@ namespace RetainerRepricer;
 /// </summary>
 public unsafe sealed partial class Plugin
 {
+    private const int ContextMenuEntryValueOffset = 8;
+    private const int MaxContextMenuEntriesToDump = 64;
+    private const int MaxContextMenuValuesToDump = 64;
+    private static readonly TimeSpan ContextMenuCaptureTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan ContextMenuOpenTimeout = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan ContextMenuTargetFreshness = TimeSpan.FromSeconds(5);
+
+    private readonly record struct ContextMenuDebugTarget(
+        string MenuType,
+        string TargetType,
+        uint ItemId,
+        bool IsHq,
+        int ContainerType,
+        int Slot,
+        DateTime SeenUtc);
+
+    private ContextMenuDebugTarget? _lastContextMenuDebugTarget;
+    private DateTime _contextMenuDebugCaptureExpiresUtc;
+    private DateTime _contextMenuDebugOpenExpiresUtc;
+    private bool _contextMenuDebugCaptureArmed;
+    private bool _contextMenuDebugDumpPending;
+    private string _contextMenuDebugDumpStatus = "Idle";
+
+    internal string ContextMenuDebugDumpStatus => _contextMenuDebugDumpStatus;
+    internal bool CanCancelContextMenuDebugDump => _contextMenuDebugCaptureArmed || _contextMenuDebugDumpPending;
+
+    internal void RequestOpenContextMenuDebugDump()
+    {
+        _contextMenuDebugCaptureArmed = false;
+        _contextMenuDebugDumpPending = true;
+        _contextMenuDebugOpenExpiresUtc = DateTime.UtcNow + ContextMenuOpenTimeout;
+        _contextMenuDebugDumpStatus = "Waiting for open ContextMenu...";
+    }
+
+    internal void ArmNextContextMenuDebugDump()
+    {
+        _contextMenuDebugDumpPending = false;
+        _contextMenuDebugCaptureArmed = true;
+        _contextMenuDebugCaptureExpiresUtc = DateTime.UtcNow + ContextMenuCaptureTimeout;
+        _contextMenuDebugDumpStatus = "Armed — right-click an inventory item (30s timeout).";
+        Log.Information("[RR][ContextDump] Armed one-shot context-menu capture for 30 seconds.");
+    }
+
+    internal void CancelContextMenuDebugDump()
+    {
+        _contextMenuDebugCaptureArmed = false;
+        _contextMenuDebugDumpPending = false;
+        _contextMenuDebugDumpStatus = "Capture cancelled.";
+        Log.Information("[RR][ContextDump] Capture cancelled.");
+    }
+
+    internal void NotifyContextMenuOpened(
+        string menuType,
+        string targetType,
+        uint itemId,
+        bool isHq,
+        int containerType,
+        int slot)
+    {
+        var now = DateTime.UtcNow;
+        _lastContextMenuDebugTarget = new ContextMenuDebugTarget(
+            menuType, targetType, itemId, isHq, containerType, slot, now);
+        if (!_contextMenuDebugCaptureArmed || itemId == 0)
+            return;
+
+        _contextMenuDebugCaptureArmed = false;
+        _contextMenuDebugDumpPending = true;
+        _contextMenuDebugOpenExpiresUtc = now + ContextMenuOpenTimeout;
+        _contextMenuDebugDumpStatus = "Context menu opened; capturing...";
+    }
+
+    internal void TickContextMenuDebugDump()
+    {
+        var now = DateTime.UtcNow;
+        if (_contextMenuDebugCaptureArmed && now >= _contextMenuDebugCaptureExpiresUtc)
+        {
+            _contextMenuDebugCaptureArmed = false;
+            _contextMenuDebugDumpStatus = "Capture timed out.";
+            Log.Warning("[RR][ContextDump] Armed capture timed out before a context menu opened.");
+        }
+
+        if (!_contextMenuDebugDumpPending)
+            return;
+
+        var addon = GameGui.GetAddonByName("ContextMenu", 1);
+        if (addon.IsNull)
+        {
+            if (now < _contextMenuDebugOpenExpiresUtc)
+                return;
+
+            FinishContextMenuDebugDumpUnavailable("ContextMenu addon not found.");
+            return;
+        }
+
+        var unit = (AtkUnitBase*)addon.Address;
+        if (unit == null || !unit->IsVisible)
+        {
+            if (now < _contextMenuDebugOpenExpiresUtc)
+                return;
+
+            FinishContextMenuDebugDumpUnavailable("ContextMenu addon is not visible.");
+            return;
+        }
+
+        if (unit->AtkValues == null || unit->AtkValuesCount <= 0 ||
+            unit->AtkValues[0].Type != AtkValueType.UInt || unit->AtkValues[0].UInt == 0)
+        {
+            if (now < _contextMenuDebugOpenExpiresUtc)
+                return;
+
+            FinishContextMenuDebugDumpUnavailable("ContextMenu opened but did not populate any entries.");
+            return;
+        }
+
+        _contextMenuDebugDumpPending = false;
+        try
+        {
+            DumpContextMenuSnapshot(unit, addon.Address);
+            _contextMenuDebugDumpStatus = "Captured; see Logs.";
+        }
+        catch (Exception ex)
+        {
+            _contextMenuDebugDumpStatus = "Capture failed; see Logs.";
+            Log.Warning(ex, "[RR][ContextDump] Failed reading ContextMenu snapshot.");
+        }
+    }
+
+    private void FinishContextMenuDebugDumpUnavailable(string reason)
+    {
+        _contextMenuDebugDumpPending = false;
+        _contextMenuDebugDumpStatus = "Unavailable; see Logs.";
+        Log.Warning("[RR][ContextDump] Capture unavailable: {Reason}", reason);
+    }
+
+    private void DumpContextMenuSnapshot(AtkUnitBase* unit, nint addonAddress)
+    {
+        var target = TryGetContextMenuTargetFromAgent(out var agentTarget)
+            ? agentTarget
+            : _lastContextMenuDebugTarget is { } latest &&
+              DateTime.UtcNow - latest.SeenUtc <= ContextMenuTargetFreshness
+                ? latest
+                : default;
+
+        var slotResolved = false;
+        var quantity = 0;
+        var containerLabel = "unknown";
+        if (target.ItemId != 0 && target.Slot >= 0 && Enum.IsDefined((InventoryType)target.ContainerType) &&
+            _uiReader.TryGetInventorySlot((InventoryType)target.ContainerType, target.Slot, out var inventorySlot))
+        {
+            slotResolved = true;
+            quantity = (int)inventorySlot->Quantity;
+            containerLabel = ((InventoryType)target.ContainerType).ToString();
+        }
+
+        Log.Information(
+            "[RR][ContextDump] item={ItemId} hq={IsHq} container={Container} slot={Slot} quantity={Quantity} slotResolved={SlotResolved} menuType={MenuType} targetType={TargetType}",
+            target.ItemId, target.IsHq, containerLabel, target.ItemId == 0 ? -1 : target.Slot, quantity, slotResolved,
+            string.IsNullOrEmpty(target.MenuType) ? "unknown" : target.MenuType,
+            string.IsNullOrEmpty(target.TargetType) ? "unknown" : target.TargetType);
+
+        var valueCount = (int)unit->AtkValuesCount;
+        var values = unit->AtkValues;
+        if (values == null || valueCount <= 0)
+        {
+            Log.Warning("[RR][ContextDump] ContextMenu has no readable AtkValues (count={ValueCount}).", valueCount);
+            return;
+        }
+
+        if (values[0].Type != AtkValueType.UInt)
+        {
+            Log.Warning("[RR][ContextDump] ContextMenu entry count has unexpected type {Type}; action mapping unresolved.", values[0].Type);
+            return;
+        }
+        var count = values[0].UInt;
+        Log.Information("[RR][ContextDump] addon=ContextMenu visible={Visible} valueCount={ValueCount} menuEntries={EntryCount}",
+            unit->IsVisible, valueCount, count);
+
+        var boundedRawCount = Math.Min(valueCount, MaxContextMenuValuesToDump);
+        for (var i = 0; i < boundedRawCount; i++)
+        {
+            var value = values[i];
+            switch (value.Type)
+            {
+                case AtkValueType.Bool:
+                    Log.Information("[RR][ContextDump] rawValue index={Index} type={Type} value={Value}", i, value.Type, value.Bool);
+                    break;
+                case AtkValueType.Int:
+                    Log.Information("[RR][ContextDump] rawValue index={Index} type={Type} value={Value}", i, value.Type, value.Int);
+                    break;
+                case AtkValueType.UInt:
+                    Log.Information("[RR][ContextDump] rawValue index={Index} type={Type} value={Value}", i, value.Type, value.UInt);
+                    break;
+                case AtkValueType.Float:
+                    Log.Information("[RR][ContextDump] rawValue index={Index} type={Type} value={Value}", i, value.Type, value.Float);
+                    break;
+                default:
+                    Log.Information("[RR][ContextDump] rawValue index={Index} type={Type} value=omitted", i, value.Type);
+                    break;
+            }
+        }
+        if (valueCount > boundedRawCount)
+            Log.Information("[RR][ContextDump] raw values truncated: {Shown}/{Total}", boundedRawCount, valueCount);
+
+        var availableEntries = Math.Max(0, valueCount - ContextMenuEntryValueOffset);
+        if (count > availableEntries)
+        {
+            Log.Warning("[RR][ContextDump] Entry count does not fit AtkValues: entries={EntryCount} available={Available}; mapping unresolved.",
+                count, availableEntries);
+            return;
+        }
+
+        var entriesToRead = (int)Math.Min(count, MaxContextMenuEntriesToDump);
+        try
+        {
+            var contextMenu = new AddonMaster.ContextMenu(addonAddress);
+            var entries = contextMenu.Entries;
+            var rowCount = contextMenu.ListComponent == null ? 0 : contextMenu.ListItems.Count;
+            Log.Information("[RR][ContextDump] renderedRows={RowCount} reportedEntries={EntryCount}", rowCount, count);
+            for (var i = 0; i < entriesToRead && i < entries.Length; i++)
+            {
+                var entry = entries[i];
+                var text = entry.Text ?? string.Empty;
+                text = text.Replace('\r', ' ').Replace('\n', ' ');
+                if (text.Length > 160) text = text[..160] + "…";
+                var enabled = i < rowCount ? entry.Enabled.ToString() : "unavailable";
+                Log.Information(
+                    "[RR][ContextDump] entry displayIndex={DisplayIndex} atkValueIndex={AtkValueIndex} text=\"{Text}\" enabled={Enabled} actionMapping=unresolved",
+                    i, entry.ListIndex, text, enabled);
+            }
+            if (count > entriesToRead)
+                Log.Information("[RR][ContextDump] entries truncated: {Shown}/{Total}", entriesToRead, count);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "[RR][ContextDump] Could not decode menu entry text; raw values logged and action mapping remains unresolved.");
+        }
+    }
+
+    private bool TryGetContextMenuTargetFromAgent(out ContextMenuDebugTarget target)
+    {
+        target = default;
+        var agentModule = AgentModule.Instance();
+        if (agentModule == null)
+            return false;
+
+        var baseAgent = agentModule->GetAgentByInternalId(AgentId.InventoryContext);
+        if (baseAgent == null)
+            return false;
+
+        var agent = (AgentInventoryContext*)baseAgent;
+        if (agent->IsAgentActive() == false || agent->TargetInventorySlot == null || agent->TargetInventorySlotId < 0)
+            return false;
+
+        var slot = agent->TargetInventorySlot;
+        var itemId = slot->GetBaseItemId();
+        if (itemId == 0 || !Enum.IsDefined(agent->TargetInventoryId))
+            return false;
+
+        target = new ContextMenuDebugTarget(
+            "InventoryAgent",
+            "AgentInventoryContext",
+            itemId,
+            slot->GetItemId() != itemId,
+            (int)agent->TargetInventoryId,
+            agent->TargetInventorySlotId,
+            DateTime.UtcNow);
+        return true;
+    }
+
     internal void TestUniversalisGateForDebug()
     {
         if (!IsAddonOpen("ItemSearchResult"))

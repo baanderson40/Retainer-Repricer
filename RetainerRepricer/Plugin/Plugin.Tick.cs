@@ -17,6 +17,9 @@ public unsafe sealed partial class Plugin
 {
     private const double RetainerContextMenuTimeoutSeconds = 2.0d;
     private const double NewListingRetainerSellTimeoutSeconds = 5.0d;
+    private static readonly TimeSpan FailedListingRecoveryTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan FailedListingRecoveryStability = TimeSpan.FromMilliseconds(600);
+    private static readonly TimeSpan VendorExitConfirmationTimeout = TimeSpan.FromSeconds(5);
     #region Run tick (state machine)
 
     internal unsafe void TickRun()
@@ -85,6 +88,8 @@ public unsafe sealed partial class Plugin
                     InitializePerRetainerSellState();
 
                     var entry = _retainerRowOrder[_retainerRowPos];
+                    if (_runScope == RunScope.AllEnabledRetainers)
+                        _currentRetainerId = 0;
                     _currentRetainerAllowsReprice = entry.AllowReprice;
                     _currentRetainerAllowsSell = entry.AllowSell;
                     _currentRetainerRowIndex = entry.RowIndex;
@@ -170,6 +175,19 @@ public unsafe sealed partial class Plugin
             case RunPhase.WaitingRetainerSellList:
                 {
                     if (!retainerSellListVisible) return;
+
+                    if (_runScope == RunScope.AllEnabledRetainers && _currentRetainerId == 0 &&
+                        _uiReader.TryGetActiveRetainer(out var activeRetainerId, out var activeRetainerName))
+                    {
+                        var expectedName = Configuration.NormalizeRetainerName(_currentRetainerName);
+                        var actualName = Configuration.NormalizeRetainerName(activeRetainerName);
+                        if (string.Equals(expectedName, actualName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            _currentRetainerId = activeRetainerId;
+                            Log.Debug("[RR] Captured active retainer identity for current all-retainers run: {Name} id={RetainerId}.",
+                                activeRetainerName, activeRetainerId);
+                        }
+                    }
 
                     // Don't latch listed count until we can read it reliably.
                     if (!_sellListCountCaptured)
@@ -362,6 +380,82 @@ public unsafe sealed partial class Plugin
                 }
 
             #endregion
+
+            case RunPhase.RecoveringFailedNewListing:
+                {
+                    var hasRecoveryRetainer = _uiReader.TryGetActiveRetainer(out var recoveryRetainerId, out _);
+                    if (CurrentCharacterId != _runCharacterId ||
+                        !hasRecoveryRetainer ||
+                        recoveryRetainerId != _currentRetainerId)
+                    {
+                        Log.Error("[RR][Sell] Retainer context changed during failed-item recovery; expected={ExpectedRetainerId} actual={ActualRetainerId}. Stopping.",
+                            _currentRetainerId, recoveryRetainerId);
+                        StopRun(RunStopReason.Error);
+                        return;
+                    }
+
+                    if (IsAddonVisible("SelectYesno") || IsAddonVisible("Talk") || IsAddonVisible("SelectString"))
+                    {
+                        Log.Error("[RR][Sell] Blocking dialog appeared during failed-item recovery; stopping without further item dispatch.");
+                        StopRun(RunStopReason.Error);
+                        return;
+                    }
+
+                    if (contextMenuVisible)
+                    {
+                        _sellState.FailedListingRecoveryStableSinceUtc = DateTime.MinValue;
+                        FireContextMenuDismiss();
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    if (retainerSellVisible)
+                    {
+                        _sellState.FailedListingRecoveryStableSinceUtc = DateTime.MinValue;
+                        CloseRetainerSellIfOpen();
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    var sellListAddon = GameGui.GetAddonByName("RetainerSellList", 1);
+                    var sellListReady = !sellListAddon.IsNull &&
+                        ((AtkUnitBase*)sellListAddon.Address)->IsVisible &&
+                        ((AtkUnitBase*)sellListAddon.Address)->IsReady;
+                    if (sellListReady)
+                    {
+                        if (_sellState.FailedListingRecoveryStableSinceUtc == DateTime.MinValue)
+                        {
+                            _sellState.FailedListingRecoveryStableSinceUtc = now;
+                            _lastActionUtc = now;
+                            return;
+                        }
+
+                        if (now - _sellState.FailedListingRecoveryStableSinceUtc < FailedListingRecoveryStability)
+                        {
+                            _lastActionUtc = now;
+                            return;
+                        }
+
+                        Log.Information("[RR][Sell] Recovery complete; continuing with next candidate after failed slot.");
+                        _sellState.FailedListingRecoveryStartedUtc = DateTime.MinValue;
+                        _sellState.FailedListingRecoveryStableSinceUtc = DateTime.MinValue;
+                        _runPhase = RunPhase.Sell_FindNextItemInInventory;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    _sellState.FailedListingRecoveryStableSinceUtc = DateTime.MinValue;
+
+                    if (now - _sellState.FailedListingRecoveryStartedUtc >= FailedListingRecoveryTimeout)
+                    {
+                        Log.Error("[RR][Sell] Failed-item recovery timed out waiting for a ready RetainerSellList; stopping safely.");
+                        StopRun(RunStopReason.Error);
+                        return;
+                    }
+
+                    _lastActionUtc = now;
+                    return;
+                }
 
             #region Repricing pipeline
 
@@ -1072,6 +1166,15 @@ public unsafe sealed partial class Plugin
                             _stagedDesiredPrice.Value,
                             stackValue,
                             AutoListPriceSource.FinalListingPrice);
+                        var hasMatchingAttemptedSlot = _hasAttemptedSellSlot &&
+                            _attemptedSellItemId == _currentSellItemId &&
+                            _attemptedSellItemIsHq == _currentSellItemIsHq &&
+                            _attemptedSellStackSize == _currentSellStackSize;
+                        var fallbackSlot = _hasPendingSellSlot ? _pendingSellSlot : _attemptedSellSlot;
+                        if ((_hasPendingSellSlot || hasMatchingAttemptedSlot) &&
+                            TryBeginAutoVendorFallback(fallbackSlot, _stagedDesiredPrice.Value, stackValue,
+                                AutoListPriceSource.FinalListingPrice, now))
+                            return;
                         Log.Information($"[RR][AutoList] Skipping itemId={_currentSellItemId} hq={_currentSellItemIsHq}: stack value {stackValue} < minimum {_currentSellMinimumStackValue}; cached for this run.");
                         _newListingAttemptState = NewListingAttemptState.Skipped;
                         RememberFailedAttemptedSlot();
@@ -1438,11 +1541,31 @@ public unsafe sealed partial class Plugin
                                     selectedStackQuantity,
                                     c.MinimumStackValue,
                                     out var rejection,
-                                    out var cachedStackValue))
+                                    out var cachedStackValue) &&
+                                !(rejection.Source == AutoListPriceSource.UniversalisEstimate &&
+                                  Configuration.GetEffectiveVendorAllowlist(_runCharacterId).Contains(
+                                      Configuration.MakeSellKey(c.ItemId, c.IsHq))))
                             {
+                                _currentSellItemId = c.ItemId;
+                                _currentSellItemIsHq = c.IsHq;
+                                _currentSellStackSize = selectedStackQuantity;
+                                _currentSellItemIsAutoDiscovered = true;
+                                _currentSellMinimumStackValue = c.MinimumStackValue;
+                                _pendingSellSlot = slotRef;
+                                _hasPendingSellSlot = true;
+                                if (TryBeginAutoVendorFallback(slotRef, rejection.UnitPrice, cachedStackValue, rejection.Source, now))
+                                    return;
+
                                 _failedSellSlotKeys.Add(GetInventorySlotKey(slotRef));
                                 _cachedAutoListSlotsSkippedThisRetainer++;
                                 Log.Verbose($"[RR][AutoList][Cache] Skipped cached itemId={c.ItemId} hq={c.IsHq} container={slotRef.Container} slot={slotRef.Slot}: {rejection.UnitPrice} x {selectedStackQuantity} = {cachedStackValue} < minimum {c.MinimumStackValue}.");
+                                _hasPendingSellSlot = false;
+                                _pendingSellSlot = default;
+                                _currentSellItemId = 0;
+                                _currentSellItemIsHq = false;
+                                _currentSellStackSize = 0;
+                                _currentSellItemIsAutoDiscovered = false;
+                                _currentSellMinimumStackValue = 0;
                                 continue;
                             }
 
@@ -1526,11 +1649,11 @@ public unsafe sealed partial class Plugin
                         return;
                     }
 
-                    decimal? averagePrice = null;
+                    UniversalisListingStats? listingStats = null;
                     var useLiveMarketFallback = false;
                     try
                     {
-                        averagePrice = task.GetAwaiter().GetResult();
+                        listingStats = task.GetAwaiter().GetResult();
                     }
                     catch (UniversalisRequestException ex)
                     {
@@ -1557,29 +1680,49 @@ public unsafe sealed partial class Plugin
 
                     ResetAutoListPrefilterState();
 
-                    if (!useLiveMarketFallback && averagePrice is > 0)
+                    if (!useLiveMarketFallback &&
+                        listingStats?.WorldAverageSalePrice is > 0 and var worldAverage &&
+                        listingStats.WorldMinimumListingPrice is > 0 and var worldMinimumListing)
                     {
-                        var unitPrice = (int)Math.Floor(averagePrice.Value);
-                        if (unitPrice < 1)
-                            unitPrice = 1;
-
-                        var estimatedStackValue = (long)unitPrice * Math.Max(0, _currentSellStackSize);
-                        if (estimatedStackValue < _currentSellMinimumStackValue)
+                        var quantity = Math.Max(0, _currentSellStackSize);
+                        var averageStackValue = worldAverage * quantity;
+                        var minimumListingStackValue = worldMinimumListing * quantity;
+                        if (averageStackValue < _currentSellMinimumStackValue &&
+                            minimumListingStackValue < _currentSellMinimumStackValue)
                         {
-                            CacheAutoListPriceRejection(
-                                unitPrice,
-                                estimatedStackValue,
-                                AutoListPriceSource.UniversalisEstimate);
-                            Log.Information($"[RR][AutoList][Prefilter] Skipping itemId={_currentSellItemId} hq={_currentSellItemIsHq}: estimated stack value {estimatedStackValue} < minimum {_currentSellMinimumStackValue}; cached for this run.");
-                            SkipCurrentAutoListCandidate(now);
-                            return;
+                            var vendorAssigned = Configuration.GetEffectiveVendorAllowlist(_runCharacterId).Contains(
+                                Configuration.MakeSellKey(_currentSellItemId, _currentSellItemIsHq));
+                            if (vendorAssigned)
+                            {
+                                Log.Debug("[RR][AutoList][Prefilter] Both world estimates are below minimum for itemId={ItemId} HQ={Hq}, but vendor assignment requires live market verification.",
+                                    _currentSellItemId, _currentSellItemIsHq);
+                            }
+                            else
+                            {
+                                var conservativeUnitPrice = (int)Math.Floor(Math.Max(worldAverage, worldMinimumListing));
+                                var estimatedStackValue = (long)conservativeUnitPrice * quantity;
+                                CacheAutoListPriceRejection(
+                                    conservativeUnitPrice,
+                                    estimatedStackValue,
+                                    AutoListPriceSource.UniversalisEstimate);
+                                Log.Information("[RR][AutoList][Prefilter] Rejecting itemId={ItemId} HQ={Hq}: world average {Average:0.##} and minimum listing {Listing:0.##}, qty={Quantity}, both below minimum {Minimum}; cached for this run.",
+                                    _currentSellItemId, _currentSellItemIsHq, worldAverage, worldMinimumListing,
+                                    quantity, _currentSellMinimumStackValue);
+                                SkipCurrentAutoListCandidate(now);
+                                return;
+                            }
                         }
-
-                        Log.Debug($"[RR][AutoList][Prefilter] Passed itemId={_currentSellItemId} hq={_currentSellItemIsHq}: estimated stack value {estimatedStackValue} >= minimum {_currentSellMinimumStackValue}.");
+                        else
+                        {
+                            Log.Debug("[RR][AutoList][Prefilter] Live check for itemId={ItemId} HQ={Hq}: world average stack={AverageStack:0.##}, world minimum-listing stack={ListingStack:0.##}, minimum={Minimum}.",
+                                _currentSellItemId, _currentSellItemIsHq, averageStackValue,
+                                minimumListingStackValue, _currentSellMinimumStackValue);
+                        }
                     }
                     else if (!useLiveMarketFallback)
                     {
-                        Log.Debug($"[RR][AutoList][Prefilter] Universalis returned no usable price for item {_currentSellItemId}; continuing with live market check.");
+                        Log.Debug("[RR][AutoList][Prefilter] World average or world minimum listing unavailable for item {ItemId} HQ={Hq}; continuing with live market check.",
+                            _currentSellItemId, _currentSellItemIsHq);
                     }
 
                     _runPhase = RunPhase.Sell_OpenRetainerSellFromInventory;
@@ -1678,12 +1821,106 @@ public unsafe sealed partial class Plugin
                     return;
                 }
 
+            case RunPhase.Sell_VendorFallback:
+                TickAutoVendorFallback(now, retainerSellVisible);
+                return;
+
             #endregion
 
             #region Exit unwind
 
             case RunPhase.ExitToRetainerList:
                 {
+                    if (_sellState.VendorExitConfirmationPending)
+                    {
+                        var yesNoAddon = GameGui.GetAddonByName("SelectYesno", 1);
+                        var yesNoReady = !yesNoAddon.IsNull &&
+                            ((AtkUnitBase*)yesNoAddon.Address)->IsVisible &&
+                            ((AtkUnitBase*)yesNoAddon.Address)->IsReady;
+                        if (yesNoReady)
+                        {
+                            if (!_uiReader.TryGetActiveRetainer(out var confirmationRetainerId, out _) ||
+                                CurrentCharacterId != _runCharacterId || confirmationRetainerId != _currentRetainerId)
+                            {
+                                Log.Error("[RR][VendorFallback] Retainer context changed before vendor-exit confirmation; expected={ExpectedRetainerId} actual={ActualRetainerId}. Stopping.",
+                                    _currentRetainerId, confirmationRetainerId);
+                                StopRun(RunStopReason.Error);
+                                return;
+                            }
+
+                            if (_sellState.VendorExitConfirmationAccepted)
+                            {
+                                if (now - _sellState.VendorExitConfirmationStartedUtc >= VendorExitConfirmationTimeout)
+                                {
+                                    Log.Error("[RR][VendorFallback] SelectYesno remained open after acceptance; stopping rather than navigating through an unresolved dialog.");
+                                    StopRun(RunStopReason.Error);
+                                    return;
+                                }
+
+                                _lastActionUtc = now;
+                                return;
+                            }
+                            else
+                            {
+                                var unit = (AtkUnitBase*)yesNoAddon.Address;
+                                Callback.Fire(unit, updateState: true, 0);
+                                _sellState.VendorExitConfirmationAccepted = true;
+                                _sellState.VendorExitConfirmationAttempted = true;
+                                _lastActionUtc = now;
+                                Log.Information("[RR][VendorFallback] Accepted SelectYesno for verified vendor sale on retainer={RetainerId}.",
+                                    _currentRetainerId);
+                            }
+                            return;
+                        }
+
+                            if (_sellState.VendorExitConfirmationAccepted)
+                            {
+                                if (!talkVisible && !retainerListVisible &&
+                                    now - _sellState.VendorExitConfirmationStartedUtc < VendorExitConfirmationTimeout)
+                                {
+                                    _lastActionUtc = now;
+                                    return;
+                                }
+
+                                if (!talkVisible && !retainerListVisible)
+                                {
+                                    Log.Error("[RR][VendorFallback] SelectYesno closed, but retainer exit did not progress before timeout; stopping without retry.");
+                                    StopRun(RunStopReason.Error);
+                                    return;
+                                }
+
+                                _sellState.VendorExitConfirmationPending = false;
+                                _sellState.VendorExitConfirmationAccepted = false;
+                                _sellState.VendorExitConfirmationStartedUtc = DateTime.MinValue;
+                                Log.Debug("[RR][VendorFallback] Exit confirmation closed; resuming retainer cleanup.");
+                                _lastActionUtc = now;
+                                return;
+                        }
+                        else if (now - _sellState.VendorExitConfirmationStartedUtc >= VendorExitConfirmationTimeout)
+                        {
+                            if (talkVisible || retainerListVisible)
+                            {
+                                _sellState.VendorExitConfirmationPending = false;
+                                _sellState.VendorExitConfirmationAttempted = true;
+                                _sellState.VendorExitConfirmationStartedUtc = DateTime.MinValue;
+                                Log.Warning("[RR][VendorFallback] No SelectYesno appeared after verified vendor sale; exit progressed, continuing cleanup.");
+                                _lastActionUtc = now;
+                                return;
+                            }
+                            else
+                            {
+                                Log.Error("[RR][VendorFallback] Timed out waiting for SelectYesno after verified vendor sale; stopping without further navigation.");
+                                StopRun(RunStopReason.Error);
+                                return;
+                            }
+                        }
+                        else
+                        {
+                            _lastActionUtc = now;
+                            return;
+                        }
+                    }
+
                     if (marketOpen || itemHistoryOpen)
                     {
                         Log.Debug("[RR] Exit: closing market windows.");
@@ -1728,6 +1965,15 @@ public unsafe sealed partial class Plugin
                         }
 
                         Log.Debug("[RR] Exit: closing SelectString.");
+                        if (_sellState.VendorSaleVerifiedThisRetainer &&
+                            !_sellState.VendorExitConfirmationAttempted &&
+                            !_sellState.VendorExitConfirmationPending)
+                        {
+                            _sellState.VendorExitConfirmationPending = true;
+                            _sellState.VendorExitConfirmationAccepted = false;
+                            _sellState.VendorExitConfirmationStartedUtc = now;
+                            Log.Debug("[RR][VendorFallback] Arming retainer-exit confirmation after verified vendor sale.");
+                        }
                         CloseAddonIfOpen("SelectString");
                         _lastActionUtc = now;
                         return;
@@ -1861,6 +2107,13 @@ public unsafe sealed partial class Plugin
 
         _sellCapacityThisRetainer = 0;
         _soldThisRetainer = 0;
+        _sellState.FailedListingRecoveryStartedUtc = DateTime.MinValue;
+        _sellState.FailedListingRecoveryStableSinceUtc = DateTime.MinValue;
+        _sellState.VendorSaleVerifiedThisRetainer = false;
+        _sellState.VendorExitConfirmationPending = false;
+        _sellState.VendorExitConfirmationAccepted = false;
+        _sellState.VendorExitConfirmationAttempted = false;
+        _sellState.VendorExitConfirmationStartedUtc = DateTime.MinValue;
         _processingListedItem = true;
         _currentSellItemId = 0;
         _currentSellItemIsHq = false;
@@ -1899,6 +2152,7 @@ public unsafe sealed partial class Plugin
 
         RememberFailedAttemptedSlot();
         _newListingAttemptState = NewListingAttemptState.Failed;
+        ClearRetainerContextMenuExpectation();
         _processingListedItem = true;
         _hasPendingSellSlot = false;
         _pendingSellSlot = default;
@@ -1909,7 +2163,7 @@ public unsafe sealed partial class Plugin
         _currentSellMinimumStackValue = 0;
         ResetNewListingAttempt();
 
-        if (_quickListRun || _autoRetainerHandoffActive)
+        if (_quickListRun)
         {
             Log.Information("[RR] Run stopped after RetainerSell timeout.");
             StopRun(RunStopReason.Error);
@@ -1917,7 +2171,9 @@ public unsafe sealed partial class Plugin
             return;
         }
 
-        _runPhase = RunPhase.Sell_FindNextItemInInventory;
+        _sellState.FailedListingRecoveryStartedUtc = now;
+        _sellState.FailedListingRecoveryStableSinceUtc = DateTime.MinValue;
+        _runPhase = RunPhase.RecoveringFailedNewListing;
         _lastActionUtc = now;
     }
 
