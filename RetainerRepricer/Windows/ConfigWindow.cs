@@ -849,6 +849,29 @@ public sealed partial class ConfigWindow : Window, IDisposable
 
                     ImGui.TextUnformatted("AUTOMATIC INVENTORY LISTING");
                     DrawAutoListSettings(character);
+                    var returnLowValueListings = character.ReturnLowValueListingsToInventory;
+                    if (ImGui.Checkbox($"Return low-value listings to inventory##low-value-{data.CID}", ref returnLowValueListings))
+                    {
+                        character.ReturnLowValueListingsToInventory = returnLowValueListings;
+                        SaveConfig();
+                    }
+                    if (ImGui.IsItemHovered())
+                        TooltipHelper.Show(_config,
+                            "During repricing, return a listing to player inventory when its proposed stack value falls below this threshold.");
+
+                    if (returnLowValueListings)
+                    {
+                        var minimumListedStackValue = character.MinimumListedStackValueToKeep;
+                        ImGui.SetNextItemWidth(130f);
+                        if (ImGui.InputInt($"Minimum value##low-value-threshold-{data.CID}", ref minimumListedStackValue))
+                        {
+                            character.MinimumListedStackValueToKeep = Math.Clamp(minimumListedStackValue, 1, 999_999_999);
+                            SaveConfig();
+                        }
+                        if (ImGui.IsItemHovered())
+                            TooltipHelper.Show(_config,
+                                "A listing is returned only when final proposed unit price × listed quantity is below this value.");
+                    }
                     ImGui.TextUnformatted("ITEM BLOCKLISTS");
                     var assignedBlocklists = character.AutoListBlocklistIds?.Count ?? 0;
                     var effectiveBlocks = _config.GetEffectiveAutoListBlocklist(data.CID).Count;

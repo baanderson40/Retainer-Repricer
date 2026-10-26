@@ -26,6 +26,7 @@ namespace RetainerRepricer.Ui;
 internal sealed unsafe class UiReader
 {
     public readonly record struct HqIconState(bool Visible, NodeFlags Flags, uint DrawFlags, byte Alpha);
+    public readonly record struct RetainerMarketListing(int Slot, uint ItemId, bool IsHq, int Quantity, int UnitPrice);
 
     #region Constants
 
@@ -799,6 +800,88 @@ internal sealed unsafe class UiReader
         }
     }
 
+    public bool TrySelectLiveRetainerReturnListing(
+        int visibleIndex,
+        RetainerMarketListing expectedListing,
+        IReadOnlyList<RetainerMarketListing> expectedMarketSnapshot,
+        ulong expectedRetainerId,
+        out bool selectionAttempted,
+        out string diagnostic)
+    {
+        selectionAttempted = false;
+        diagnostic = string.Empty;
+        if (!TryGetActiveRetainer(out var retainerId, out var retainerName) ||
+            retainerId != expectedRetainerId)
+        {
+            diagnostic = $"active retainer mismatch; expected={expectedRetainerId} actual={retainerId}";
+            return false;
+        }
+
+        if (!TryGetRetainerMarketListings(out var listings) ||
+            !MarketSnapshotMatchesBySlot(expectedMarketSnapshot, listings) ||
+            listings.Count(listing => listing.Slot == expectedListing.Slot) != 1 ||
+            listings.Single(listing => listing.Slot == expectedListing.Slot) != expectedListing)
+        {
+            diagnostic = $"market slot or complete market snapshot changed; visibleRow={visibleIndex} expectedMarketSlot={expectedListing.Slot} expected={expectedListing}";
+            return false;
+        }
+
+        var addon = Svc.GameGui.GetAddonByName("ContextMenu", 1);
+        if (addon.IsNull || !addon.IsVisible)
+        {
+            diagnostic = $"retainer={retainerName}#{retainerId}; ContextMenu unavailable";
+            return false;
+        }
+
+        try
+        {
+            var menu = new AddonMaster.ContextMenu(addon.Address);
+            var entries = menu.Entries;
+            var rowCount = menu.ListComponent == null ? 0 : menu.ListItems.Count;
+            var matching = entries.Select((entry, index) => (entry, index))
+                .Where(pair => string.Equals(pair.entry.Text?.Trim(), "Return Items to Inventory", StringComparison.Ordinal))
+                .ToArray();
+            var entrySummary = string.Join("|", entries.Select((entry, index) =>
+                $"{index}:{entry.Text}[enabled={entry.Enabled},native={entry.IsNativeEntry},callbackIndex={entry.Index},listIndex={entry.ListIndex}]"));
+            diagnostic = $"retainer={retainerName}#{retainerId}; listingRow={visibleIndex}; marketSlot={expectedListing.Slot}; target={expectedListing.ItemId} HQ={expectedListing.IsHq} qty={expectedListing.Quantity}; menuEntries={entries.Length}; renderedRows={rowCount}; matches={matching.Length}; entries=[{entrySummary}]";
+            if (matching.Length != 1)
+                return false;
+
+            var (entry, displayIndex) = matching[0];
+            if (displayIndex >= rowCount || !entry.Enabled || !entry.IsNativeEntry)
+            {
+                diagnostic += $"; action rendered={displayIndex < rowCount} enabled={entry.Enabled} native={entry.IsNativeEntry} entryIndex={entry.Index} listIndex={entry.ListIndex}";
+                return false;
+            }
+
+            if (!TryGetActiveRetainer(out var currentRetainerId, out _) || currentRetainerId != expectedRetainerId ||
+                !TryGetRetainerMarketListings(out var currentListings) ||
+                !MarketSnapshotMatchesBySlot(expectedMarketSnapshot, currentListings) ||
+                currentListings.Count(listing => listing.Slot == expectedListing.Slot) != 1 ||
+                currentListings.Single(listing => listing.Slot == expectedListing.Slot) != expectedListing)
+            {
+                diagnostic += "; final retainer/market-slot revalidation failed";
+                return false;
+            }
+
+            selectionAttempted = true;
+            var selected = entry.Select();
+            diagnostic += $"; action='Return Items to Inventory'; displayedIndex={displayIndex}; entryIndex={entry.Index}; listIndex={entry.ListIndex}; native={entry.IsNativeEntry}; callback=(0,{entry.Index},0); selectReturned={selected}";
+            return selected;
+        }
+        catch (Exception ex)
+        {
+            diagnostic = $"retainer={retainerName}#{retainerId}; return-action resolution failed: {ex.GetType().Name}: {ex.Message}";
+            return false;
+        }
+    }
+
+    private static bool MarketSnapshotMatchesBySlot(
+        IReadOnlyList<RetainerMarketListing> expected,
+        IReadOnlyList<RetainerMarketListing> actual)
+        => expected.Count == actual.Count &&
+           expected.OrderBy(listing => listing.Slot).SequenceEqual(actual.OrderBy(listing => listing.Slot));
+
     public void DismissInventoryContextMenu()
     {
         var module = AgentModule.Instance();
@@ -1041,6 +1124,87 @@ internal sealed unsafe class UiReader
     // Back-compat shim (existing callers).
     public string? ReadRetainerSellItemName()
         => ReadRetainerSellItemNameRaw();
+
+    public bool TryResolveRetainerMarketListingForEditor(
+        out RetainerMarketListing resolvedListing,
+        out List<RetainerMarketListing> listingSnapshot,
+        out string diagnostic)
+    {
+        resolvedListing = default;
+        listingSnapshot = new List<RetainerMarketListing>();
+        diagnostic = string.Empty;
+
+        var actualName = GetRetainerSellItemNameDisplay(stripHqGlyph: true)?.Trim() ?? string.Empty;
+        var actualHq = IsRetainerSellItemHq();
+        var actualPrice = ReadRetainerSellAskingPrice();
+        var addon = Svc.GameGui.GetAddonByName("RetainerSell", 1);
+        if (addon.IsNull || !addon.IsVisible)
+        {
+            diagnostic = "RetainerSell unavailable";
+            return false;
+        }
+
+        var addonUnit = (AtkUnitBase*)addon.Address;
+        if (addonUnit == null)
+        {
+            diagnostic = "RetainerSell unit unavailable";
+            return false;
+        }
+
+        int actualQuantity;
+        try
+        {
+            actualQuantity = new AddonMaster.RetainerSell(addonUnit).Quantity;
+        }
+        catch (Exception ex)
+        {
+            diagnostic = $"RetainerSell quantity unreadable: {ex.GetType().Name}: {ex.Message}";
+            return false;
+        }
+        if (actualName.Length == 0 || actualPrice is null || actualQuantity <= 0)
+        {
+            diagnostic = $"editor identity unreadable: name='{actualName}' HQ={actualHq} price={actualPrice?.ToString() ?? "null"} qty={actualQuantity}";
+            return false;
+        }
+
+        if (!TryGetRetainerMarketListings(out listingSnapshot))
+        {
+            diagnostic = $"RetainerMarket snapshot unavailable; editor name='{actualName}' HQ={actualHq} price={actualPrice} qty={actualQuantity}";
+            return false;
+        }
+
+        var itemSheet = Svc.Data.GetExcelSheet<Item>();
+        var candidateItemIds = listingSnapshot
+            .Select(listing => listing.ItemId)
+            .Distinct()
+            .Where(candidateId =>
+            {
+                var candidate = itemSheet?.GetRowOrDefault(candidateId);
+                var candidateName = candidate?.Name.ToString().Trim();
+                return !string.IsNullOrWhiteSpace(candidateName) &&
+                       (string.Equals(candidateName, actualName, StringComparison.OrdinalIgnoreCase) ||
+                        candidateName.StartsWith(actualName, StringComparison.OrdinalIgnoreCase));
+            })
+            .ToHashSet();
+
+        var candidates = listingSnapshot
+            .Where(listing => candidateItemIds.Contains(listing.ItemId) &&
+                              listing.IsHq == actualHq &&
+                              listing.UnitPrice == actualPrice.Value &&
+                              listing.Quantity == actualQuantity)
+            .ToArray();
+
+        diagnostic = $"editor name='{actualName}' HQ={actualHq} qty={actualQuantity} price={actualPrice}; nameCandidates={candidateItemIds.Count}; fullIdentityMatches={candidates.Length}; matches=[{string.Join(",", candidates.Select(candidate => $"slot{candidate.Slot}:item{candidate.ItemId}"))}]";
+        if (candidates.Length != 1)
+        {
+            diagnostic += candidates.Length == 0 ? "; resolution=unresolved" : "; resolution=ambiguous";
+            return false;
+        }
+
+        resolvedListing = candidates[0];
+        diagnostic += $"; resolvedMarketSlot={resolvedListing.Slot}";
+        return true;
+    }
     public string SanitizeRetainerSellItemName(string? raw)
     {
         if (string.IsNullOrEmpty(raw)) return string.Empty;
@@ -1155,6 +1319,80 @@ internal sealed unsafe class UiReader
     #endregion
 
     #region RetainerSellList (listed count)
+
+    public bool TryGetRetainerMarketListings(out List<RetainerMarketListing> listings)
+    {
+        listings = new List<RetainerMarketListing>();
+        var inventory = InventoryManager.Instance();
+        if (inventory == null)
+            return false;
+
+        var market = inventory->GetInventoryContainer(InventoryType.RetainerMarket);
+        if (market == null || !market->IsLoaded)
+            return false;
+
+        for (var slotIndex = 0; slotIndex < market->Size; slotIndex++)
+        {
+            var slot = market->GetInventorySlot(slotIndex);
+            if (slot == null || slot->Quantity <= 0)
+                continue;
+
+            var itemId = slot->GetBaseItemId();
+            if (itemId == 0)
+                return false;
+
+            listings.Add(new RetainerMarketListing(
+                slotIndex,
+                itemId,
+                slot->IsHighQuality(),
+                (int)slot->Quantity,
+                (int)Math.Min((ulong)int.MaxValue, inventory->GetRetainerMarketPrice((short)slotIndex))));
+        }
+
+        return true;
+    }
+
+    public bool TryGetPlayerInventoryState(uint itemId, bool isHq, out int quantity, out bool hasEmptySlot)
+    {
+        quantity = 0;
+        hasEmptySlot = false;
+        if (itemId == 0)
+            return false;
+
+        var inventory = InventoryManager.Instance();
+        if (inventory == null)
+            return false;
+
+        foreach (var type in new[]
+                 {
+                     InventoryType.Inventory1,
+                     InventoryType.Inventory2,
+                     InventoryType.Inventory3,
+                     InventoryType.Inventory4,
+                 })
+        {
+            var container = inventory->GetInventoryContainer(type);
+            if (container == null || !container->IsLoaded)
+                return false;
+
+            for (var index = 0; index < container->Size; index++)
+            {
+                var slot = container->GetInventorySlot(index);
+                if (slot == null)
+                    return false;
+                if (slot->Quantity <= 0)
+                {
+                    hasEmptySlot = true;
+                    continue;
+                }
+
+                if (slot->GetBaseItemId() == itemId && slot->IsHighQuality() == isHq)
+                    quantity = Math.Min(999999, quantity + (int)slot->Quantity);
+            }
+        }
+
+        return true;
+    }
 
     public string? ReadRetainerSellListCountText()
         => ReadAddonTextNode("RetainerSellList", NodePaths.RetainerSellList_CountNodeId);

@@ -303,6 +303,9 @@ public unsafe sealed partial class Plugin
                     var idx = Math.Clamp(_slotIndexToOpen, 0, 19);
                     Log.Debug($"[RR] Opening sell slot {idx} ({_slotIndexToOpen + 1}/{_listedCountThisRetainer})");
 
+                    _sellState.HasCurrentExistingListing = false;
+                    _sellState.CurrentExistingMarketSnapshot.Clear();
+
                     _processingListedItem = true;
 
                     if (!FireRetainerSellListOpenItem(idx))
@@ -376,6 +379,247 @@ public unsafe sealed partial class Plugin
 
                     _runPhase = RunPhase.CaptureSellContext;
                     _lastActionUtc = now;
+                    return;
+                }
+
+            case RunPhase.PreparingLowValueListingReturn:
+                {
+                    if (_sellState.LowValueReturnStartedUtc != DateTime.MinValue &&
+                        now - _sellState.LowValueReturnStartedUtc > TimeSpan.FromSeconds(15))
+                    {
+                        Log.Error("[RR][LowValueReturn] Return preparation timed out before menu dispatch; stopping without selection.");
+                        StopRun(RunStopReason.Error);
+                        return;
+                    }
+
+                    if (retainerSellVisible || marketOpen || itemHistoryOpen)
+                    {
+                        CloseMarketWindows();
+                        CloseRetainerSellIfOpen();
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    if (!retainerSellListVisible)
+                    {
+                        if (now - _sellState.LowValueReturnStartedUtc > TimeSpan.FromSeconds(15))
+                            StopRun(RunStopReason.Error);
+                        return;
+                    }
+
+                    var hasActiveRetainer = _uiReader.TryGetActiveRetainer(out var activeId, out var activeName);
+                    var retainerMatches = hasActiveRetainer && activeId == _currentRetainerId;
+                    var hasListingSnapshot = _uiReader.TryGetRetainerMarketListings(out var currentListings);
+                    var returnRow = _sellState.LowValueReturnVisibleIndex;
+                    var matchingMarketSlots = hasListingSnapshot
+                        ? currentListings.Where(listing => listing.Slot == _sellState.LowValueReturnListing.Slot).ToArray()
+                        : Array.Empty<UiReader.RetainerMarketListing>();
+                    var snapshotUnchanged = hasListingSnapshot && currentListings
+                        .OrderBy(listing => listing.Slot)
+                        .SequenceEqual(_sellState.CurrentExistingMarketSnapshot.OrderBy(listing => listing.Slot));
+                    var marketSlotMatches = matchingMarketSlots.Length == 1 &&
+                                            matchingMarketSlots[0] == _sellState.LowValueReturnListing;
+                    if (!retainerMatches || !snapshotUnchanged || !marketSlotMatches)
+                    {
+                        Log.Error(
+                            "[RR][LowValueReturn] Pre-dispatch revalidation failed; stopping without selection. retainerExpected={ExpectedRetainerId} retainerActual={ActualRetainerId} retainerName='{RetainerName}' snapshotAvailable={SnapshotAvailable} snapshotUnchanged={SnapshotUnchanged} visibleRowToReopen={VisibleRow} expectedMarketSlot={ExpectedMarketSlot} marketSlotMatches={MarketSlotMatches} actualAtSlot={ActualAtSlot}.",
+                            _currentRetainerId,
+                            hasActiveRetainer ? activeId : 0,
+                            activeName,
+                            hasListingSnapshot,
+                            snapshotUnchanged,
+                            returnRow,
+                            _sellState.LowValueReturnListing.Slot,
+                            marketSlotMatches,
+                            matchingMarketSlots.Length == 1 ? matchingMarketSlots[0] : default);
+                        StopRun(RunStopReason.Error);
+                        return;
+                    }
+                    _sellState.LowValueReturnMarketBaseline = currentListings.ToList();
+
+                    if (!_uiReader.TryGetPlayerInventoryState(
+                            _sellState.LowValueReturnListing.ItemId,
+                            _sellState.LowValueReturnListing.IsHq,
+                            out var inventoryBaseline,
+                            out var hasEmptySlot))
+                    {
+                        Log.Error("[RR][LowValueReturn] Player inventory snapshot unavailable; stopping.");
+                        StopRun(RunStopReason.Error);
+                        return;
+                    }
+                    _sellState.LowValueReturnInventoryBaseline = inventoryBaseline;
+
+                    if (!hasEmptySlot)
+                    {
+                        Log.Warning("[RR][LowValueReturn] No empty player inventory slot; keeping listing.");
+                        _runPhase = RunPhase.CleanupAfterItem;
+                        return;
+                    }
+
+                    var contextMenuVisibleNow = IsAddonVisible("ContextMenu");
+                    if (contextMenuVisible || contextMenuVisibleNow)
+                    {
+                        Log.Debug("[RR][LowValueReturn] ContextMenu was already visible before request; dismissing and waiting for hidden state.");
+                        FireContextMenuDismiss();
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    Log.Information(
+                        "[RR][LowValueReturn] Opening fresh listing context menu. visibleRow={VisibleRow} marketSlot={MarketSlot} itemId={ItemId} HQ={IsHq} qty={Quantity} price={UnitPrice} contextMenuVisibleBefore={ContextMenuVisible}.",
+                        _sellState.LowValueReturnVisibleIndex,
+                        _sellState.LowValueReturnListing.Slot,
+                        _sellState.LowValueReturnListing.ItemId,
+                        _sellState.LowValueReturnListing.IsHq,
+                        _sellState.LowValueReturnListing.Quantity,
+                        _sellState.LowValueReturnListing.UnitPrice,
+                        contextMenuVisibleNow);
+                    if (!FireRetainerSellListOpenItem(_sellState.LowValueReturnVisibleIndex))
+                    {
+                        Log.Error("[RR][LowValueReturn] Failed to fire RetainerSellList row callback; no menu selection attempted.");
+                        _stagedDesiredPrice = null;
+                        _hasAppliedStagedPrice = false;
+                        _runPhase = RunPhase.CleanupAfterItem;
+                        return;
+                    }
+                    _sellState.LowValueReturnMenuRequestedUtc = now;
+                    _sellState.LowValueReturnLastMenuDiagnostic = string.Empty;
+                    Log.Debug($"[RR][LowValueReturn] Row callback fired: callback=(0,{_sellState.LowValueReturnVisibleIndex},1); waiting for a new ContextMenu after {now:O}.");
+                    _runPhase = RunPhase.WaitingLowValueListingReturnMenu;
+                    _lastActionUtc = now;
+                    return;
+                }
+
+            case RunPhase.WaitingLowValueListingReturnMenu:
+                {
+                    var requestTime = _sellState.LowValueReturnMenuRequestedUtc;
+                    if (contextMenuVisible && requestTime != DateTime.MinValue && now > requestTime)
+                    {
+                        Log.Debug($"[RR][LowValueReturn] Fresh ContextMenu observed {(now - requestTime).TotalMilliseconds:0}ms after row callback; visibleRow={_sellState.LowValueReturnVisibleIndex}.");
+                        var selected = _uiReader.TrySelectLiveRetainerReturnListing(
+                            _sellState.LowValueReturnVisibleIndex,
+                            _sellState.LowValueReturnListing,
+                            _sellState.LowValueReturnMarketBaseline,
+                            _currentRetainerId,
+                            out var attempted,
+                            out var diagnostic);
+                        _sellState.LowValueReturnLastMenuDiagnostic = diagnostic;
+                        _sellState.LowValueReturnSelectionAttempted |= attempted;
+                        if (attempted)
+                        {
+                            Log.Information($"[RR][LowValueReturn] Return selection invoked; callbackFired={selected}; verification begins without retry. {diagnostic}");
+                            _sellState.LowValueReturnStartedUtc = now;
+                            _sellState.LowValueReturnLastVerifyDiagnostic = string.Empty;
+                            _runPhase = RunPhase.VerifyingLowValueListingReturn;
+                        }
+                        else if (now - requestTime > TimeSpan.FromSeconds(10))
+                        {
+                            Log.Error($"[RR][LowValueReturn] Return action was not invoked before menu timeout. lastMenuDiagnostic='{_sellState.LowValueReturnLastMenuDiagnostic}'; stopping.");
+                            StopRun(RunStopReason.Error);
+                        }
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    if (contextMenuVisible && requestTime == DateTime.MinValue)
+                    {
+                        Log.Warning("[RR][LowValueReturn] ContextMenu visible without a recorded row-open request; dismissing stale menu and refusing selection.");
+                        FireContextMenuDismiss();
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    if (retainerSellVisible)
+                    {
+                        Log.Error("[RR][LowValueReturn] Price editor opened instead of return menu; stopping safely.");
+                        StopRun(RunStopReason.Error);
+                        return;
+                    }
+
+                    if (requestTime != DateTime.MinValue && now - requestTime > TimeSpan.FromSeconds(10))
+                    {
+                        Log.Error($"[RR][LowValueReturn] No fresh ContextMenu appeared after row callback; requested={requestTime:O}; visibleRow={_sellState.LowValueReturnVisibleIndex}; marketSlot={_sellState.LowValueReturnListing.Slot}; stopping without retry.");
+                        StopRun(RunStopReason.Error);
+                    }
+                    return;
+                }
+
+            case RunPhase.VerifyingLowValueListingReturn:
+                {
+                    if (IsAddonVisible("SelectYesno"))
+                    {
+                        Log.Error("[RR][LowValueReturn] Confirmation dialog appeared; stopping without unverified dispatch.");
+                        StopRun(RunStopReason.Error);
+                        return;
+                    }
+
+                    if (!_uiReader.TryGetActiveRetainer(out var activeId, out var activeName) || activeId != _currentRetainerId)
+                    {
+                        Log.Error("[RR][LowValueReturn] Retainer changed during verification; expected={ExpectedRetainerId} actual={ActualRetainerId} name='{RetainerName}'. Stopping without retry.",
+                            _currentRetainerId, activeId, activeName);
+                        StopRun(RunStopReason.Error);
+                        return;
+                    }
+
+                    var hasMarketSnapshot = _uiReader.TryGetRetainerMarketListings(out var remainingListings);
+                    var hasInventorySnapshot = _uiReader.TryGetPlayerInventoryState(
+                        _sellState.LowValueReturnListing.ItemId,
+                        _sellState.LowValueReturnListing.IsHq,
+                        out var inventoryQuantity,
+                        out _);
+                    var removed = hasMarketSnapshot && IsExactlyOneListingRemoved(
+                        _sellState.LowValueReturnMarketBaseline,
+                        remainingListings,
+                        _sellState.LowValueReturnListing);
+                    var expectedInventoryQuantity = _sellState.LowValueReturnInventoryBaseline + _sellState.LowValueReturnListing.Quantity;
+                    var inventoryIncreased = hasInventorySnapshot && inventoryQuantity >= expectedInventoryQuantity;
+                    var verificationSummary = $"contextMenu={contextMenuVisible} RetainerSell={retainerSellVisible} RetainerSellList={retainerSellListVisible} marketSnapshot={hasMarketSnapshot} listingRemoved={removed} inventorySnapshot={hasInventorySnapshot} inventory={inventoryQuantity}/{expectedInventoryQuantity}";
+                    if (!string.Equals(verificationSummary, _sellState.LowValueReturnLastVerifyDiagnostic, StringComparison.Ordinal))
+                    {
+                        _sellState.LowValueReturnLastVerifyDiagnostic = verificationSummary;
+                        Log.Debug($"[RR][LowValueReturn] Verification state changed: {verificationSummary}.");
+                    }
+                    if (removed && inventoryIncreased)
+                    {
+                        var returnedKey = Configuration.MakeSellKey(_sellState.LowValueReturnListing.ItemId,
+                            _sellState.LowValueReturnListing.IsHq);
+                        _sellState.ReturnedListingItemKeys.Add(returnedKey);
+                        if (_retainerExistingSellCounts.TryGetValue(returnedKey, out var existingCount))
+                        {
+                            if (existingCount <= 1)
+                                _retainerExistingSellCounts.Remove(returnedKey);
+                            else
+                                _retainerExistingSellCounts[returnedKey] = existingCount - 1;
+                        }
+                        _listedCountThisRetainer = Math.Max(0, _listedCountThisRetainer - 1);
+                        _sellCapacityThisRetainer++;
+                        _slotIndexToOpen = _sellState.LowValueReturnVisibleIndex;
+                        _sellState.HasCurrentExistingListing = false;
+                        Log.Information($"[RR][LowValueReturn] Verified item={_sellState.LowValueReturnListing.ItemId} HQ={_sellState.LowValueReturnListing.IsHq} qty={_sellState.LowValueReturnListing.Quantity}; rescanning shifted row {_slotIndexToOpen}.");
+                        _runPhase = RunPhase.OpeningSellItem;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    if (now - _sellState.LowValueReturnStartedUtc > TimeSpan.FromSeconds(15))
+                    {
+                        var marketSnapshotText = hasMarketSnapshot
+                            ? DescribeRetainerMarketSnapshot(remainingListings)
+                            : "unavailable";
+                        Log.Error(
+                            "[RR][LowValueReturn] Return verification timed out; stopping without retry. expected={ExpectedListing} baselineInventory={BaselineInventory} currentInventory={CurrentInventory} expectedInventory={ExpectedInventory} marketSnapshotAvailable={MarketSnapshotAvailable} listingRemoved={ListingRemoved} inventorySnapshotAvailable={InventorySnapshotAvailable} inventoryIncreased={InventoryIncreased} baselineMarket=[{BaselineMarket}] currentMarket=[{CurrentMarket}].",
+                            _sellState.LowValueReturnListing,
+                            _sellState.LowValueReturnInventoryBaseline,
+                            hasInventorySnapshot ? inventoryQuantity : -1,
+                            expectedInventoryQuantity,
+                            hasMarketSnapshot,
+                            removed,
+                            hasInventorySnapshot,
+                            inventoryIncreased,
+                            DescribeRetainerMarketSnapshot(_sellState.LowValueReturnMarketBaseline),
+                            marketSnapshotText);
+                        StopRun(RunStopReason.Error);
+                    }
                     return;
                 }
 
@@ -489,6 +733,25 @@ public unsafe sealed partial class Plugin
 
                     if (_processingListedItem)
                     {
+                        if (Configuration.GetCharacterSettings(_runCharacterId).ReturnLowValueListingsToInventory)
+                        {
+                            if (_uiReader.TryResolveRetainerMarketListingForEditor(
+                                    out var resolvedListing,
+                                    out var marketSnapshot,
+                                    out var resolutionDiagnostic))
+                            {
+                                _sellState.CurrentExistingListing = resolvedListing;
+                                _sellState.CurrentExistingMarketSnapshot = marketSnapshot;
+                                _sellState.HasCurrentExistingListing = true;
+                                Log.Debug($"[RR][LowValueReturn] Resolved visibleRow={_slotIndexToOpen} marketSlot={resolvedListing.Slot} itemId={resolvedListing.ItemId} HQ={resolvedListing.IsHq} qty={resolvedListing.Quantity} price={resolvedListing.UnitPrice}; {resolutionDiagnostic}");
+                            }
+                            else
+                            {
+                                _sellState.HasCurrentExistingListing = false;
+                                Log.Warning($"[RR][LowValueReturn] Cannot resolve opened listing; return disabled for visibleRow={_slotIndexToOpen}; repricing continues. {resolutionDiagnostic}");
+                            }
+                        }
+
                         RecordExistingListingForCaps(name, _currentIsHq);
 
                         if (ShouldRepriceThisRetainer)
@@ -987,8 +1250,13 @@ public unsafe sealed partial class Plugin
 
                     if (current == desired)
                     {
-                        Log.Information($"[RR] Price unchanged ({desired}); skipping apply.");
-                        _runPhase = RunPhase.CleanupAfterItem;
+                        Log.Information($"[RR] Price unchanged ({desired}); checking any enabled low-value return rule.");
+                        _stagedDesiredPrice = desired;
+                        _stagedReferenceSeller = lowestSeller;
+                        _stagedReferenceIsMine = referenceIsMine;
+                        _hasAppliedStagedPrice = false;
+                        CloseMarketWindows();
+                        _runPhase = RunPhase.CloseMarketThenApply;
                         _lastActionUtc = now;
                         return;
                     }
@@ -1147,6 +1415,61 @@ public unsafe sealed partial class Plugin
                         }
 
                         _runPhase = RunPhase.ConfirmAfterApply;
+                        _lastActionUtc = now;
+                        return;
+                    }
+
+                    if (_processingListedItem &&
+                        _sellState.HasCurrentExistingListing &&
+                        Configuration.GetCharacterSettings(_runCharacterId).ReturnLowValueListingsToInventory)
+                    {
+                        var listing = _sellState.CurrentExistingListing;
+                        var threshold = Configuration.GetCharacterSettings(_runCharacterId).MinimumListedStackValueToKeep;
+                        var proposedStackValue = (long)_stagedDesiredPrice.Value * listing.Quantity;
+                        var resolvedAgain = _uiReader.TryResolveRetainerMarketListingForEditor(
+                            out var freshlyResolved,
+                            out _,
+                            out var resolutionDiagnostic);
+                        var sameListing = resolvedAgain && freshlyResolved == listing && listing.Quantity > 0;
+                        if (!sameListing)
+                        {
+                            Log.Warning(
+                                "[RR][LowValueReturn] Resolved editor identity changed; skipping return, continuing repricing. visibleRow={VisibleRow} expectedMarketListing={ExpectedListing} freshlyResolved={FreshlyResolved} resolutionSucceeded={ResolutionSucceeded} retainerId={RetainerId}; {ResolutionDiagnostic}.",
+                                _slotIndexToOpen,
+                                listing,
+                                freshlyResolved,
+                                resolvedAgain,
+                                _currentRetainerId,
+                                resolutionDiagnostic);
+                        }
+                        else if (proposedStackValue < threshold)
+                        {
+                            if (_currentRetainerId == 0 ||
+                                !_uiReader.TryGetActiveRetainer(out var activeRetainerId, out _) ||
+                                activeRetainerId != _currentRetainerId)
+                            {
+                                Log.Error("[RR][LowValueReturn] Retainer identity unavailable before return; stopping.");
+                                StopRun(RunStopReason.Error);
+                                return;
+                            }
+
+                            _sellState.LowValueReturnListing = listing;
+                            _sellState.LowValueReturnVisibleIndex = _slotIndexToOpen;
+                            _sellState.LowValueReturnSelectionAttempted = false;
+                            _sellState.LowValueReturnStartedUtc = now;
+                            Log.Information($"[RR][LowValueReturn] Proposed stack {proposedStackValue} gil < threshold {threshold}; preparing return for item={listing.ItemId} HQ={listing.IsHq} qty={listing.Quantity}.");
+                            _runPhase = RunPhase.PreparingLowValueListingReturn;
+                            _lastActionUtc = now;
+                            return;
+                        }
+                    }
+
+                    if (current.Value == _stagedDesiredPrice.Value)
+                    {
+                        Log.Information($"[RR] Price unchanged ({_stagedDesiredPrice.Value}); no price apply needed.");
+                        _stagedDesiredPrice = null;
+                        _hasAppliedStagedPrice = false;
+                        _runPhase = RunPhase.CleanupAfterItem;
                         _lastActionUtc = now;
                         return;
                     }
@@ -1464,6 +1787,12 @@ public unsafe sealed partial class Plugin
                     {
                         if (c.ItemId == 0)
                             continue;
+
+                        if (_sellState.ReturnedListingItemKeys.Contains(Configuration.MakeSellKey(c.ItemId, c.IsHq)))
+                        {
+                            Log.Verbose($"[RR][LowValueReturn] Excluding returned item from selling for rest of run: itemId={c.ItemId} HQ={c.IsHq}.");
+                            continue;
+                        }
 
                         var (threshold, desiredQuantity) = ResolveStackSizeForRetainer(c, hasRetainerName ? normalizedRetainerName : string.Empty);
 
@@ -2043,6 +2372,35 @@ public unsafe sealed partial class Plugin
                 return;
         }
     }
+
+    private static bool IsExactlyOneListingRemoved(
+        IReadOnlyCollection<UiReader.RetainerMarketListing> before,
+        IReadOnlyCollection<UiReader.RetainerMarketListing> after,
+        UiReader.RetainerMarketListing target)
+    {
+        static (uint ItemId, bool IsHq, int Quantity, int UnitPrice) Identity(UiReader.RetainerMarketListing listing)
+            => (listing.ItemId, listing.IsHq, listing.Quantity, listing.UnitPrice);
+
+        var beforeCounts = before.GroupBy(Identity).ToDictionary(group => group.Key, group => group.Count());
+        var afterCounts = after.GroupBy(Identity).ToDictionary(group => group.Key, group => group.Count());
+        var targetIdentity = Identity(target);
+        if (!beforeCounts.TryGetValue(targetIdentity, out var targetCount) || targetCount <= 0)
+            return false;
+
+        foreach (var identity in beforeCounts.Keys.Concat(afterCounts.Keys).Distinct())
+        {
+            var expectedCount = beforeCounts.GetValueOrDefault(identity) - (identity == targetIdentity ? 1 : 0);
+            if (expectedCount < 0 || afterCounts.GetValueOrDefault(identity) != expectedCount)
+                return false;
+        }
+
+        return true;
+    }
+
+    private static string DescribeRetainerMarketSnapshot(IEnumerable<UiReader.RetainerMarketListing> listings)
+        => string.Join(";", listings
+            .OrderBy(listing => listing.Slot)
+            .Select(listing => $"slot{listing.Slot}:item{listing.ItemId}/HQ={listing.IsHq}/qty={listing.Quantity}/price={listing.UnitPrice}"));
 
     private void InitializePerRetainerSellState()
     {

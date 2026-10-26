@@ -665,6 +665,8 @@ public unsafe sealed partial class Plugin : IDalamudPlugin
         _slotIndexToOpen = 0;
 
         _sellQueue.Clear();
+        _sellState.ReturnedListingItemKeys.Clear();
+        _sellState.LowValueReturnBypassKeys.Clear();
         _autoPruneRunThisCycle = false;
         _pendingPostSellPrune = false;
         _sellCapacityThisRetainer = 0;

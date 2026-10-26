@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 using RetainerRepricer.Services;
+using RetainerRepricer.Ui;
 
 namespace RetainerRepricer;
 
@@ -35,6 +36,15 @@ public unsafe sealed partial class Plugin
 
         /// <summary>Wait for RetainerSell to appear and dismiss any ContextMenu that blocks it.</summary>
         WaitingRetainerSell,
+
+        /// <summary>Close the price editor and prepare a verified low-value listing return.</summary>
+        PreparingLowValueListingReturn,
+
+        /// <summary>Wait for and select Return Items to Inventory from the live listing context menu.</summary>
+        WaitingLowValueListingReturnMenu,
+
+        /// <summary>Verify market-list removal and matching player-inventory increase after return.</summary>
+        VerifyingLowValueListingReturn,
 
         /// <summary>Read the active listing’s HQ flag and asking price.</summary>
         CaptureSellContext,
@@ -671,6 +681,20 @@ public unsafe sealed partial class Plugin
         public bool VendorExitConfirmationAccepted { get; set; }
         public bool VendorExitConfirmationAttempted { get; set; }
         public DateTime VendorExitConfirmationStartedUtc { get; set; } = DateTime.MinValue;
+        public UiReader.RetainerMarketListing CurrentExistingListing { get; set; }
+        public List<UiReader.RetainerMarketListing> CurrentExistingMarketSnapshot { get; set; } = new();
+        public bool HasCurrentExistingListing { get; set; }
+        public UiReader.RetainerMarketListing LowValueReturnListing { get; set; }
+        public List<UiReader.RetainerMarketListing> LowValueReturnMarketBaseline { get; set; } = new();
+        public int LowValueReturnVisibleIndex { get; set; } = -1;
+        public int LowValueReturnInventoryBaseline { get; set; }
+        public DateTime LowValueReturnStartedUtc { get; set; } = DateTime.MinValue;
+        public DateTime LowValueReturnMenuRequestedUtc { get; set; } = DateTime.MinValue;
+        public bool LowValueReturnSelectionAttempted { get; set; }
+        public string LowValueReturnLastMenuDiagnostic { get; set; } = string.Empty;
+        public string LowValueReturnLastVerifyDiagnostic { get; set; } = string.Empty;
+        public HashSet<ulong> ReturnedListingItemKeys { get; } = new();
+        public HashSet<ulong> LowValueReturnBypassKeys { get; } = new();
         public bool NeedsExistingListingScan { get; set; }
         public Task<UniversalisListingStats?>? AutoListPrefilterTask { get; set; }
         public CancellationTokenSource? AutoListPrefilterCancellation { get; set; }

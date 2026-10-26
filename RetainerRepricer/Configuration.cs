@@ -898,6 +898,8 @@ public sealed class Configuration : IPluginConfiguration
         public bool ProcessAfterAutoRetainer { get; set; }
         public bool AutoListInventoryItems { get; set; }
         public int AutoListMinimumStackValue { get; set; } = 1000;
+        public bool ReturnLowValueListingsToInventory { get; set; }
+        public int MinimumListedStackValueToKeep { get; set; } = 1000;
         public int VendorPreviewMaximumStackMarketValue { get; set; }
         public HashSet<ulong> AutoListItemBlacklist { get; set; } = new();
         public HashSet<string> AutoListBlocklistIds { get; set; } = new(StringComparer.OrdinalIgnoreCase);
@@ -1144,6 +1146,7 @@ public sealed class Configuration : IPluginConfiguration
         settings.AutoListBlocklistIds ??= new(StringComparer.OrdinalIgnoreCase);
         settings.VendorAllowlistIds ??= new(StringComparer.OrdinalIgnoreCase);
         settings.AutoListMinimumStackValue = Math.Clamp(settings.AutoListMinimumStackValue, 1, 999_999_999);
+        settings.MinimumListedStackValueToKeep = Math.Clamp(settings.MinimumListedStackValueToKeep, 1, 999_999_999);
         settings.VendorPreviewMaximumStackMarketValue = Math.Clamp(settings.VendorPreviewMaximumStackMarketValue, 0, settings.AutoListMinimumStackValue);
 
         if (!string.IsNullOrWhiteSpace(name)) settings.Name = name.Trim();
