@@ -1250,7 +1250,10 @@ public unsafe sealed partial class Plugin
 
                     if (current == desired)
                     {
-                        Log.Information($"[RR] Price unchanged ({desired}); checking any enabled low-value return rule.");
+                        if (_processingListedItem)
+                            Log.Information($"[RR] Price unchanged ({desired}); checking any enabled low-value return rule.");
+                        else
+                            Log.Information($"[RR] Calculated listing price matches editor default ({desired}); continuing eligibility checks and submission.");
                         _stagedDesiredPrice = desired;
                         _stagedReferenceSeller = lowestSeller;
                         _stagedReferenceIsMine = referenceIsMine;
@@ -1464,7 +1467,7 @@ public unsafe sealed partial class Plugin
                         }
                     }
 
-                    if (current.Value == _stagedDesiredPrice.Value)
+                    if (_processingListedItem && current.Value == _stagedDesiredPrice.Value)
                     {
                         Log.Information($"[RR] Price unchanged ({_stagedDesiredPrice.Value}); no price apply needed.");
                         _stagedDesiredPrice = null;
