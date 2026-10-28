@@ -51,7 +51,6 @@ public sealed partial class ConfigWindow
         if (_selectedBlocklistCharacter == 0)
             _selectedBlocklistCharacter = _plugin.CurrentCharacterId;
 
-        ImGui.TextDisabled("Blocks automatic inventory listing only. Existing listings and explicit Sell List assignments are unchanged.");
         if (ImGui.RadioButton("Manage lists", !_blocklistAssignmentsView) && _blocklistAssignmentsView)
         {
             _blocklistAssignmentsView = false;

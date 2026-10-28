@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Linq;
 
 using Dalamud.Bindings.ImGui;
+using Dalamud.Interface;
 using Dalamud.Interface.Utility;
 using RetainerRepricer.Services;
 
@@ -40,14 +41,27 @@ public sealed partial class ConfigWindow
         _config.VendorAllowlists ??= new(StringComparer.OrdinalIgnoreCase);
         if (_vendorSelectedCharacter == 0) _vendorSelectedCharacter = _plugin.CurrentCharacterId;
 
-        ImGui.TextDisabled("Preview and manual vending are available. Applying a list to the active character refreshes its preview; automatic selling requires the opt-in below.");
         var autoSell = _config.AutoSellVendorPreviewCandidates;
         if (ImGui.Checkbox("Automatically sell candidates after applying a list", ref autoSell))
         {
             _config.AutoSellVendorPreviewCandidates = autoSell;
             _config.Save();
         }
-        ImGui.TextWrapped("When enabled, applying a vendor list to the active character refreshes a preview and may immediately sell eligible whole stacks to the currently open retainer. Manual preview refresh does not auto-sell. Sales are irreversible; RR protections and fresh price checks still apply; AR Protect List is not honored.");
+        ImGui.SameLine();
+        ImGui.PushFont(UiBuilder.IconFont);
+        ImGui.TextDisabled(FontAwesomeIcon.InfoCircle.ToIconString());
+        ImGui.PopFont();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "When enabled, applying a vendor item list to the\n" +
+                "active character refreshes its preview and may start\n" +
+                "selling eligible whole stacks to the currently open\n" +
+                "retainer.\n\n" +
+                "Applying the list may sell items; manually refreshing\n" +
+                "the preview never sells.\n\n" +
+                "Sales are irreversible. Retainer Repricer protections\n" +
+                "and fresh price checks apply; AutoRetainer's Protect\n" +
+                "List is not honored.");
         if (ImGui.RadioButton("Manage lists", !_vendorAssignmentsView)) _vendorAssignmentsView = false;
         ImGui.SameLine();
         if (ImGui.RadioButton("Character assignments", _vendorAssignmentsView)) _vendorAssignmentsView = true;
@@ -134,7 +148,6 @@ public sealed partial class ConfigWindow
         ImGui.InputText("Rename", ref _vendorRenameName, 100);
         ImGui.SameLine();
         if (ImGui.Button("Apply name") && _config.TryRenameVendorAllowlist(_vendorSelectedListId, _vendorRenameName)) _config.Save();
-        ImGui.TextDisabled($"{selected.ItemKeys.Select(key => (uint)(key >> 1)).Distinct().Count()} items • {selected.ItemKeys.Count} quality entries • used by {GetCharactersAssignedToVendorList(_vendorSelectedListId).Count()} characters");
         var maximumAllowed = GetVendorListThresholdCap(_vendorSelectedListId);
         if (selected.MaximumStackMarketValue > maximumAllowed)
         {
@@ -143,13 +156,22 @@ public sealed partial class ConfigWindow
         }
         var listThreshold = selected.MaximumStackMarketValue;
         ImGui.SetNextItemWidth(VendorInputWidth);
-        if (ImGui.InputInt("Vendor value limit — total stack market value (gil)", ref listThreshold))
+        if (ImGui.InputInt("Vendor value limit", ref listThreshold))
         {
             selected.MaximumStackMarketValue = Math.Clamp(listThreshold, 0, maximumAllowed);
             _config.Save();
         }
-        ImGui.TextDisabled($"0 disables vending from this list. Items in multiple assigned lists use the lowest applicable list limit. Maximum for assigned characters: {maximumAllowed:N0} gil.");
+        ImGui.SameLine();
+        ImGui.PushFont(UiBuilder.IconFont);
+        ImGui.TextDisabled(FontAwesomeIcon.InfoCircle.ToIconString());
+        ImGui.PopFont();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Limits vending by total stack market value (unit market price × stack quantity).\n" +
+                "0 disables vending from this list. If an item appears in multiple assigned lists,\n" +
+                $"the lowest applicable limit is used. Maximum for assigned characters: {maximumAllowed:N0} gil.");
 
+        ImGui.TextDisabled($"{selected.ItemKeys.Select(key => (uint)(key >> 1)).Distinct().Count()} items • {selected.ItemKeys.Count} quality entries • used by {GetCharactersAssignedToVendorList(_vendorSelectedListId).Count()} characters");
         DrawVendorItemEditor(selected);
         DrawVendorPreviewControls(_vendorSelectedListId);
     }

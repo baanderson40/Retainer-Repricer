@@ -73,6 +73,15 @@ public sealed partial class ConfigWindow : Window, IDisposable
         };
         Size = new(900, 680);
         SizeCondition = ImGuiCond.FirstUseEver;
+        TitleBarButtons =
+        [
+            new TitleBarButton
+            {
+                Icon = FontAwesomeIcon.Bug,
+                ShowTooltip = () => ImGui.SetTooltip("Open Retainer Repricer diagnostics"),
+                Click = _ => _plugin.OpenDebugWindow(),
+            },
+        ];
     }
 
     public void Dispose()
@@ -824,7 +833,7 @@ public sealed partial class ConfigWindow : Window, IDisposable
                 }
                 if (open)
                 {
-                    ImGui.TextUnformatted("AUTOMATIC PROCESSING");
+                    ImGui.TextUnformatted("AUTOMATION");
                     var processAfterAutoRetainer = character.ProcessAfterAutoRetainer;
                     if (!_plugin.AutoRetainerAvailable)
                         ImGui.BeginDisabled();
@@ -847,7 +856,6 @@ public sealed partial class ConfigWindow : Window, IDisposable
                             "Near-due ventures can be grouped with this run using the AutoRetainer wait setting.");
                     }
 
-                    ImGui.TextUnformatted("AUTOMATIC INVENTORY LISTING");
                     DrawAutoListSettings(character);
                     var returnLowValueListings = character.ReturnLowValueListingsToInventory;
                     if (ImGui.Checkbox($"Return low-value listings to inventory##low-value-{data.CID}", ref returnLowValueListings))
@@ -872,15 +880,16 @@ public sealed partial class ConfigWindow : Window, IDisposable
                             TooltipHelper.Show(_config,
                                 "A listing is returned only when final proposed unit price × listed quantity is below this value.");
                     }
-                    ImGui.TextUnformatted("ITEM BLOCKLISTS");
+                    ImGui.Separator();
+                    ImGui.TextUnformatted("ITEM RULES");
                     var assignedBlocklists = character.AutoListBlocklistIds?.Count ?? 0;
                     var effectiveBlocks = _config.GetEffectiveAutoListBlocklist(data.CID).Count;
-                    ImGui.TextDisabled($"Item blocklists: {assignedBlocklists} assigned • {effectiveBlocks} effective entries");
-                    ImGui.SameLine();
-                    if (ImGui.SmallButton($"Manage##blocklists-{data.CID}")) OpenBlocklistsForCharacter(data.CID);
+                    ImGui.TextWrapped($"Blocklists: {assignedBlocklists} assigned · {effectiveBlocks} effective items");
+                    if (ImGui.Button($"Manage##blocklists-{data.CID}", new System.Numerics.Vector2(-1f, 0f)))
+                        OpenBlocklistsForCharacter(data.CID);
 
                     ImGui.Separator();
-                    ImGui.TextUnformatted("RETAINER CONTROLS");
+                    ImGui.TextUnformatted("RETAINERS");
                     if (names.Count == 0)
                         ImGui.TextDisabled("No retainers are known for this character.");
                     else
@@ -915,9 +924,6 @@ public sealed partial class ConfigWindow : Window, IDisposable
 
     private void DrawAutoListSettings(Configuration.CharacterSettings character)
     {
-        ImGui.Separator();
-        ImGui.TextUnformatted("Automatic inventory listing");
-
         var enabled = character.AutoListInventoryItems;
         if (ImGui.Checkbox("Automatically list eligible items", ref enabled))
         {
@@ -925,15 +931,19 @@ public sealed partial class ConfigWindow : Window, IDisposable
             SaveConfig();
         }
 
-        var minimum = character.AutoListMinimumStackValue;
-        ImGui.SetNextItemWidth(190f);
-        if (ImGui.InputInt("Minimum total stack value", ref minimum))
+        if (enabled)
         {
-            character.AutoListMinimumStackValue = Math.Clamp(minimum, 1, 999_999_999);
-            SaveConfig();
+            var minimum = character.AutoListMinimumStackValue;
+            ImGui.SetNextItemWidth(130f);
+            if (ImGui.InputInt("Minimum value##auto-list-threshold", ref minimum))
+            {
+                character.AutoListMinimumStackValue = Math.Clamp(minimum, 1, 999_999_999);
+                SaveConfig();
+            }
+            if (ImGui.IsItemHovered())
+                TooltipHelper.Show(_config,
+                    "Universalis performs an early estimate; final value uses the live market price multiplied by the full selected stack quantity.");
         }
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Universalis performs an early estimate; final value uses the live market price multiplied by the full selected stack quantity.");
 
     }
 

@@ -24,6 +24,16 @@ public unsafe sealed partial class Plugin
     private string _autoRetainerHandoffRetainerName = string.Empty;
     private ulong _autoRetainerHandoffCharacterId;
     private DateTime _autoRetainerRecoveryStartedUtc = DateTime.MinValue;
+    private DateTime _autoRetainerLastPreStartDiagnosticUtc = DateTime.MinValue;
+    private bool _autoRetainerDiagnosticsEnabled;
+    private ulong _autoRetainerCallbackReconciliationCid;
+    private string _autoRetainerCallbackReconciliationRetainer = string.Empty;
+    private DateTime _autoRetainerCallbackReconciliationStartedUtc = DateTime.MinValue;
+    private DateTime _autoRetainerCallbackReconciliationLastCheckUtc = DateTime.MinValue;
+    private bool _autoRetainerCallbackReconciliationPending;
+
+    private static readonly TimeSpan AutoRetainerCallbackReconciliationTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan AutoRetainerCallbackReconciliationInterval = TimeSpan.FromMilliseconds(250);
 
     internal bool AutoRetainerAvailable => _autoRetainerRegistered;
 
@@ -106,6 +116,12 @@ public unsafe sealed partial class Plugin
     {
         if (_autoRetainerHandoffActive)
             FailAutoRetainerHandoff("plugin disposed during handoff");
+        else if (_autoRetainerCallbackReconciliationPending)
+        {
+            Log.Warning("[RR][AR] Releasing pending callback reconciliation during plugin disposal.");
+            ClearAutoRetainerCallbackReconciliation();
+            FinishAutoRetainerRetainerPostProcess();
+        }
 
         if (_autoRetainerApi != null)
         {
@@ -118,6 +134,12 @@ public unsafe sealed partial class Plugin
 
     private void TickAutoRetainerIntegration()
     {
+        if (_autoRetainerCallbackReconciliationPending)
+        {
+            AdvanceAutoRetainerCallbackReconciliation();
+            return;
+        }
+
         if (_autoRetainerHandoffActive)
         {
             if (CurrentCharacterId == 0 || CurrentCharacterId != _autoRetainerHandoffCharacterId)
@@ -196,11 +218,12 @@ public unsafe sealed partial class Plugin
     private void OnAutoRetainerRetainerReady(string retainerName)
     {
         // A duplicate callback must not unlock the handoff we already own.
-        if (_autoRetainerHandoffActive || _autoRetainerAutomationBlocked)
+        if (_autoRetainerHandoffActive || _autoRetainerCallbackReconciliationPending || _autoRetainerAutomationBlocked)
             return;
 
         if (IsRunning)
         {
+            Log.Debug($"[RR][AR] Releasing post-process callback for '{retainerName}': RR is already running.");
             FinishAutoRetainerRetainerPostProcess();
             return;
         }
@@ -209,6 +232,7 @@ public unsafe sealed partial class Plugin
         if (!Configuration.PluginEnabled || cid == 0 || Configuration.IsCharacterBlacklisted(cid) ||
             !Configuration.GetCharacterSettings(cid).ProcessAfterAutoRetainer)
         {
+            Log.Debug($"[RR][AR] Releasing post-process callback for '{retainerName}': plugin/character automation is disabled or unavailable.");
             FinishAutoRetainerRetainerPostProcess();
             return;
         }
@@ -217,7 +241,7 @@ public unsafe sealed partial class Plugin
         PendingAutoRetainerWork pendingWork;
         try
         {
-            decision = EvaluateAutoRetainerHandoff(cid, retainerName, out pendingWork);
+            decision = EvaluateAutoRetainerHandoff(cid, retainerName, out pendingWork, "callback");
         }
         catch (Exception ex)
         {
@@ -232,15 +256,29 @@ public unsafe sealed partial class Plugin
             return;
         }
 
+        if (decision == AutoRetainerHandoffDecision.ReconcileCallbackVenture)
+        {
+            BeginAutoRetainerCallbackReconciliation(cid, retainerName);
+            return;
+        }
+
         if (decision == AutoRetainerHandoffDecision.Unavailable)
         {
-            Log.Warning("[RR][AR] Could not determine remaining enabled-retainer ventures; releasing post-process callback.");
+            Log.Warning("[RR][AR] Handoff decision unavailable; releasing post-process callback without starting RR.");
             FinishAutoRetainerRetainerPostProcess();
             return;
         }
 
-        LogAutoRetainerHandoffStart(retainerName, pendingWork, "callback");
+        BeginAutoRetainerHandoff(retainerName, cid, pendingWork, "callback");
+    }
 
+    private void BeginAutoRetainerHandoff(
+        string retainerName,
+        ulong cid,
+        PendingAutoRetainerWork pendingWork,
+        string source)
+    {
+        LogAutoRetainerHandoffStart(retainerName, pendingWork, source);
         _autoRetainerHandoffActive = true;
         _autoRetainerHandoffStartedUtc = DateTime.UtcNow;
         _autoRetainerSuppressionBeforeHandoff = false;
@@ -260,13 +298,14 @@ public unsafe sealed partial class Plugin
             Log.Debug("[RR][AR] Suppression IPC unavailable; relying on retainer post-process lock.");
         }
 
-        Log.Information($"[RR][AR] Final retainer callback received for {retainerName}; preparing RetainerList.");
+        Log.Information($"[RR][AR] Final retainer callback received for {retainerName}; preparing RetainerList (source={source}).");
     }
 
     private AutoRetainerHandoffDecision EvaluateAutoRetainerHandoff(
         ulong cid,
         string completedRetainerName,
-        out PendingAutoRetainerWork pendingWork)
+        out PendingAutoRetainerWork pendingWork,
+        string source = "callback")
     {
         pendingWork = PendingAutoRetainerWork.Empty;
         if (cid == 0)
@@ -276,8 +315,26 @@ public unsafe sealed partial class Plugin
         {
             var anyAvailable = PluginInterface.GetIpcSubscriber<bool>(
                 "AutoRetainer.PluginState.AreAnyRetainersAvailableForCurrentChara").InvokeFunc();
+            if (_autoRetainerDiagnosticsEnabled && ShouldLogAutoRetainerEvaluationDiagnostics(source))
+                TryLogAutoRetainerDiagnosticSnapshot(cid, completedRetainerName, source, anyAvailable);
             if (anyAvailable)
             {
+                if (TryClassifyCallbackRetainerOnlyAvailability(cid, completedRetainerName, out var callbackOnlyDiagnostic))
+                {
+                    if (string.Equals(source, "pre_start", StringComparison.Ordinal))
+                    {
+                        Log.Information($"[RR][AR] Proceeding after callback-retainer availability revalidation; {callbackOnlyDiagnostic}");
+                        pendingWork = PendingAutoRetainerWork.Empty;
+                        return AutoRetainerHandoffDecision.Start;
+                    }
+
+                    if (!string.Equals(source, "callback_recheck", StringComparison.Ordinal))
+                    {
+                        Log.Information($"[RR][AR] Availability appears limited to completed callback retainer; holding post-process callback for venture-state reconciliation. {callbackOnlyDiagnostic}");
+                    }
+                    return AutoRetainerHandoffDecision.ReconcileCallbackVenture;
+                }
+
                 pendingWork = new PendingAutoRetainerWork(string.Empty, 0, true);
                 return AutoRetainerHandoffDecision.Defer;
             }
@@ -325,8 +382,11 @@ public unsafe sealed partial class Plugin
                 ? AutoRetainerHandoffDecision.Defer
                 : AutoRetainerHandoffDecision.Start;
         }
-        catch (IpcError)
+        catch (IpcError ex)
         {
+            Log.Warning($"[RR][AR][Diag] Handoff data IPC/API failed: {ex.GetType().Name}: {ex.Message}; using existing venture fallback.");
+            if (_autoRetainerDiagnosticsEnabled && ShouldLogAutoRetainerEvaluationDiagnostics(source))
+                TryLogAutoRetainerDiagnosticSnapshot(cid, completedRetainerName, $"{source}_ipc_failure");
             return EvaluateClosestAutoRetainerVenture(cid, out pendingWork);
         }
         catch (Exception ex)
@@ -335,6 +395,191 @@ public unsafe sealed partial class Plugin
             pendingWork = PendingAutoRetainerWork.Empty;
             return AutoRetainerHandoffDecision.Unavailable;
         }
+    }
+
+    private bool TryClassifyCallbackRetainerOnlyAvailability(
+        ulong cid,
+        string completedRetainerName,
+        out string diagnostic)
+    {
+        diagnostic = string.Empty;
+        if (cid == 0 || string.IsNullOrWhiteSpace(completedRetainerName))
+            return false;
+
+        try
+        {
+            var enabledByCharacter = PluginInterface.GetIpcSubscriber<Dictionary<ulong, HashSet<string>>>(
+                "AutoRetainer.PluginState.GetEnabledRetainers").InvokeFunc();
+            if (enabledByCharacter == null || !enabledByCharacter.TryGetValue(cid, out var enabledNames) ||
+                enabledNames == null || enabledNames.Count == 0 ||
+                !enabledNames.Any(name => string.Equals(
+                    name, completedRetainerName, StringComparison.OrdinalIgnoreCase)))
+                return false;
+
+            var character = _autoRetainerApi?.GetOfflineCharacterData(cid);
+            if (character?.CID != cid || character.RetainerData == null)
+                return false;
+
+            var duplicateNames = character.RetainerData
+                .Where(retainer => retainer != null && !string.IsNullOrWhiteSpace(retainer.Name))
+                .GroupBy(retainer => retainer.Name, StringComparer.OrdinalIgnoreCase)
+                .Any(group => group.Count() != 1);
+            if (duplicateNames)
+                return false;
+
+            var callbackRecords = character.RetainerData
+                .Where(retainer => retainer != null && string.Equals(
+                    retainer.Name, completedRetainerName, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            if (callbackRecords.Length != 1 || callbackRecords[0].HasVenture || callbackRecords[0].VentureEndsAt > 0)
+                return false;
+
+            var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var waitSeconds = Math.Clamp(Configuration.AutoRetainerNearVentureWaitMinutes, 0, 30) * 60L;
+            foreach (var enabledName in enabledNames)
+            {
+                var records = character.RetainerData
+                    .Where(retainer => retainer != null && string.Equals(
+                        retainer.Name, enabledName, StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                if (records.Length != 1)
+                    return false;
+
+                if (string.Equals(enabledName, completedRetainerName, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var other = records[0];
+                if (!other.HasVenture || other.VentureEndsAt <= 0 || other.VentureEndsAt - now <= waitSeconds)
+                    return false;
+            }
+
+            diagnostic = $"character={cid} completed='{completedRetainerName}' enabledCount={enabledNames.Count} otherVentureRecords=complete waitWindowSeconds={waitSeconds}";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Debug($"[RR][AR] Could not prove callback-retainer-only availability: {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+    }
+
+    private void BeginAutoRetainerCallbackReconciliation(ulong cid, string retainerName)
+    {
+        _autoRetainerCallbackReconciliationPending = true;
+        _autoRetainerCallbackReconciliationCid = cid;
+        _autoRetainerCallbackReconciliationRetainer = retainerName;
+        _autoRetainerCallbackReconciliationStartedUtc = DateTime.UtcNow;
+        _autoRetainerCallbackReconciliationLastCheckUtc = DateTime.UtcNow;
+        Log.Information(
+            $"[RR][AR] Holding post-process callback for '{retainerName}' up to {AutoRetainerCallbackReconciliationTimeout.TotalSeconds:0}s while AR venture data refreshes.");
+    }
+
+    private void AdvanceAutoRetainerCallbackReconciliation()
+    {
+        var now = DateTime.UtcNow;
+        var cid = _autoRetainerCallbackReconciliationCid;
+        var retainerName = _autoRetainerCallbackReconciliationRetainer;
+        if (CurrentCharacterId == 0 || CurrentCharacterId != cid)
+        {
+            Log.Warning($"[RR][AR] Releasing callback reconciliation for '{retainerName}': character changed (expected={cid}, actual={CurrentCharacterId}).");
+            ClearAutoRetainerCallbackReconciliation();
+            FinishAutoRetainerRetainerPostProcess();
+            return;
+        }
+
+        if (!Configuration.PluginEnabled || Configuration.IsCharacterBlacklisted(cid) ||
+            !Configuration.GetCharacterSettings(cid).ProcessAfterAutoRetainer)
+        {
+            Log.Information($"[RR][AR] Releasing callback reconciliation for '{retainerName}': automation was disabled.");
+            ClearAutoRetainerCallbackReconciliation();
+            FinishAutoRetainerRetainerPostProcess();
+            return;
+        }
+
+        if (IsRunning || _autoRetainerAutomationBlocked)
+        {
+            Log.Information($"[RR][AR] Releasing callback reconciliation for '{retainerName}': RR is running or automation is blocked.");
+            ClearAutoRetainerCallbackReconciliation();
+            FinishAutoRetainerRetainerPostProcess();
+            return;
+        }
+
+        if (now - _autoRetainerCallbackReconciliationLastCheckUtc < AutoRetainerCallbackReconciliationInterval)
+            return;
+
+        _autoRetainerCallbackReconciliationLastCheckUtc = now;
+        AutoRetainerHandoffDecision decision;
+        PendingAutoRetainerWork pendingWork;
+        try
+        {
+            decision = EvaluateAutoRetainerHandoff(cid, retainerName, out pendingWork, "callback_recheck");
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, $"[RR][AR] Callback reconciliation failed for '{retainerName}'; releasing AutoRetainer.");
+            ClearAutoRetainerCallbackReconciliation();
+            FinishAutoRetainerRetainerPostProcess();
+            return;
+        }
+
+        if (decision == AutoRetainerHandoffDecision.Start)
+        {
+            var elapsed = now - _autoRetainerCallbackReconciliationStartedUtc;
+            Log.Information($"[RR][AR] Venture state reconciled after {elapsed.TotalMilliseconds:0}ms; beginning handoff for '{retainerName}'.");
+            ClearAutoRetainerCallbackReconciliation();
+            BeginAutoRetainerHandoff(retainerName, cid, pendingWork, "callback_reconciled");
+            return;
+        }
+
+        if (decision == AutoRetainerHandoffDecision.Defer)
+        {
+            LogAutoRetainerHandoffDeferral(retainerName, pendingWork, "callback_recheck");
+            ClearAutoRetainerCallbackReconciliation();
+            FinishAutoRetainerRetainerPostProcess();
+            return;
+        }
+
+        if (decision == AutoRetainerHandoffDecision.Unavailable)
+        {
+            Log.Warning($"[RR][AR] Venture state unavailable after callback for '{retainerName}'; releasing without starting RR.");
+            ClearAutoRetainerCallbackReconciliation();
+            FinishAutoRetainerRetainerPostProcess();
+            return;
+        }
+
+        if (now - _autoRetainerCallbackReconciliationStartedUtc < AutoRetainerCallbackReconciliationTimeout)
+            return;
+
+        var elapsedMs = (now - _autoRetainerCallbackReconciliationStartedUtc).TotalMilliseconds;
+        Log.Warning($"[RR][AR] Venture data stayed stale for {elapsedMs:0}ms; complete records show only callback retainer '{retainerName}' available, so continuing with narrow callback exclusion.");
+        ClearAutoRetainerCallbackReconciliation();
+        BeginAutoRetainerHandoff(retainerName, cid, pendingWork, "callback_stale_state_excluded");
+    }
+
+    private void ClearAutoRetainerCallbackReconciliation()
+    {
+        _autoRetainerCallbackReconciliationPending = false;
+        _autoRetainerCallbackReconciliationCid = 0;
+        _autoRetainerCallbackReconciliationRetainer = string.Empty;
+        _autoRetainerCallbackReconciliationStartedUtc = DateTime.MinValue;
+        _autoRetainerCallbackReconciliationLastCheckUtc = DateTime.MinValue;
+    }
+
+    private bool ShouldLogAutoRetainerEvaluationDiagnostics(string source)
+    {
+        if (string.Equals(source, "callback_recheck", StringComparison.Ordinal))
+            return false;
+
+        if (!string.Equals(source, "pre_start", StringComparison.Ordinal))
+            return true;
+
+        var now = DateTime.UtcNow;
+        if (_autoRetainerLastPreStartDiagnosticUtc != DateTime.MinValue &&
+            now - _autoRetainerLastPreStartDiagnosticUtc < TimeSpan.FromSeconds(15))
+            return false;
+
+        _autoRetainerLastPreStartDiagnosticUtc = now;
+        return true;
     }
 
     private AutoRetainerHandoffDecision EvaluateClosestAutoRetainerVenture(
@@ -368,6 +613,151 @@ public unsafe sealed partial class Plugin
         }
     }
 
+    private void LogAutoRetainerDiagnosticSnapshot(
+        ulong cid,
+        string completedRetainerName,
+        string source,
+        bool? availabilityResult = null)
+    {
+        var evaluationId = Guid.NewGuid().ToString("N")[..8];
+        var capturedAt = DateTimeOffset.UtcNow;
+        var waitSeconds = Math.Clamp(Configuration.AutoRetainerNearVentureWaitMinutes, 0, 30) * 60L;
+        AutoRetainerAPI.Configuration.OfflineCharacterData? currentCharacter = null;
+        var offlineStatus = "unavailable";
+        try
+        {
+            currentCharacter = _autoRetainerApi?.GetOfflineCharacterData(cid);
+            offlineStatus = currentCharacter == null ? "missing" : "available";
+        }
+        catch (Exception ex)
+        {
+            offlineStatus = $"error({ex.GetType().Name}: {ex.Message})";
+        }
+
+        if (availabilityResult is null)
+        {
+            try
+            {
+                availabilityResult = PluginInterface.GetIpcSubscriber<bool>(
+                    "AutoRetainer.PluginState.AreAnyRetainersAvailableForCurrentChara").InvokeFunc();
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"[RR][AR][Diag] eval={evaluationId} availability=unavailable error={ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
+        HashSet<string>? enabledNames = null;
+        var enabledStatus = "unavailable";
+        try
+        {
+            var enabledByCharacter = PluginInterface.GetIpcSubscriber<Dictionary<ulong, HashSet<string>>>(
+                "AutoRetainer.PluginState.GetEnabledRetainers").InvokeFunc();
+            if (enabledByCharacter == null)
+                enabledStatus = "null_dictionary";
+            else if (!enabledByCharacter.TryGetValue(cid, out enabledNames))
+                enabledStatus = "character_missing";
+            else if (enabledNames == null)
+                enabledStatus = "null_set";
+            else
+                enabledStatus = $"ok(count={enabledNames.Count})";
+        }
+        catch (Exception ex)
+        {
+            enabledStatus = $"error({ex.GetType().Name}: {ex.Message})";
+        }
+
+        Log.Information(
+            $"[RR][AR][Diag] eval={evaluationId} source={source} at={capturedAt:O} character='{CurrentCharacterName}' cid={cid} offlineCharacter='{currentCharacter?.Name ?? offlineStatus}' offlineCid={currentCharacter?.CID.ToString() ?? "unavailable"} completed='{completedRetainerName}' pluginEnabled={Configuration.PluginEnabled} rrRunning={IsRunning} handoffActive={_autoRetainerHandoffActive} waitWindowSeconds={waitSeconds} availability={(availabilityResult?.ToString() ?? "unavailable")} enabled={enabledStatus}.");
+
+        if (enabledNames == null)
+        {
+            Log.Information($"[RR][AR][Diag] eval={evaluationId} enabledNames=unavailable offlineCharacter={offlineStatus}.");
+        }
+        else
+        {
+            var enabledOrdered = enabledNames.OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToArray();
+            Log.Information($"[RR][AR][Diag] eval={evaluationId} enabledNames=[{string.Join(",", enabledOrdered)}] offlineCharacter={offlineStatus}.");
+        }
+        if (currentCharacter?.RetainerData == null)
+            return;
+
+        var now = capturedAt.ToUnixTimeSeconds();
+        var knownNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var readyOther = 0;
+        var nearOther = 0;
+        foreach (var retainer in currentCharacter.RetainerData.OrderBy(item => item?.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            if (retainer == null || string.IsNullOrWhiteSpace(retainer.Name))
+            {
+                Log.Information($"[RR][AR][Diag] eval={evaluationId} retainer=<null-or-unnamed> classification=invalid_record.");
+                continue;
+            }
+
+            var duplicate = !knownNames.Add(retainer.Name);
+            var isEnabled = enabledNames?.Any(name => string.Equals(name, retainer.Name, StringComparison.OrdinalIgnoreCase));
+            var isCompleted = string.Equals(retainer.Name, completedRetainerName, StringComparison.OrdinalIgnoreCase);
+            var secondsRemaining = retainer.VentureEndsAt > 0 ? retainer.VentureEndsAt - now : (long?)null;
+            string ventureEndUtc;
+            try
+            {
+                ventureEndUtc = retainer.VentureEndsAt > 0
+                    ? DateTimeOffset.FromUnixTimeSeconds(retainer.VentureEndsAt).ToString("O")
+                    : "invalid";
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                ventureEndUtc = "out_of_range";
+            }
+
+            var classification = isEnabled == null ? "enabled_state_unavailable"
+                : !isEnabled.Value ? "disabled"
+                : isCompleted ? "completed_callback_retainer"
+                : !retainer.HasVenture ? "no_venture"
+                : retainer.VentureEndsAt <= 0 ? "invalid_or_missing_end"
+                : secondsRemaining <= 0 ? "ready_now"
+                : secondsRemaining <= waitSeconds ? "within_wait_window"
+                : "outside_wait_window";
+            if (isEnabled == true && !isCompleted && classification == "ready_now") readyOther++;
+            if (isEnabled == true && !isCompleted && classification == "within_wait_window") nearOther++;
+
+            Log.Information(
+                $"[RR][AR][Diag] eval={evaluationId} retainer='{retainer.Name}' enabled={(isEnabled?.ToString() ?? "unknown")} completedMatch={isCompleted} duplicateName={duplicate} hasVenture={retainer.HasVenture} ventureEndsAt={retainer.VentureEndsAt} ventureEndUtc={ventureEndUtc} secondsRemaining={(secondsRemaining?.ToString() ?? "n/a")} classification={classification}.");
+        }
+
+        var missingEnabled = enabledNames?.Where(name => !currentCharacter.RetainerData.Any(retainer =>
+                retainer != null && string.Equals(retainer.Name, name, StringComparison.OrdinalIgnoreCase)))
+            .ToArray();
+        var completedPresent = currentCharacter.RetainerData.Any(retainer => retainer != null &&
+            string.Equals(retainer.Name, completedRetainerName, StringComparison.OrdinalIgnoreCase));
+        Log.Information(
+            $"[RR][AR][Diag] eval={evaluationId} summary=readyOther:{readyOther},withinWaitOther:{nearOther},enabledNamesMissingOffline:[{(missingEnabled == null ? "unavailable" : string.Join(",", missingEnabled))}],completedRetainerRecordPresent={completedPresent}.");
+    }
+
+    private void TryLogAutoRetainerDiagnosticSnapshot(
+        ulong cid,
+        string completedRetainerName,
+        string source,
+        bool? availabilityResult = null)
+    {
+        try
+        {
+            LogAutoRetainerDiagnosticSnapshot(cid, completedRetainerName, source, availabilityResult);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning($"[RR][AR][Diag] Diagnostic snapshot failed; handoff decision remains unchanged: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    internal bool AutoRetainerDiagnosticsEnabled => _autoRetainerDiagnosticsEnabled;
+
+    internal void SetAutoRetainerDiagnosticsEnabled(bool enabled)
+        => _autoRetainerDiagnosticsEnabled = enabled;
+
+    internal void CaptureAutoRetainerDiagnosticSnapshot()
+        => TryLogAutoRetainerDiagnosticSnapshot(CurrentCharacterId, string.Empty, "manual_snapshot");
+
     private void LogAutoRetainerHandoffDeferral(
         string completedRetainerName,
         PendingAutoRetainerWork pendingWork,
@@ -376,7 +766,7 @@ public unsafe sealed partial class Plugin
         if (pendingWork.IsAlreadyAvailable)
         {
             Log.Information(
-                "[RR][AR] Deferring automatic repricing after {CompletedRetainer}; another enabled retainer is already available ({Source}).",
+                "[RR][AR] Deferring automatic repricing after {CompletedRetainer}; availability IPC returned true, but pending retainer identity is unknown ({Source}).",
                 completedRetainerName,
                 source);
             return;
@@ -452,7 +842,8 @@ public unsafe sealed partial class Plugin
             decision = EvaluateAutoRetainerHandoff(
                 CurrentCharacterId,
                 _autoRetainerHandoffRetainerName,
-                out pendingWork);
+                out pendingWork,
+                "pre_start");
         }
         catch (Exception ex)
         {
@@ -606,6 +997,7 @@ public unsafe sealed partial class Plugin
     {
         Start,
         Defer,
+        ReconcileCallbackVenture,
         Unavailable,
     }
 
