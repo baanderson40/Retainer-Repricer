@@ -28,6 +28,9 @@ public sealed partial class ConfigWindow
     private bool _vendorHqOnly;
     private bool _vendorNqOnly;
     private int _vendorItemType;
+    private readonly HashSet<byte> _vendorRarities = new();
+    private int _vendorMinItemLevel;
+    private int _vendorMaxItemLevel = 999;
     private int _vendorPage;
     private string _vendorFilterSnapshot = string.Empty;
     private ulong _vendorSelectedCharacter;
@@ -324,6 +327,9 @@ public sealed partial class ConfigWindow
         var numeric = uint.TryParse(search, NumberStyles.None, CultureInfo.InvariantCulture, out var id);
         return _vendorCatalog!.Items.Where(item => item.NpcSalePrice > 0 && _vendorCategories.Contains(item.Category) &&
             (_vendorItemType == 0 || (_vendorItemType == 1 ? item.IsGear : !item.IsGear)) &&
+            _vendorMinItemLevel <= _vendorMaxItemLevel &&
+            item.ItemLevel >= _vendorMinItemLevel && item.ItemLevel <= _vendorMaxItemLevel &&
+            (_vendorRarities.Count == 0 || _vendorRarities.Contains(item.Rarity)) &&
             (search.Length == 0 || (numeric ? item.Id == id : item.Name.Contains(search, StringComparison.OrdinalIgnoreCase))) &&
             (!_vendorHqOnly || item.CanBeHq) &&
             (!_vendorAllowedOnly || (_vendorHqOnly

@@ -180,31 +180,32 @@ public sealed partial class ConfigWindow
 
         ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
         ImGui.InputTextWithHint("##blocklist_search", "Search item name or ID", ref _blocklistSearch, 100);
-        ImGui.SameLine();
-        if (ImGui.BeginCombo("##blocklist_categories", _blocklistCategories.Count == categories.Count ? "All categories" : $"{_blocklistCategories.Count} categories"))
-        {
-            if (ImGui.SmallButton("All")) { _blocklistCategories.Clear(); _blocklistCategories.UnionWith(categories); }
-            ImGui.SameLine();
-            if (ImGui.SmallButton("None")) _blocklistCategories.Clear();
-            foreach (var category in categories)
-            {
-                var included = _blocklistCategories.Contains(category);
-                if (ImGui.Checkbox(category, ref included))
-                {
-                    if (included) _blocklistCategories.Add(category); else _blocklistCategories.Remove(category);
-                }
-            }
-            ImGui.EndCombo();
-        }
-        ImGui.SameLine();
         var showFilters = _blocklistFiltersOpen;
-        if (ImGui.Checkbox("Filters", ref showFilters)) _blocklistFiltersOpen = showFilters;
+        if (ImGui.Button(showFilters ? "Filters ▲" : "Filters ▼"))
+            _blocklistFiltersOpen = !showFilters;
         ImGui.SameLine();
         ImGui.Checkbox("Show blocked only", ref _blocklistOnly);
         if (_blocklistFiltersOpen)
         {
-            ImGui.BeginChild("##blocklist_add_filters", new System.Numerics.Vector2(0, 132f * ImGuiHelpers.GlobalScale), true);
+            ImGui.BeginChild("##blocklist_add_filters", new System.Numerics.Vector2(0, 190f * ImGuiHelpers.GlobalScale), true);
+            ImGui.SetNextItemWidth(BlocklistInputWidth);
+            if (ImGui.BeginCombo("##blocklist_categories", _blocklistCategories.Count == categories.Count ? "All categories" : $"{_blocklistCategories.Count} categories"))
+            {
+                if (ImGui.SmallButton("All")) { _blocklistCategories.Clear(); _blocklistCategories.UnionWith(categories); }
+                ImGui.SameLine();
+                if (ImGui.SmallButton("None")) _blocklistCategories.Clear();
+                foreach (var category in categories)
+                {
+                    var included = _blocklistCategories.Contains(category);
+                    if (ImGui.Checkbox(category, ref included))
+                    {
+                        if (included) _blocklistCategories.Add(category); else _blocklistCategories.Remove(category);
+                    }
+                }
+                ImGui.EndCombo();
+            }
             var itemType = _blocklistItemType switch { 1 => "Gear", 2 => "Non-gear", _ => "All types" };
+            ImGui.SetNextItemWidth(BlocklistInputWidth);
             if (ImGui.BeginCombo("Item type", itemType))
             {
                 if (ImGui.Selectable("All types", _blocklistItemType == 0)) _blocklistItemType = 0;
@@ -212,6 +213,7 @@ public sealed partial class ConfigWindow
                 if (ImGui.Selectable("Non-gear", _blocklistItemType == 2)) _blocklistItemType = 2;
                 ImGui.EndCombo();
             }
+            ImGui.SetNextItemWidth(BlocklistInputWidth);
             if (ImGui.BeginCombo("Rarity", _blocklistRarities.Count == 0 ? "Any" : $"{_blocklistRarities.Count} selected"))
             {
                 if (ImGui.SmallButton("Any")) _blocklistRarities.Clear();
@@ -388,40 +390,76 @@ public sealed partial class ConfigWindow
             _vendorCategories.UnionWith(categories);
             _vendorCategoriesInitialized = true;
         }
-        ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X * .58f);
+        ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
         ImGui.InputTextWithHint("##vendor_search", "Search item name or ID", ref _vendorSearch, 100);
-        ImGui.SameLine();
-        if (ImGui.BeginCombo("##vendor_categories", _vendorCategories.Count == categories.Count ? "All categories" : $"{_vendorCategories.Count} categories"))
-        {
-            if (ImGui.SmallButton("All")) { _vendorCategories.Clear(); _vendorCategories.UnionWith(categories); }
-            ImGui.SameLine(); if (ImGui.SmallButton("None")) _vendorCategories.Clear();
-            foreach (var category in categories)
-            {
-                var included = _vendorCategories.Contains(category);
-                if (ImGui.Checkbox(category, ref included))
-                {
-                    if (included) _vendorCategories.Add(category); else _vendorCategories.Remove(category);
-                }
-            }
-            ImGui.EndCombo();
-        }
-        ImGui.SameLine();
         var showFilters = _vendorFiltersOpen;
-        if (ImGui.Checkbox("Filters", ref showFilters)) _vendorFiltersOpen = showFilters;
-        ImGui.SameLine(); ImGui.Checkbox("Show allowed only", ref _vendorAllowedOnly);
+        if (ImGui.Button(showFilters ? "Filters ▲" : "Filters ▼"))
+            _vendorFiltersOpen = !showFilters;
+        ImGui.SameLine();
+        ImGui.Checkbox("Show allowed only", ref _vendorAllowedOnly);
         if (_vendorFiltersOpen)
         {
-            ImGui.BeginChild("##vendor_add_filters", new System.Numerics.Vector2(0, 90f * ImGuiHelpers.GlobalScale), true);
-            if (ImGui.RadioButton("All types", _vendorItemType == 0)) _vendorItemType = 0;
-            ImGui.SameLine(); if (ImGui.RadioButton("Gear", _vendorItemType == 1)) _vendorItemType = 1;
-            ImGui.SameLine(); if (ImGui.RadioButton("Non-gear", _vendorItemType == 2)) _vendorItemType = 2;
-            if (ImGui.SmallButton("Reset filters")) { _vendorCategories.Clear(); _vendorCategories.UnionWith(categories); _vendorItemType = 0; }
+            ImGui.BeginChild("##vendor_add_filters", new System.Numerics.Vector2(0, 190f * ImGuiHelpers.GlobalScale), true);
+            ImGui.SetNextItemWidth(VendorInputWidth);
+            if (ImGui.BeginCombo("##vendor_categories", _vendorCategories.Count == categories.Count ? "All categories" : $"{_vendorCategories.Count} categories"))
+            {
+                if (ImGui.SmallButton("All")) { _vendorCategories.Clear(); _vendorCategories.UnionWith(categories); }
+                ImGui.SameLine(); if (ImGui.SmallButton("None")) _vendorCategories.Clear();
+                foreach (var category in categories)
+                {
+                    var included = _vendorCategories.Contains(category);
+                    if (ImGui.Checkbox(category, ref included))
+                    {
+                        if (included) _vendorCategories.Add(category); else _vendorCategories.Remove(category);
+                    }
+                }
+                ImGui.EndCombo();
+            }
+            var itemType = _vendorItemType switch { 1 => "Gear", 2 => "Non-gear", _ => "All types" };
+            ImGui.SetNextItemWidth(VendorInputWidth);
+            if (ImGui.BeginCombo("Item type", itemType))
+            {
+                if (ImGui.Selectable("All types", _vendorItemType == 0)) _vendorItemType = 0;
+                if (ImGui.Selectable("Gear", _vendorItemType == 1)) _vendorItemType = 1;
+                if (ImGui.Selectable("Non-gear", _vendorItemType == 2)) _vendorItemType = 2;
+                ImGui.EndCombo();
+            }
+            ImGui.SetNextItemWidth(VendorInputWidth);
+            if (ImGui.BeginCombo("Rarity", _vendorRarities.Count == 0 ? "Any" : $"{_vendorRarities.Count} selected"))
+            {
+                if (ImGui.SmallButton("Any")) _vendorRarities.Clear();
+                for (byte rarity = 1; rarity <= 5; rarity++)
+                {
+                    var chosen = _vendorRarities.Contains(rarity);
+                    var label = rarity switch { 1 => "White", 2 => "Green", 3 => "Blue", 4 => "Purple", _ => "Orange" };
+                    if (ImGui.Checkbox($"{label} ({rarity})", ref chosen))
+                    {
+                        if (chosen) _vendorRarities.Add(rarity); else _vendorRarities.Remove(rarity);
+                    }
+                }
+                ImGui.EndCombo();
+            }
+            var minLevel = _vendorMinItemLevel;
+            var maxLevel = _vendorMaxItemLevel;
+            ImGui.SetNextItemWidth(90f * ImGuiHelpers.GlobalScale);
+            if (ImGui.InputInt("Min item level", ref minLevel)) _vendorMinItemLevel = Math.Clamp(minLevel, 0, 999);
+            ImGui.SameLine();
+            ImGui.SetNextItemWidth(90f * ImGuiHelpers.GlobalScale);
+            if (ImGui.InputInt("Max item level", ref maxLevel)) _vendorMaxItemLevel = Math.Clamp(maxLevel, 0, 999);
+            if (ImGui.SmallButton("Reset filters"))
+            {
+                _vendorCategories.Clear(); _vendorCategories.UnionWith(categories);
+                _vendorItemType = 0; _vendorRarities.Clear();
+                _vendorMinItemLevel = 0; _vendorMaxItemLevel = 999;
+            }
             ImGui.EndChild();
         }
 
         var items = GetFilteredVendorItems(list).ToList();
         var snapshot = string.Join("|", _vendorSelectedListId, _vendorSearch, _vendorItemType, _vendorHqOnly, _vendorNqOnly,
-            _vendorAllowedOnly, string.Join(",", _vendorCategories.OrderBy(value => value, StringComparer.OrdinalIgnoreCase)));
+            _vendorAllowedOnly, _vendorMinItemLevel, _vendorMaxItemLevel,
+            string.Join(",", _vendorCategories.OrderBy(value => value, StringComparer.OrdinalIgnoreCase)),
+            string.Join(",", _vendorRarities.OrderBy(value => value)));
         if (!string.Equals(snapshot, _vendorFilterSnapshot, StringComparison.Ordinal))
         {
             _vendorFilterSnapshot = snapshot;
