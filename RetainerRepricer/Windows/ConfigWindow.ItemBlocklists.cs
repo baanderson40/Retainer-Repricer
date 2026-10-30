@@ -37,6 +37,7 @@ public sealed partial class ConfigWindow
     private int _blocklistMinItemLevel;
     private int _blocklistMaxItemLevel = 999;
     private bool _blocklistConfirmOpen;
+    private bool _blocklistConfirmNeedsOpen;
     private string _blocklistConfirmId = string.Empty;
     private ulong[] _blocklistConfirmKeys = Array.Empty<ulong>();
     private ulong[] _blocklistConfirmCharacters = Array.Empty<ulong>();
@@ -443,7 +444,7 @@ public sealed partial class ConfigWindow
             _blocklistConfirmCharacters = characters;
             _blocklistConfirmAdd = add;
             _blocklistConfirmOpen = true;
-            ImGui.OpenPopup("Confirm blocklist change");
+            _blocklistConfirmNeedsOpen = true;
             return;
         }
         ApplyBlocklistMutation(_selectedBlocklistId, keys, add);
@@ -451,7 +452,13 @@ public sealed partial class ConfigWindow
 
     private void DrawBlocklistConfirmation()
     {
-        if (!_blocklistConfirmOpen || !ImGui.BeginPopupModal("Confirm blocklist change", ImGuiWindowFlags.AlwaysAutoResize)) return;
+        if (!_blocklistConfirmOpen) return;
+        if (_blocklistConfirmNeedsOpen)
+        {
+            ImGui.OpenPopup("Confirm blocklist change");
+            _blocklistConfirmNeedsOpen = false;
+        }
+        if (!ImGui.BeginPopupModal("Confirm blocklist change", ImGuiWindowFlags.AlwaysAutoResize)) return;
         ImGui.TextWrapped($"{(_blocklistConfirmAdd ? "Block" : "Unblock")} {_blocklistConfirmKeys.Length} item-quality entries in '{_config.AutoListBlocklists.GetValueOrDefault(_blocklistConfirmId)?.Name}'. Affects {_blocklistConfirmCharacters.Length} assigned character(s). Category selection expands to current items only.");
         if (!_plugin.CanEditAutoListBlocklists) ImGui.TextColored(new System.Numerics.Vector4(1, .5f, .3f, 1), "Automation is active; operation cancelled.");
         if (ImGui.Button("Cancel") || !_plugin.CanEditAutoListBlocklists)
@@ -479,12 +486,20 @@ public sealed partial class ConfigWindow
     private void DrawBlocklistAssignments()
     {
         var lists = _config.AutoListBlocklists.OrderBy(pair => pair.Value.Name, StringComparer.OrdinalIgnoreCase).ToList();
-        var characters = _plugin.GetAutoRetainerCharacters().Where(data => data.CID != 0).ToList();
-        foreach (var pair in _config.Characters)
-            if (pair.Key != 0 && characters.All(data => data.CID != pair.Key))
-                characters.Add(new AutoRetainerAPI.Configuration.OfflineCharacterData { CID = pair.Key, Name = pair.Value?.Name ?? string.Empty, World = pair.Value?.World ?? string.Empty });
-        characters = characters.DistinctBy(data => data.CID).OrderBy(data => GetCharacterDisplayName(data.CID, _config.Characters.GetValueOrDefault(data.CID)), StringComparer.OrdinalIgnoreCase).ToList();
+        var characters = _plugin.GetAutoRetainerCharacters()
+            .Where(data => data.CID != 0)
+            .DistinctBy(data => data.CID)
+            .ToList();
+        if (_config.NormalizeCharacterDisplayOrder(characters.Select(data => data.CID))) SaveConfig();
+        var positions = _config.CharacterDisplayOrder
+            .Select((cid, index) => (cid, index))
+            .ToDictionary(entry => entry.cid, entry => entry.index);
+        characters = characters
+            .Where(data => !_config.IsCharacterBlacklisted(data.CID))
+            .OrderBy(data => positions[data.CID])
+            .ToList();
         if (lists.Count == 0) { ImGui.TextDisabled("Create a blocklist first."); return; }
+        if (characters.Count == 0) { ImGui.TextDisabled("No available characters. Blacklisted characters are hidden."); return; }
         if (_selectedBlocklistCharacter == 0 || characters.All(data => data.CID != _selectedBlocklistCharacter)) _selectedBlocklistCharacter = characters.FirstOrDefault()?.CID ?? 0;
         var currentName = GetCharacterDisplayName(_selectedBlocklistCharacter, _config.Characters.GetValueOrDefault(_selectedBlocklistCharacter));
         ImGui.SetNextItemWidth(BlocklistInputWidth);

@@ -359,12 +359,20 @@ public sealed partial class ConfigWindow
     private void DrawVendorAssignments()
     {
         var lists = _config.VendorAllowlists.OrderBy(pair => pair.Value.Name, StringComparer.OrdinalIgnoreCase).ToList();
-        var characters = _plugin.GetAutoRetainerCharacters().Where(data => data.CID != 0).ToList();
-        foreach (var pair in _config.Characters)
-            if (pair.Key != 0 && characters.All(data => data.CID != pair.Key))
-                characters.Add(new AutoRetainerAPI.Configuration.OfflineCharacterData { CID = pair.Key, Name = pair.Value?.Name ?? string.Empty, World = pair.Value?.World ?? string.Empty });
-        characters = characters.DistinctBy(data => data.CID).OrderBy(data => GetCharacterDisplayName(data.CID, _config.Characters.GetValueOrDefault(data.CID)), StringComparer.OrdinalIgnoreCase).ToList();
+        var characters = _plugin.GetAutoRetainerCharacters()
+            .Where(data => data.CID != 0)
+            .DistinctBy(data => data.CID)
+            .ToList();
+        if (_config.NormalizeCharacterDisplayOrder(characters.Select(data => data.CID))) _config.Save();
+        var positions = _config.CharacterDisplayOrder
+            .Select((cid, index) => (cid, index))
+            .ToDictionary(entry => entry.cid, entry => entry.index);
+        characters = characters
+            .Where(data => !_config.IsCharacterBlacklisted(data.CID))
+            .OrderBy(data => positions[data.CID])
+            .ToList();
         if (lists.Count == 0) { ImGui.TextDisabled("Create an allowlist first."); return; }
+        if (characters.Count == 0) { ImGui.TextDisabled("No available characters. Blacklisted characters are hidden."); return; }
         if (_vendorSelectedCharacter == 0 || characters.All(data => data.CID != _vendorSelectedCharacter)) _vendorSelectedCharacter = characters.FirstOrDefault()?.CID ?? 0;
         var characterName = GetCharacterDisplayName(_vendorSelectedCharacter, _config.Characters.GetValueOrDefault(_vendorSelectedCharacter));
         ImGui.SetNextItemWidth(VendorInputWidth);
@@ -394,7 +402,6 @@ public sealed partial class ConfigWindow
             }
         }
         ImGui.EndChild();
-        ImGui.TextDisabled($"Market-list threshold: {settings.AutoListMinimumStackValue} gil. Per-list limits compare total stack market value; overlapping permissions use the lowest assigned list limit.");
         ImGui.TextDisabled($"Effective permission: {_config.GetEffectiveVendorAllowlist(_vendorSelectedCharacter).Count} item-quality entries.");
         DrawVendorPreviewControls();
     }
