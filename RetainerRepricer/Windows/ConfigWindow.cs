@@ -175,6 +175,7 @@ public sealed partial class ConfigWindow : Window, IDisposable
 
     private void DrawSellListTab()
     {
+        DrawSellListAddItems();
         DrawSellListSearch();
 
         var currentCid = _plugin.CurrentCharacterId;
@@ -477,36 +478,35 @@ public sealed partial class ConfigWindow : Window, IDisposable
             if (!smartSortActive && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
                 TooltipHelper.Show(_config, priorityTooltip);
 
-            // Column 0: Item name
+            // Column 1: Item dropdown; keep the editor out of the table row layout.
             ImGui.TableSetColumnIndex(1);
             var displayName = string.IsNullOrWhiteSpace(e.Name) ? $"(Unknown) [{e.ItemId}]" : e.Name;
-            if (!perRetainerEnabled)
-            {
-                var disabledColor = ImGui.GetStyle().Colors[(int)ImGuiCol.TextDisabled];
-                var treeFlags = ImGuiTreeNodeFlags.SpanFullWidth | ImGuiTreeNodeFlags.FramePadding | ImGuiTreeNodeFlags.OpenOnArrow | ImGuiTreeNodeFlags.OpenOnDoubleClick | ImGuiTreeNodeFlags.NoTreePushOnOpen;
-                ImGui.PushStyleColor(ImGuiCol.Text, disabledColor);
-                ImGui.TreeNodeEx($"##caps_disabled_{rowIndex}", treeFlags);
-                ImGui.PopStyleColor();
-                if (ImGui.IsItemHovered())
-                    TooltipHelper.Show(_config, "Enable per-retainer sell limits in Settings to edit this.");
+            var dropdownPosition = ImGui.GetCursorScreenPos();
+            var dropdownHeight = ImGui.GetFrameHeight();
+            var dropdownWidth = Math.Max(1f, ImGui.GetContentRegionAvail().X);
+            ImGui.BeginDisabled(!perRetainerEnabled);
+            if (ImGui.Button($"{displayName}  ▼##caps_button", new System.Numerics.Vector2(dropdownWidth, dropdownHeight)))
+                ImGui.OpenPopup("##sell_item_caps");
+            ImGui.EndDisabled();
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                TooltipHelper.Show(_config, perRetainerEnabled
+                    ? $"{displayName}\nOpen per-retainer sell limits and stack sizes."
+                    : $"{displayName}\nEnable per-retainer sell limits in Settings to edit this.");
 
-                ImGui.SameLine(0f, ImGui.GetStyle().ItemInnerSpacing.X);
-                ImGui.TextUnformatted(displayName);
-            }
-            else
+            var popupWidth = Math.Min(Math.Max(dropdownWidth, 420f * ImGuiHelpers.GlobalScale),
+                ImGui.GetMainViewport().WorkSize.X);
+            if (BeginScreenFillingDropdownPopup("##sell_item_caps", dropdownPosition, popupWidth, dropdownHeight,
+                    preferBelow: true, fitContentHeight: true))
             {
-                if (forceCollapseRows)
-                    ImGui.SetNextItemOpen(false, ImGuiCond.Always);
-                var treeFlags = ImGuiTreeNodeFlags.SpanFullWidth | ImGuiTreeNodeFlags.FramePadding | ImGuiTreeNodeFlags.OpenOnArrow | ImGuiTreeNodeFlags.OpenOnDoubleClick;
-                var open = ImGui.TreeNodeEx($"{displayName}##caps", treeFlags);
-                if (ImGui.IsItemHovered())
-                    TooltipHelper.Show(_config, "Expand to set per-retainer limits.");
-
-                if (open)
+                if (forceCollapseRows || !perRetainerEnabled)
+                    ImGui.CloseCurrentPopup();
+                else
                 {
+                    ImGui.TextWrapped(displayName);
+                    ImGui.Separator();
                     DrawRetainerCapEditor(e, retainerNames, currentCid);
-                    ImGui.TreePop();
                 }
+                ImGui.EndPopup();
             }
 
             // Column 1: Min inventory editor
@@ -652,16 +652,14 @@ public sealed partial class ConfigWindow : Window, IDisposable
                 ImGui.SetNextItemWidth(60f);
                 if (ImGui.InputInt("##cap", ref editorValue))
                 {
-                    if (ImGui.IsItemDeactivatedAfterEdit())
+                    var clamped = Math.Clamp(editorValue, 0, Configuration.RetainerCapMax);
+                    if (clamped != capValue)
                     {
-                        var clamped = Math.Clamp(editorValue, 0, Configuration.RetainerCapMax);
-                        if (clamped != capValue)
-                        {
-                            entry.SetRetainerCap(currentCid, name, clamped);
-                            Plugin.Log.Information("[RR][Config] Retainer cap updated itemId={ItemId} HQ={IsHq} retainer={Retainer} cap={Cap}",
-                                entry.ItemId, entry.IsHq, GetRetainerLabelForLog(i), clamped);
-                            SaveConfig();
-                        }
+                        entry.SetRetainerCap(currentCid, name, clamped);
+                        capValue = clamped;
+                        Plugin.Log.Information("[RR][Config] Retainer cap updated itemId={ItemId} HQ={IsHq} retainer={Retainer} cap={Cap}",
+                            entry.ItemId, entry.IsHq, GetRetainerLabelForLog(i), clamped);
+                        SaveConfig();
                     }
                 }
                 if (ImGui.IsItemHovered())
@@ -678,16 +676,13 @@ public sealed partial class ConfigWindow : Window, IDisposable
                 ImGui.SetNextItemWidth(60f);
                 if (ImGui.InputInt("##stack", ref stackEditorValue))
                 {
-                    if (ImGui.IsItemDeactivatedAfterEdit())
+                    var clampedStack = Math.Clamp(stackEditorValue, 0, stackCap);
+                    if (clampedStack != stackValue)
                     {
-                        var clampedStack = Math.Clamp(stackEditorValue, 0, stackCap);
-                        if (clampedStack != stackValue)
-                        {
-                            entry.SetRetainerStackSize(currentCid, name, clampedStack, stackCap);
-                            Plugin.Log.Information("[RR][Config] Retainer stack size updated itemId={ItemId} HQ={IsHq} retainer={Retainer} stack={Stack}",
-                                entry.ItemId, entry.IsHq, GetRetainerLabelForLog(i), clampedStack);
-                            SaveConfig();
-                        }
+                        entry.SetRetainerStackSize(currentCid, name, clampedStack, stackCap);
+                        Plugin.Log.Information("[RR][Config] Retainer stack size updated itemId={ItemId} HQ={IsHq} retainer={Retainer} stack={Stack}",
+                            entry.ItemId, entry.IsHq, GetRetainerLabelForLog(i), clampedStack);
+                        SaveConfig();
                     }
                 }
 
