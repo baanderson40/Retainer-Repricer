@@ -103,6 +103,22 @@ public sealed class DebugWindow : Window, IDisposable
 
     private void DrawAutoRetainerSection()
     {
+        ImGui.TextUnformatted("Retainer dialog dump (read-only)");
+        ImGui.TextWrapped("Capture SelectString / SelectYesno AtkValues and button state. Watch samples changes every 100ms; no game actions. Text may contain character or item names.");
+        if (ImGui.Button("Dump current retainer dialogs"))
+            _plugin.RequestRetainerAddonDump();
+        if (ImGui.Button("Watch retainer dialogs (60s)"))
+            _plugin.ArmRetainerAddonCapture();
+        ImGui.SameLine();
+        ImGui.BeginDisabled(!_plugin.RetainerAddonCaptureActive);
+        if (ImGui.Button("Stop dialog capture"))
+            _plugin.StopRetainerAddonCapture();
+        ImGui.EndDisabled();
+        ImGui.TextWrapped(_plugin.RetainerAddonDumpStatus);
+        if (ImGui.Button("Read buyback warning sheets"))
+            _plugin.RequestBuybackSheetDump();
+        ImGui.TextWrapped("Read both localized custom-sheet candidates and compare with the open Yes/No prompt. Read-only; see Logs ([RR][BuybackSheets]).");
+        ImGui.Separator();
         ImGui.TextUnformatted("AutoRetainer handoff diagnostics");
         ImGui.Separator();
         ImGui.TextDisabled(_plugin.AutoRetainerDiagnosticsEnabled

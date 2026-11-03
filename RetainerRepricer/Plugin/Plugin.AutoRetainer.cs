@@ -201,7 +201,10 @@ public unsafe sealed partial class Plugin
     private void OnAutoRetainerAdditionalTask(string retainerName)
     {
         if (_autoRetainerAutomationBlocked)
+        {
+            LogAutoRetainerBlockedRequest(retainerName);
             return;
+        }
 
         try
         {

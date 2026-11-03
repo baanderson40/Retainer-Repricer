@@ -42,6 +42,7 @@ public unsafe sealed partial class Plugin
 
     private void ResetAutoRetainerNavigation()
     {
+        ClearAutoRetainerExit();
         _autoRetainerNavigationStage = AutoRetainerNavigationStage.Idle;
         _autoRetainerStageStartedUtc = DateTime.MinValue;
         _autoRetainerLastActionUtc = DateTime.MinValue;
@@ -101,6 +102,9 @@ public unsafe sealed partial class Plugin
             (name == "SelectString" && !IsSelectStringReady()))
             return;
 
+        if (name == "SelectString" && !TryAuthorizeAutoRetainerExit())
+            return;
+
         RecordAutoRetainerAction($"close {name}");
         if (name == "RetainerSell")
             CloseRetainerSellIfOpen();
@@ -119,6 +123,8 @@ public unsafe sealed partial class Plugin
 
     private bool AdvanceAutoRetainerChildCleanup()
     {
+        if (AdvanceAutoRetainerBuybackConfirmation())
+            return true;
         if (AutoRetainerBlockingDialogs.Any(IsAutoRetainerAddonBlocking))
             return true;
 
