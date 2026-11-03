@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Numerics;
@@ -92,6 +93,7 @@ public sealed partial class ConfigWindow : Window, IDisposable
     public void OpenSellListTab()
     {
         _pendingTabFocus = ConfigTabFocus.SellList;
+        SelectSellListCharacter(_plugin.CurrentCharacterId);
         _forceCollapseSellListRows = true;
         IsOpen = true;
     }
@@ -175,40 +177,43 @@ public sealed partial class ConfigWindow : Window, IDisposable
 
     private void DrawSellListTab()
     {
-        DrawSellListAddItems();
+        if (!DrawSellListCharacterSelector()) return;
+        var currentCid = _sellListEditingCharacter;
+        // Isolate active input and popup IDs when switching the editing target.
+        ImGui.PushID($"sell_character_{currentCid}");
+        DrawSellListAddItems(currentCid);
         DrawSellListSearch();
 
-        var currentCid = _plugin.CurrentCharacterId;
         var listCount = _config.GetSellListOrdered(currentCid).Count();
 
-        DrawSellListActionRow(listCount);
+        DrawSellListActionRow(listCount, currentCid);
 
         if (listCount == 0)
         {
             ImGui.TextDisabled("No items in sell list.");
             _confirmClearSellList = false;
+            ImGui.PopID();
             return;
         }
 
         ImGui.Separator();
         ImGui.Spacing();
 
-        var rows = BuildFilteredSellListRows();
-        var retainerNames = _config.GetAllRetainerNames(currentCid)
-            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        ImGui.TextDisabled($"{rows.Count} item(s) for current character");
+        var rows = BuildFilteredSellListRows(currentCid);
+        var retainerNames = GetSellListRetainerNames(currentCid);
+        ImGui.TextDisabled($"{rows.Count} item(s) for selected character");
 
         DrawSellListTable(rows, listCount, retainerNames, currentCid, _config.EnablePerRetainerCaps, _forceCollapseSellListRows);
         _forceCollapseSellListRows = false;
+        ImGui.PopID();
     }
 
-    private void DrawSellListActionRow(int totalItemCount)
+    private void DrawSellListActionRow(int totalItemCount, ulong cid)
     {
         ImGui.Spacing();
 
         var startPos = ImGui.GetCursorPos();
-        DrawSellListClearButtonInline(totalItemCount > 0);
+        DrawSellListClearButtonInline(totalItemCount > 0, cid);
         var afterClearY = ImGui.GetCursorPosY();
 
         var buttonWidth = 90f;
@@ -218,7 +223,7 @@ public sealed partial class ConfigWindow : Window, IDisposable
         var buttonX = Math.Max(ImGui.GetCursorPosX(), rightEdge - totalButtonsWidth);
 
         ImGui.SetCursorPos(new System.Numerics.Vector2(buttonX, startPos.Y));
-        var statusBottom = DrawSellListUtilityButtons(buttonWidth);
+        var statusBottom = DrawSellListUtilityButtons(buttonWidth, cid);
 
         ImGui.SetCursorPosY(Math.Max(afterClearY, statusBottom));
     }
@@ -274,7 +279,7 @@ public sealed partial class ConfigWindow : Window, IDisposable
         ImGui.Spacing();
     }
 
-    private void DrawSellListClearButtonInline(bool hasItems)
+    private void DrawSellListClearButtonInline(bool hasItems, ulong cid)
     {
         if (!hasItems)
         {
@@ -292,10 +297,12 @@ public sealed partial class ConfigWindow : Window, IDisposable
             return;
         }
 
-        ImGui.TextColored(new System.Numerics.Vector4(1f, 0.6f, 0.2f, 1f), "Clear current character items?");
+        ImGui.TextWrapped($"Clear sell items for {GetCharacterDisplayName(cid, _config.Characters.GetValueOrDefault(cid))}?");
+        if (_config.GetSellListOrdered(cid).Any(entry => entry.CharacterIds is null))
+            ImGui.TextWrapped("Legacy global entries will also be removed for all characters.");
         if (ImGui.Button("Confirm clear"))
         {
-            _config.ClearSellList(_plugin.CurrentCharacterId);
+            _config.ClearSellList(cid);
             SaveConfig();
             _confirmClearSellList = false;
             return;
@@ -306,11 +313,14 @@ public sealed partial class ConfigWindow : Window, IDisposable
             _confirmClearSellList = false;
     }
 
-    private float DrawSellListUtilityButtons(float buttonWidth)
+    private float DrawSellListUtilityButtons(float buttonWidth, ulong cid)
     {
+        var remote = cid == 0 || cid != _plugin.CurrentCharacterId;
+        ImGui.BeginDisabled(remote);
         var pruneBottom = DrawPruneNowButton(buttonWidth);
         ImGui.SameLine(0f, ImGui.GetStyle().ItemInnerSpacing.X);
         var sortBottom = DrawSmartSortButton(buttonWidth);
+        ImGui.EndDisabled();
         return Math.Max(pruneBottom, sortBottom);
     }
 
@@ -363,9 +373,9 @@ public sealed partial class ConfigWindow : Window, IDisposable
         return ImGui.GetCursorPosY();
     }
 
-    private System.Collections.Generic.List<Configuration.SellListEntry> BuildFilteredSellListRows()
+    private System.Collections.Generic.List<Configuration.SellListEntry> BuildFilteredSellListRows(ulong cid)
     {
-        var ordered = _config.GetSellListOrdered(_plugin.CurrentCharacterId);
+        var ordered = _config.GetSellListOrdered(cid);
 
         var filter = (_sellListSearch ?? string.Empty).Trim();
         var filterLower = filter.ToLowerInvariant();
@@ -574,7 +584,9 @@ public sealed partial class ConfigWindow : Window, IDisposable
             ImGui.PopFont();
 
             if (ImGui.IsItemHovered())
-                TooltipHelper.Show(_config, "Remove from sell list");
+                TooltipHelper.Show(_config, e.CharacterIds is null
+                    ? "Remove this legacy global entry from all characters' sell lists."
+                    : "Remove from the selected character's sell list");
 
             ImGui.PopID();
             rowIndex++;
@@ -597,12 +609,12 @@ public sealed partial class ConfigWindow : Window, IDisposable
 
         if (removeKey.HasValue)
         {
-            _config.RemoveSellItem(removeKey.Value.itemId, removeKey.Value.isHq, _plugin.CurrentCharacterId);
+            _config.RemoveSellItem(removeKey.Value.itemId, removeKey.Value.isHq, currentCid);
             Plugin.Log.Information(
                 "[RR][Config] Removed item {ItemId} (HQ={IsHq}) from Sell List for cid={Cid}",
                 removeKey.Value.itemId,
                 removeKey.Value.isHq,
-                _plugin.CurrentCharacterId);
+                currentCid);
             SaveConfig();
         }
     }

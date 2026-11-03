@@ -29,13 +29,12 @@ public sealed partial class ConfigWindow
     private const int SellCatalogPageSize = 200;
     private readonly record struct SellCatalogTarget(ItemBlocklistCatalog.Entry Item, bool Hq);
 
-    private void DrawSellListAddItems()
+    private void DrawSellListAddItems(ulong cid)
     {
         if (!BeginScreenFillingDropdown("##sell_catalog", "Add Items", preferBelow: true)) return;
-        var cid = _plugin.CurrentCharacterId;
         if (cid == 0)
         {
-            ImGui.TextWrapped("Log in to add items to the current character's sell list.");
+            ImGui.TextWrapped("Select a character to add items to its sell list.");
             ImGui.EndPopup();
             return;
         }
@@ -57,7 +56,7 @@ public sealed partial class ConfigWindow
         if (ImGui.RadioButton("NQ", _sellCatalogQuality == 1)) _sellCatalogQuality = 1;
         ImGui.SameLine();
         if (ImGui.RadioButton("HQ", _sellCatalogQuality == 2)) _sellCatalogQuality = 2;
-        ImGui.TextWrapped("Adds to the current character only. New entries start with Min Inv 1 and Keep enabled, so items absent from inventory survive auto-prune. Existing settings are unchanged.");
+        ImGui.TextWrapped($"Adding to: {GetCharacterDisplayName(cid, _config.Characters.GetValueOrDefault(cid))}. New entries start with Min Inv 1 and Keep enabled, so items absent from inventory survive auto-prune. Existing settings are unchanged.");
 
         var search = _sellCatalogSearch.Trim();
         var numeric = uint.TryParse(search, NumberStyles.None, CultureInfo.InvariantCulture, out var itemId);
@@ -128,8 +127,8 @@ public sealed partial class ConfigWindow
         }
         if (ImGui.BeginPopupModal("Confirm sell list additions", ImGuiWindowFlags.AlwaysAutoResize))
         {
-            var sameCharacter = cid == _sellCatalogPendingCharacter;
-            ImGui.TextUnformatted($"Add {_sellCatalogPending.Length} item-quality entries to the current character's sell list?");
+            var sameCharacter = cid == _sellCatalogPendingCharacter && cid == _sellListEditingCharacter;
+            ImGui.TextWrapped($"Add {_sellCatalogPending.Length} item-quality entries to {GetCharacterDisplayName(_sellCatalogPendingCharacter, _config.Characters.GetValueOrDefault(_sellCatalogPendingCharacter))}'s sell list?");
             ImGui.TextUnformatted("New entries use Min Inv 1 and Keep enabled. Existing settings stay unchanged.");
             if (!sameCharacter) ImGui.TextUnformatted("Character changed; cancel and select items again.");
             ImGui.BeginDisabled(!sameCharacter);
@@ -212,7 +211,7 @@ public sealed partial class ConfigWindow
 
     private void RequestSellCatalogAddition(SellCatalogTarget[] targets, ulong cid)
     {
-        if (targets.Length == 0 || cid == 0 || cid != _plugin.CurrentCharacterId) return;
+        if (targets.Length == 0 || cid == 0 || cid != _sellListEditingCharacter || _config.IsCharacterBlacklisted(cid)) return;
         if (targets.Length == 1) { ApplySellCatalogAddition(targets, cid); return; }
         _sellCatalogPending = targets;
         _sellCatalogPendingCharacter = cid;
@@ -221,7 +220,7 @@ public sealed partial class ConfigWindow
 
     private void ApplySellCatalogAddition(IEnumerable<SellCatalogTarget> targets, ulong cid)
     {
-        if (cid == 0 || cid != _plugin.CurrentCharacterId) return;
+        if (cid == 0 || cid != _sellListEditingCharacter || _config.IsCharacterBlacklisted(cid)) return;
         var added = 0;
         foreach (var target in targets)
         {
@@ -234,6 +233,7 @@ public sealed partial class ConfigWindow
         if (added == 0) return;
         SaveConfig();
         Plugin.Log.Information("[RR][SellCatalog] Added {Count} item-quality entries for cid={Cid}; new entries preserved from auto-prune.", added, cid);
-        if (_plugin.SmartSortEnabled) _ = _plugin.RequestSmartSortAsync("item_added", force: true);
+        if (cid == _plugin.CurrentCharacterId && _plugin.SmartSortEnabled)
+            _ = _plugin.RequestSmartSortAsync("item_added", force: true);
     }
 }
