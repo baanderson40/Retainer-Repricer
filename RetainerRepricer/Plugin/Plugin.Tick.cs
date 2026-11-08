@@ -1791,6 +1791,9 @@ public unsafe sealed partial class Plugin
                         if (c.ItemId == 0)
                             continue;
 
+                        if (c.IsAutoDiscovered && _sellState.AutoListBadRequestItems.Contains(c.ItemId))
+                            continue;
+
                         if (_sellState.ReturnedListingItemKeys.Contains(Configuration.MakeSellKey(c.ItemId, c.IsHq)))
                         {
                             Log.Verbose($"[RR][LowValueReturn] Excluding returned item from selling for rest of run: itemId={c.ItemId} HQ={c.IsHq}.");
@@ -1986,6 +1989,14 @@ public unsafe sealed partial class Plugin
                     try
                     {
                         listingStats = task.GetAwaiter().GetResult();
+                    }
+                    catch (UniversalisRequestException ex) when (ex.StatusCode == 400)
+                    {
+                        _sellState.AutoListBadRequestItems.Add(_currentSellItemId);
+                        Log.Warning("[RR][AutoList][Prefilter] Universalis rejected itemId={ItemId} HQ={Hq} with HTTP 400; skipping market listing for the rest of this run.",
+                            _currentSellItemId, _currentSellItemIsHq);
+                        SkipCurrentAutoListCandidate(now);
+                        return;
                     }
                     catch (UniversalisRequestException ex)
                     {
@@ -2423,6 +2434,14 @@ public unsafe sealed partial class Plugin
         {
             if (entry.ItemId == 0)
                 continue;
+
+            var itemRow = ECommons.DalamudServices.Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.Item>()?.GetRowOrDefault(entry.ItemId);
+            if (!UiReader.IsMarketListable(itemRow))
+            {
+                Log.Debug("[RR][Sell] Skipping non-marketable or missing sell-list itemId={ItemId} HQ={Hq}; saved entry retained.",
+                    entry.ItemId, entry.IsHq);
+                continue;
+            }
 
             entry.EnsureRetainerCaps();
             entry.EnsureRetainerStackSizes();

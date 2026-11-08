@@ -665,6 +665,7 @@ public unsafe sealed partial class Plugin
         public Dictionary<ulong, int> RetainerSellCounts { get; } = new();
         public Dictionary<ulong, int> RetainerExistingSellCounts { get; } = new();
         public Dictionary<ulong, AutoListPriceRejection> AutoListPriceRejections { get; } = new();
+        public HashSet<uint> AutoListBadRequestItems { get; } = new();
         public int CachedAutoListSlotsSkippedThisRetainer { get; set; }
         public VendorFallbackStage VendorFallbackStage { get; set; }
         public bool VendorFallbackSelectionAttempted { get; set; }

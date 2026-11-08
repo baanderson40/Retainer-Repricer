@@ -116,7 +116,7 @@ internal sealed class ContextMenuManager : IDisposable
         // If the target slot can't be resolved, fall back to the static item-sheet gate.
         var isSellable = hasInventorySlot
             ? UiReader.IsInventorySlotSellable(inventorySlot, itemRow)
-            : itemRow.HasValue && !itemRow.Value.IsUntradable;
+            : UiReader.IsMarketListable(itemRow);
 
         Plugin.Log.Verbose(
             "[RR][ContextMenu] Inventory menu opened: itemId={ItemId}, hq={IsHq}, inSellList={IsInSellList}, sellable={IsSellable}, slotResolved={SlotResolved}, spiritbondOrCollectability={SpiritbondOrCollectability}, modifier={Modifier}, svcLShift={SvcLShift}, svcRShift={SvcRShift}, svcLCtrl={SvcLCtrl}, svcRCtrl={SvcRCtrl}, svcLAlt={SvcLAlt}, svcRAlt={SvcRAlt}, winLShift={WinLShift}, winRShift={WinRShift}, winLCtrl={WinLCtrl}, winRCtrl={WinRCtrl}, winLAlt={WinLAlt}, winRAlt={WinRAlt}",

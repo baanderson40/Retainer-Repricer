@@ -931,15 +931,15 @@ internal sealed unsafe class UiReader
         return true;
     }
 
+    public static bool IsMarketListable(Item? itemRow)
+        => itemRow.HasValue && !itemRow.Value.IsUntradable && itemRow.Value.ItemSearchCategory.RowId != 0;
+
     public static bool IsInventorySlotSellable(InventoryItem* inventorySlot, Item? itemRow)
     {
         if (inventorySlot == null)
             return false;
 
-        if (!itemRow.HasValue)
-            return false;
-
-        if (itemRow.Value.IsUntradable)
+        if (!IsMarketListable(itemRow))
             return false;
 
         return inventorySlot->IsCollectable() || inventorySlot->GetSpiritbondOrCollectability() == 0;
