@@ -28,6 +28,7 @@ internal sealed class UniversalisApiClient : IDisposable
     private bool _disposed;
     private readonly ConcurrentDictionary<StatsCacheKey, StatsCacheEntry> _statsCache = new();
     private readonly object _diagnosticsLock = new();
+    private readonly Queue<DateTime> _recentOutboundRequests = new();
     private DateTime _cooldownUntilUtc = DateTime.MinValue;
     private long _cacheHits;
     private long _outboundRequests;
@@ -78,17 +79,19 @@ internal sealed class UniversalisApiClient : IDisposable
         if (string.IsNullOrWhiteSpace(baseUrl) || string.IsNullOrWhiteSpace(worldDcRegion))
             return null;
 
-        if (TrySuppressUncachedRequest(out _))
+        if (TrySuppressUncachedRequest(out var cooldownRemaining))
+        {
+            _log.Debug($"[Universalis] Cooldown skip for item {itemId} (region={worldDcRegion}, source={source}, remaining={cooldownRemaining.TotalSeconds:0.0}s); no HTTP request sent.");
             return null;
+        }
 
         var requestUri = BuildRequestUri(baseUrl, worldDcRegion, itemId);
         var startedUtc = DateTime.UtcNow;
-        RecordOutboundRequest();
 
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
-            using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            using var response = await SendBufferedRequestAsync(
+                requestUri, itemId, false, worldDcRegion, source, startedUtc, cancellationToken).ConfigureAwait(false);
 
             if (!response.IsSuccessStatusCode)
             {
@@ -99,6 +102,7 @@ internal sealed class UniversalisApiClient : IDisposable
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            _log.Debug($"[Universalis] Caller canceled request for item {itemId} (region={worldDcRegion}, source={source}); no failure cooldown.");
             throw;
         }
         catch (OperationCanceledException ex)
@@ -138,20 +142,23 @@ internal sealed class UniversalisApiClient : IDisposable
         if (_statsCache.TryGetValue(key, out var cached) && cached.ExpiresUtc > DateTime.UtcNow)
         {
             RecordCacheHit();
+            _log.Debug($"[Universalis] Cache hit for item {itemId} (HQ={isHighQuality}, region={worldDcRegion}, source={source}); no HTTP request sent.");
             return cached.Stats;
         }
 
-        if (TrySuppressUncachedRequest(out _))
+        if (TrySuppressUncachedRequest(out var cooldownRemaining))
+        {
+            _log.Debug($"[Universalis] Cooldown skip for item {itemId} (HQ={isHighQuality}, region={worldDcRegion}, source={source}, remaining={cooldownRemaining.TotalSeconds:0.0}s); no HTTP request sent.");
             return null;
+        }
 
         var requestUri = BuildRequestUri(baseUrl, worldDcRegion, itemId);
         var startedUtc = DateTime.UtcNow;
-        RecordOutboundRequest();
 
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
-            using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            using var response = await SendBufferedRequestAsync(
+                requestUri, itemId, isHighQuality, worldDcRegion, source, startedUtc, cancellationToken).ConfigureAwait(false);
 
             if (!response.IsSuccessStatusCode)
             {
@@ -206,6 +213,7 @@ internal sealed class UniversalisApiClient : IDisposable
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            _log.Debug($"[Universalis] Caller canceled request for item {itemId} (HQ={isHighQuality}, region={worldDcRegion}, source={source}); no failure cooldown.");
             throw;
         }
         catch (OperationCanceledException ex)
@@ -225,6 +233,92 @@ internal sealed class UniversalisApiClient : IDisposable
             _log.Error(ex, $"[Universalis] Failed to fetch listing stats for item {itemId}.");
             return null;
         }
+    }
+
+    private async Task<HttpResponseMessage> SendBufferedRequestAsync(
+        string requestUri, uint itemId, bool isHighQuality, string region, string source,
+        DateTime startedUtc, CancellationToken cancellationToken)
+    {
+        // ResponseHeadersRead exposes headers before the body is complete. Keep one
+        // linked deadline across both phases; HttpClient.Timeout alone covers only headers.
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (_httpClient.Timeout != Timeout.InfiniteTimeSpan)
+            deadline.CancelAfter(_httpClient.Timeout);
+        // All lookups share one bounded retry policy. Neither HTTP responses nor caller
+        // cancellation are retried; the deadline includes the non-blocking backoff.
+        var maxAttempts = _httpClient.Timeout > TimeSpan.Zero ? 2 : 1;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            if (attempt > 1 && TrySuppressUncachedRequest(out var remaining))
+            {
+                _log.Debug($"[Universalis] Retry suppressed by active cooldown for item {itemId} (remaining={remaining.TotalSeconds:0.0}s); no HTTP request sent.");
+                throw new UniversalisRequestException(UniversalisRequestFailureKind.Timeout,
+                    "Universalis retry suppressed by active cooldown.", null);
+            }
+            using var attemptDeadline = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
+            if (attempt == 1 && maxAttempts == 2)
+                attemptDeadline.CancelAfter(TimeSpan.FromTicks(_httpClient.Timeout.Ticks / 2));
+            using var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
+            HttpResponseMessage? response = null;
+            var phase = "waiting_for_headers";
+            var responseDetails = "http=unavailable, CF-Ray=unavailable";
+            try
+            {
+                attemptDeadline.Token.ThrowIfCancellationRequested();
+                RecordOutboundRequest();
+                _log.Debug($"[Universalis] HTTP send for item {itemId} (HQ={isHighQuality}, region={region}, source={source}, attempt={attempt}/{maxAttempts}, totalBudget={_httpClient.Timeout.TotalSeconds:0.###}s).");
+                response = await _httpClient.SendAsync(
+                    request, HttpCompletionOption.ResponseHeadersRead, attemptDeadline.Token).ConfigureAwait(false);
+                responseDetails = DescribeResponse(response);
+                _log.Debug($"[Universalis] HTTP headers for item {itemId} (HQ={isHighQuality}, region={region}, source={source}, elapsed={(DateTime.UtcNow - startedUtc).TotalSeconds:0.000}s, {responseDetails}).");
+                if (response.IsSuccessStatusCode)
+                {
+                    phase = "reading_body";
+                    await response.Content.LoadIntoBufferAsync(attemptDeadline.Token).ConfigureAwait(false);
+                    _log.Debug($"[Universalis] HTTP body complete for item {itemId} (HQ={isHighQuality}, region={region}, source={source}, elapsed={(DateTime.UtcNow - startedUtc).TotalSeconds:0.000}s).");
+                }
+                if (attempt > 1)
+                    _log.Debug($"[Universalis] Retry received HTTP {(int)response.StatusCode} for item {itemId} (region={region}, source={source}).");
+                return response;
+            }
+            catch (Exception ex) when (attempt < maxAttempts && !deadline.IsCancellationRequested &&
+                !cancellationToken.IsCancellationRequested &&
+                (ex is OperationCanceledException || ex is HttpRequestException { StatusCode: null }) &&
+                (response == null || response.IsSuccessStatusCode && response.Headers.RetryAfter == null))
+            {
+                response?.Dispose();
+                _log.Debug($"[Universalis] Transient lookup failure for item {itemId} (HQ={isHighQuality}, region={region}, source={source}, attempt={attempt}, phase={phase}, {responseDetails}, cause={DescribeException(ex)}); retrying once after 250ms within original total deadline.");
+                // Async backoff, never block the framework thread.
+                try
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(250), deadline.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException delayException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    throw CreateTimeoutException(itemId, isHighQuality, region, source, startedUtc,
+                        delayException, "phase=retry_backoff");
+                }
+            }
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                response?.Dispose();
+                throw CreateTimeoutException(itemId, isHighQuality, region, source, startedUtc, ex,
+                    $"attempt={attempt}/{maxAttempts}, phase={phase}, {responseDetails}");
+            }
+            catch
+            {
+                response?.Dispose();
+                throw;
+            }
+        }
+        throw new InvalidOperationException("Universalis retry attempts exhausted without a result.");
+    }
+
+    private static string DescribeResponse(HttpResponseMessage response)
+    {
+        var cfRay = response.Headers.TryGetValues("CF-Ray", out var rays) ? rays.FirstOrDefault() : null;
+        return $"http={(int)response.StatusCode}, reason={SafeDiagnostic(response.ReasonPhrase)}, " +
+            $"CF-Ray={SafeDiagnostic(cfRay)}, Retry-After={SafeDiagnostic(response.Headers.RetryAfter?.ToString())}";
     }
 
     internal bool TryGetCooldownRemaining(out TimeSpan remaining)
@@ -302,7 +396,32 @@ internal sealed class UniversalisApiClient : IDisposable
         lock (_diagnosticsLock)
         {
             _outboundRequests++;
+            var now = DateTime.UtcNow;
+            TrimRecentRequests(now);
+            _recentOutboundRequests.Enqueue(now);
         }
+    }
+
+    // Called only while holding _diagnosticsLock.
+    private void TrimRecentRequests(DateTime now)
+    {
+        while (_recentOutboundRequests.TryPeek(out var sentUtc) && sentUtc <= now - TimeSpan.FromMinutes(1))
+            _recentOutboundRequests.Dequeue();
+    }
+
+    private static string SafeDiagnostic(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return "unavailable";
+        var singleLine = value.Replace('\r', ' ').Replace('\n', ' ');
+        return singleLine.Length <= 240 ? singleLine : singleLine[..240] + "...";
+    }
+
+    private static string DescribeException(Exception exception)
+    {
+        var parts = new List<string>();
+        for (Exception? current = exception; current != null && parts.Count < 3; current = current.InnerException)
+            parts.Add($"{current.GetType().Name}: {SafeDiagnostic(current.Message)}");
+        return string.Join(" -> ", parts);
     }
 
     private UniversalisRequestException CreateTimeoutException(
@@ -311,7 +430,8 @@ internal sealed class UniversalisApiClient : IDisposable
         string region,
         string source,
         DateTime startedUtc,
-        Exception innerException)
+        Exception innerException,
+        string phaseDetails = "phase=processing_response")
     {
         RegisterFailure(
             UniversalisRequestFailureKind.Timeout,
@@ -321,7 +441,8 @@ internal sealed class UniversalisApiClient : IDisposable
             source,
             DateTime.UtcNow - startedUtc,
             null,
-            startCooldown: true);
+            startCooldown: true,
+            details: $"clientTimeout={_httpClient.Timeout.TotalSeconds:0.###}s, {phaseDetails}, cause={DescribeException(innerException)}");
         return new UniversalisRequestException(
             UniversalisRequestFailureKind.Timeout,
             "The Universalis request timed out.",
@@ -344,7 +465,8 @@ internal sealed class UniversalisApiClient : IDisposable
             source,
             DateTime.UtcNow - startedUtc,
             null,
-            startCooldown: true);
+            startCooldown: true,
+            details: $"httpRequestError={innerException.HttpRequestError}, cause={DescribeException(innerException)}");
         return new UniversalisRequestException(
             UniversalisRequestFailureKind.Connection,
             "The Universalis connection failed.",
@@ -360,7 +482,9 @@ internal sealed class UniversalisApiClient : IDisposable
         DateTime startedUtc)
     {
         var statusCode = (int)response.StatusCode;
-        var retryAfter = response.Headers.RetryAfter?.Delta;
+        var retryAfter = response.Headers.RetryAfter?.Delta ??
+            (response.Headers.RetryAfter?.Date - DateTimeOffset.UtcNow);
+        var details = DescribeResponse(response);
         var cooldown = statusCode == 429 || statusCode >= 500;
         var kind = statusCode == 429
             ? UniversalisRequestFailureKind.RateLimited
@@ -374,12 +498,13 @@ internal sealed class UniversalisApiClient : IDisposable
             source,
             DateTime.UtcNow - startedUtc,
             cooldown ? retryAfter : null,
-            cooldown);
+            cooldown,
+            details);
 
         if (!cooldown)
         {
             _log.Warning(
-                $"[Universalis] HTTP {statusCode} for item {itemId} (HQ={isHighQuality}, region={region}, source={source}).");
+                $"[Universalis] HTTP {statusCode} for item {itemId} (HQ={isHighQuality}, region={region}, source={source}, {details}).");
         }
 
         throw new UniversalisRequestException(
@@ -397,7 +522,8 @@ internal sealed class UniversalisApiClient : IDisposable
         string source,
         TimeSpan elapsed,
         TimeSpan? retryAfter,
-        bool startCooldown)
+        bool startCooldown,
+        string details)
     {
         var now = DateTime.UtcNow;
         var cooldownDuration = retryAfter is { } requested && requested > TimeSpan.Zero
@@ -405,9 +531,12 @@ internal sealed class UniversalisApiClient : IDisposable
             : CooldownDuration;
         var newCooldownUntilUtc = now + cooldownDuration;
         var startedCooldown = false;
+        int requestsLast60Seconds;
 
         lock (_diagnosticsLock)
         {
+            TrimRecentRequests(now);
+            requestsLast60Seconds = _recentOutboundRequests.Count;
             switch (kind)
             {
                 case UniversalisRequestFailureKind.Timeout:
@@ -441,7 +570,8 @@ internal sealed class UniversalisApiClient : IDisposable
         {
             _log.Warning(
                 $"[Universalis] {kind} for item {itemId} (HQ={isHighQuality}, region={region}, source={source}, " +
-                $"elapsed={elapsed.TotalSeconds:0.0}s); pausing uncached requests for {cooldownDuration.TotalSeconds:0}s.");
+                $"elapsed={elapsed.TotalSeconds:0.0}s, requestsLast60s={requestsLast60Seconds}, {details}); " +
+                $"pausing uncached requests for {cooldownDuration.TotalSeconds:0}s.");
         }
     }
 

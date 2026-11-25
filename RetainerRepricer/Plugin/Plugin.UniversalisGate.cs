@@ -12,8 +12,13 @@ namespace RetainerRepricer;
 /// </summary>
 public unsafe sealed partial class Plugin
 {
+    private CancellationTokenSource? _universalisGateCancellation;
+
     private void ResetUniversalisGateState()
     {
+        _universalisGateCancellation?.Cancel();
+        _universalisGateCancellation?.Dispose();
+        _universalisGateCancellation = null;
         _universalisGateTask = null;
         _universalisGateKey = null;
         _universalisGateAverage = null;
@@ -157,13 +162,16 @@ public unsafe sealed partial class Plugin
         var key = new UniversalisGateKey(itemId, _currentIsHq, region, baseUrl);
         if (_universalisGateKey is not { } existing || existing != key)
         {
+            ResetUniversalisGateState();
             _universalisGateKey = key;
             _universalisGateAverage = null;
+            _universalisGateCancellation = new CancellationTokenSource();
             _universalisGateTask = _universalisClient.GetAveragePriceAsync(
                 baseUrl,
                 region,
                 itemId,
                 _currentIsHq,
+                cancellationToken: _universalisGateCancellation.Token,
                 source: "undercut_gate");
             Log.Debug($"[RR][Gate] Requesting Universalis average for item {itemId} (region='{region}', HQ={_currentIsHq}).");
         }

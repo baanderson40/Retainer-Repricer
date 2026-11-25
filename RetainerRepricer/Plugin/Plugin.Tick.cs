@@ -1156,6 +1156,11 @@ public unsafe sealed partial class Plugin
 
                         if (gateStatus is UniversalisGateStatus.Failed or UniversalisGateStatus.Unavailable)
                         {
+                            if (_quickListRun && !_processingListedItem)
+                            {
+                                Log.Information("[RR][QuickList] Skipped: Universalis unavailable or gate failed; no listing submitted.");
+                                _newListingAttemptState = NewListingAttemptState.Skipped;
+                            }
                             if (gateStatus == UniversalisGateStatus.Failed)
                                 Log.Information("[RR][Gate] Skipping repricing: Universalis gate failed for this item.");
 
@@ -1602,6 +1607,13 @@ public unsafe sealed partial class Plugin
 
                     if (!_processingListedItem && _newListingAttemptState == NewListingAttemptState.Skipped)
                     {
+                        if (_quickListRun)
+                        {
+                            Log.Information("[RR][QuickList] Completed success=False (skipped; no listing submitted).");
+                            StopRun(RunStopReason.Error);
+                            _lastActionUtc = now;
+                            return;
+                        }
                         _processingListedItem = true;
                         _hasPendingSellSlot = false;
                         _pendingSellSlot = default;
